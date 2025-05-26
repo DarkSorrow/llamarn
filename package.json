@@ -1,0 +1,182 @@
+{
+  "name": "@novastera-oss/llamarn",
+  "version": "0.1.0",
+  "description": "An attempt at a pure cpp turbo module library",
+  "source": "./src/index.tsx",
+  "main": "./lib/module/index.js",
+  "types": "./lib/typescript/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/typescript/src/index.d.ts",
+      "default": "./lib/module/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "android",
+    "ios",
+    "cpp",
+    "RNLlamaCpp.podspec",
+    "react-native.config.js",
+    "!ios/build",
+    "!android/build",
+    "!android/gradle",
+    "!android/gradlew",
+    "!android/gradlew.bat",
+    "!android/local.properties",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__",
+    "!**/.*",
+    "!cpp/llama.cpp/examples",
+    "!cpp/llama.cpp/tools",
+    "!cpp/llama.cpp/.devops",
+    "!cpp/llama.cpp/.github",
+    "!cpp/llama.cpp/.git",
+    "!cpp/llama.cpp/.gitignore",
+    "!cpp/llama.cpp/.gitmodules",
+    "!cpp/llama.cpp/ci",
+    "!cpp/llama.cpp/docs",
+    "!cpp/llama.cpp/scripts",
+    "!cpp/llama.cpp/tests"
+  ],
+  "scripts": {
+    "example": "yarn workspace pure-cpp-turbo-module-library-example",
+    "test": "jest",
+    "typecheck": "tsc",
+    "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
+    "prepare": "bob build",
+    "release": "release-it",
+    "setup-llama-cpp": "node scripts/setup-llama-cpp.js",
+    "llama-status": "node scripts/setup-llama-cpp.js check",
+    "llama-init": "node scripts/setup-llama-cpp.js init",
+    "llama-tags": "bash scripts/llama_cpp_source.sh list-tags",
+    "llama-from-source": "LLAMACPPRN_BUILD_FROM_SOURCE=true node scripts/setup-llama-cpp.js",
+    "llama-prebuilt": "node scripts/setup-llama-cpp.js",
+    "clean-llama": "node scripts/setup-llama-cpp.js clean",
+    "clean-android": "rm -rf android/.cxx android/build android/src/main/jniLibs/x86 android/src/main/jniLibs/armeabi-v7a android/src/main/jniLibs/*/*.dylib",
+    "clean-prebuilt": "rm -rf prebuilt/build-android prebuilt/gpu",
+    "build-android": "npm run clean-android && bash scripts/build_android_gpu_backend.sh && bash scripts/build_android_external.sh",
+    "build-android-gpu": "bash scripts/build_android_gpu_backend.sh",
+    "build-android-external": "bash scripts/build_android_external.sh",
+    "build-android-clean": "bash scripts/build_android_external.sh --clean-prebuilt",
+    "build-android-macos": "npm run clean-android && npm run clean-prebuilt && bash scripts/build_android_gpu_backend.sh --no-vulkan --no-opencl --clean && bash scripts/build_android_external.sh --no-vulkan --no-opencl --clean"
+  
+  },
+  "keywords": [
+    "react-native",
+    "ios",
+    "android"
+  ],
+  "author": {
+    "name": "Hassan",
+    "email": "hassan@novastera.com"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/DarkSorrow/llamarn",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@commitlint/config-conventional": "^19.6.0",
+    "@evilmartians/lefthook": "^1.5.0",
+    "@react-native-community/cli": "15.0.1",
+    "@release-it/conventional-changelog": "^10.0.1",
+    "@types/jest": "^29.5.5",
+    "@types/react": "^19.0.0",
+    "commitlint": "^19.6.1",
+    "del-cli": "^5.1.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.0.3",
+    "react": "19.1.0",
+    "react-native": "0.79.2",
+    "react-native-builder-bob": "^0.40.6",
+    "release-it": "^19.0.0",
+    "turbo": "^1.10.7",
+    "typescript": "^5.2.2"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "workspaces": [
+    "example"
+  ],
+  "jest": {
+    "preset": "react-native",
+    "modulePathIgnorePatterns": [
+      "<rootDir>/example/node_modules",
+      "<rootDir>/lib/"
+    ]
+  },
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
+  },
+  "release-it": {
+    "git": {
+      "commitMessage": "chore: release ${version}",
+      "tagName": "v${version}"
+    },
+    "npm": {
+      "publish": true
+    },
+    "github": {
+      "release": true
+    },
+    "plugins": {
+      "@release-it/conventional-changelog": {
+        "preset": {
+          "name": "angular"
+        }
+      }
+    }
+  },
+  "prettier": {
+    "quoteProps": "consistent",
+    "singleQuote": true,
+    "tabWidth": 2,
+    "trailingComma": "es5",
+    "useTabs": false
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      "codegen",
+      [
+        "module",
+        {
+          "esm": true
+        }
+      ],
+      [
+        "typescript",
+        {
+          "project": "tsconfig.build.json"
+        }
+      ]
+    ]
+  },
+  "codegenConfig": {
+    "name": "RNLlamaCppSpec",
+    "type": "modules",
+    "jsSrcsDir": "src",
+    "outputDir": {
+      "ios": "ios/generated",
+      "android": "android/generated"
+    },
+    "android": {
+      "javaPackageName": "com.novastera.llamarn"
+    },
+    "includesGeneratedCode": true
+  },
+  "create-react-native-library": {
+    "type": "turbo-module",
+    "languages": "cpp",
+    "version": "0.49.8"
+  }
+}
