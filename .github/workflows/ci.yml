@@ -70,9 +70,6 @@ jobs:
       - name: Install Dependencies
         run: npm ci
       
-      - name: Build JS/TS
-        run: npm run prepare
-      
       - name: Validate package.json
         run: |
           echo "Validating package.json configuration..."
@@ -82,7 +79,7 @@ jobs:
           echo "Files included in package: $FILES"
           
           # Check for required files/directories
-          for REQUIRED in "android" "ios" "lib" "cpp" "LICENSE" "README.md" "RNLlamaCpp.podspec"; do
+          for REQUIRED in "android" "ios" "lib" "cpp" "src" "LICENSE" "README.md" "RNLlamaCpp.podspec"; do
             if ! echo "$FILES" | grep -q "$REQUIRED"; then
               echo "⚠️ Warning: '$REQUIRED' might be missing from package.json 'files' field"
             fi
@@ -477,7 +474,6 @@ jobs:
   # Publish job - only runs on main branch when a semver tag (vX.Y.Z) is pushed or when a release is published
   publish:
     name: Publish to NPM
-    # Run when a release is published, or with workflow dispatch, or on tag with semver format
     if: (github.event_name == 'release') || (github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (startsWith(github.ref, 'refs/tags/v') && (contains(github.ref, '.') || contains(github.ref, '-')))
     needs: [build-success]
     runs-on: ubuntu-latest
@@ -592,7 +588,20 @@ jobs:
           cat package.json | grep -A 3 "\"name\":"
       
       - name: Install dependencies
-        run: npm ci
+        run: |
+          # Install dependencies including react-native-builder-bob
+          npm ci
+          
+          # Verify bob is installed
+          npx bob --version || echo "❌ bob not found after installation"
+
+          # Verify the build output
+          if [ ! -d "lib" ] || [ ! "$(ls -A lib 2>/dev/null)" ]; then
+            echo "❌ Build failed - lib directory is empty or missing"
+            exit 1
+          fi
+          echo "✅ Build completed successfully"
+          ls -la lib
       
       - name: Publish to NPM
         run: npm publish --access public
