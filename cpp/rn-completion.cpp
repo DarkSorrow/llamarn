@@ -1,6 +1,5 @@
 #include "rn-llama.hpp"
 #include "common.h"
-#include "log.h"
 #include "chat.h"
 #include "llama.h"
 #include "sampling.h"
