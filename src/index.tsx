@@ -1,8 +1,7 @@
 // Import everything from NativeRNLlamaCpp.ts
 import RNLlamaCppInstance, {
-  loadLlamaModel,
   loadLlamaModelInfo,
-  initLlama, // Assuming initLlama is also a JS helper like loadLlamaModel
+  initLlama,
   // Import all necessary types as well
   type LlamaModel,
   type LlamaModelParams,
@@ -23,9 +22,8 @@ import RNLlamaCppInstance, {
 
 // Export the helper functions directly
 export {
-  loadLlamaModel,
   loadLlamaModelInfo,
-  initLlama, // Assuming initLlama is also exported from NativeRNLlamaCpp.ts
+  initLlama,
 };
 
 // Export the types directly
