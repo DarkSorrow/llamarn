@@ -594,9 +594,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
       
-      - name: Build package
-        run: npm run prepare
-      
       - name: Publish to NPM
         run: npm publish --access public
         env:

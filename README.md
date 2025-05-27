@@ -216,7 +216,7 @@ The module accepts different path formats depending on the platform:
 
 ## About
 
-Part of Novastera's(https://novastera.com) suite of privacy-focused solutions, this package enables on-device LLM inference with no data leaving the user's device. We're committed to helping developers build AI-powered applications that respect user privacy.
+Part of [Novastera's](https://novastera.com) suite of privacy-focused solutions, this package enables on-device LLM inference with no data leaving the user's device. We're committed to helping developers build AI-powered applications that respect user privacy.
 
 ## License
 
@@ -228,12 +228,8 @@ We extend our heartfelt gratitude to the following projects and communities that
 
 * **[mybigday/llama.rn](https://github.com/mybigday/llama.rn)** - A pioneering React Native binding for llama.cpp that demonstrated the feasibility of on-device LLM inference in mobile applications.
 
-* **[Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)** - A crucial resource that enabled us to successfully build the Android Turbo Module when the official React Native documentation proved insufficient. This repository provided the missing pieces for proper C++ integration on Android.
+* **[Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)** - A good resource that enabled us to successfully build the Android Turbo Module when the official React Native documentation proved insufficient. This repository provided the missing pieces for proper C++ integration on Android.
 
 * **[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** - The underlying C++ library that powers all llama.cpp-based projects, providing efficient LLM inference capabilities.
 
 Without these contributions to the open-source community, this project would not have been possible. We're proud to continue building upon this foundation and contributing back to the ecosystem.
-
----
-
-Made with [create-react-native-library](https://github.com/callstack/react-native-builder-bob)
