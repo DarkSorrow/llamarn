@@ -128,27 +128,39 @@ const ModelLoader: React.FC<{
       
       <View style={styles.modeButtons}>
         <TouchableOpacity 
-          style={styles.modeButton}
+          style={[styles.modeButton, loading && styles.modeButtonDisabled]}
           onPress={() => initializeModel('conversation')}
           disabled={loading}
         >
-          <Text style={styles.modeButtonText}>Conversation</Text>
+          {loading ? (
+            <ActivityIndicator size="small" color="white" />
+          ) : (
+            <Text style={styles.modeButtonText}>Conversation</Text>
+          )}
         </TouchableOpacity>
         
         <TouchableOpacity 
-          style={styles.modeButton}
+          style={[styles.modeButton, loading && styles.modeButtonDisabled]}
           onPress={() => initializeModel('tools')}
           disabled={loading}
         >
-          <Text style={styles.modeButtonText}>Tools</Text>
+          {loading ? (
+            <ActivityIndicator size="small" color="white" />
+          ) : (
+            <Text style={styles.modeButtonText}>Tools</Text>
+          )}
         </TouchableOpacity>
         
         <TouchableOpacity 
-          style={styles.modeButton}
+          style={[styles.modeButton, loading && styles.modeButtonDisabled]}
           onPress={() => initializeModel('embeddings')}
           disabled={loading}
         >
-          <Text style={styles.modeButtonText}>Embeddings</Text>
+          {loading ? (
+            <ActivityIndicator size="small" color="white" />
+          ) : (
+            <Text style={styles.modeButtonText}>Embeddings</Text>
+          )}
         </TouchableOpacity>
       </View>
 
@@ -196,13 +208,18 @@ const formatToolResponse = (content: string): string => {
     const data = JSON.parse(content);
     
     // Format weather data specially
-    if (data.city && data.temperature !== undefined) {
-      return `Weather in ${data.city}:\n• Temperature: ${data.temperature}°C\n• Condition: ${data.condition}\n• Humidity: ${data.humidity}%`;
+    if (data.location && data.temperature !== undefined) {
+      return `Location: ${data.location}\nTemperature: ${data.temperature}°${data.unit === 'fahrenheit' ? 'F' : 'C'}\nCondition: ${data.condition}\nHumidity: ${data.humidity}%`;
+    }
+    
+    // Format location data specially
+    if (data.city && data.coordinates) {
+      return `City: ${data.city}, ${data.state}, ${data.country}\nCoordinates: ${data.coordinates.latitude}, ${data.coordinates.longitude}`;
     }
     
     // Format other JSON responses
     return Object.entries(data)
-      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+      .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
       .join('\n');
   } catch (e) {
     // If not valid JSON, return as is
@@ -275,7 +292,7 @@ export default function ModelChatTestScreen() {
         // Create tool message
         const toolMessage: Message = {
           role: 'tool',
-          content: JSON.stringify(weatherData),
+          content: `🌤️ Weather Result:\n${formatToolResponse(JSON.stringify(weatherData))}`,
           name: functionName,
           tool_call_id: toolCall.id
         };
@@ -297,7 +314,7 @@ export default function ModelChatTestScreen() {
         // Create tool message
         const toolMessage: Message = {
           role: 'tool',
-          content: JSON.stringify(locationData),
+          content: `📍 Location Result:\n${formatToolResponse(JSON.stringify(locationData))}`,
           name: functionName,
           tool_call_id: toolCall.id
         };
@@ -489,6 +506,15 @@ export default function ModelChatTestScreen() {
       if (toolCalls.length > 0) {
         // Add assistant message with the tool call request
         setMessages(prev => [...prev, assistantMessage]);
+        
+        // Add tool call messages to show what tools are being called
+        const toolCallMessages: Message[] = toolCalls.map((toolCall, index) => ({
+          role: 'assistant' as const,
+          content: `🔧 Calling tool: ${toolCall.function?.name}\nArguments: ${toolCall.function?.arguments || '{}'}`,
+          isToolCall: true
+        }));
+        
+        setMessages(prev => [...prev, ...toolCallMessages]);
         
         // Process all tool calls sequentially
         const toolMessages: Message[] = [];
@@ -716,17 +742,30 @@ export default function ModelChatTestScreen() {
 
   // Render a message
   const renderMessage = (msg: Message, index: number) => {
+    const getMessageStyle = () => {
+      if (msg.role === 'user') return styles.userMessage;
+      if (msg.role === 'tool') return styles.toolResponseMessage;
+      if (msg.isToolCall) return styles.toolCallMessage;
+      return styles.assistantMessage;
+    };
+
+    const getMessageLabel = () => {
+      if (msg.role === 'user') return 'You';
+      if (msg.role === 'tool') return `Tool Response (${msg.name || 'unknown'})`;
+      if (msg.isToolCall) return 'Tool Call';
+      return 'Assistant';
+    };
+
     return (
       <View 
         key={index} 
         style={[
           styles.messageWrapper, 
-          msg.role === 'user' ? styles.userMessage : styles.assistantMessage,
-          msg.isToolCall ? styles.toolCallMessage : null
+          getMessageStyle()
         ]}
       >
         <Text style={styles.messageSender}>
-          {msg.role}{msg.isToolCall ? ' (Tool Call)' : ''}
+          {getMessageLabel()}
         </Text>
         <Text style={styles.messageContent}>{msg.content}</Text>
       </View>
@@ -1009,6 +1048,10 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     fontSize: 16,
   },
+  modeButtonDisabled: {
+    backgroundColor: '#6c757d',
+    opacity: 0.7,
+  },
   testTabContainer: {
     flex: 1,
     padding: 16,
@@ -1097,10 +1140,11 @@ const styles = StyleSheet.create({
     height: 8,
   },
   messageWrapper: {
-    maxWidth: '85%',
+    maxWidth: '95%',
     borderRadius: 12,
     padding: 12,
     marginVertical: 4,
+    alignSelf: 'center',
   },
   messageSender: {
     fontWeight: 'bold',
@@ -1112,8 +1156,15 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   toolCallMessage: {
+    alignSelf: 'center',
     backgroundColor: '#FFEB99',
     borderColor: '#FFD700',
+    borderWidth: 1,
+  },
+  toolResponseMessage: {
+    alignSelf: 'center',
+    backgroundColor: '#E8F5E8',
+    borderColor: '#4CAF50',
     borderWidth: 1,
   }
 }); 
