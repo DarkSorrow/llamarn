@@ -81,7 +81,8 @@ coverage/
 example/**/*.gguf
 example/ios/Pods/
 example/ios/*.log
-example/android
+example/android/.cxx/
+example/android/build/
 # Example app
 example/node_modules/
 example/ios/Pods/
@@ -174,3 +175,4 @@ llama-config.cmake
 /ios/libs
 /android.backup
 /example/vendor
+example/android/app/debug.keystore

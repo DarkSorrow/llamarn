@@ -6,6 +6,11 @@ const workspaceRoot = path.resolve(__dirname, '..'); // llamarn/
 
 const defaultConfig = getDefaultConfig(__dirname);
 
+// Ensure resolver and assetExts exist
+const currentAssetExts = defaultConfig.resolver?.assetExts || [];
+// Remove 'gguf' if it exists, or just use currentAssetExts if you are sure it was only added by a previous step and not part of default
+const newAssetExts = currentAssetExts.filter(ext => ext !== 'gguf');
+
 const monorepoConfig = {
   watchFolders: [
     ...(defaultConfig.watchFolders || []),
@@ -14,6 +19,7 @@ const monorepoConfig = {
 
   resolver: {
     ...(defaultConfig.resolver || {}),
+    assetExts: newAssetExts,
     nodeModulesPaths: [
       ...(defaultConfig.resolver?.nodeModulesPaths || []),
       path.resolve(workspaceRoot, 'node_modules'), // Add root node_modules to search paths

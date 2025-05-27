@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		5CDDD2ED2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */; };
+		5CDDD2EE2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */; };
 		750CBE78C1C2A29E28EFE37B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
@@ -21,6 +23,8 @@
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = llamarnexample/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		33A0CC882224FE725E2EDE41 /* libPods-llamarnexample.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-llamarnexample.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		59B66C4F42C7B1877CBDECE4 /* Pods-llamarnexample.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-llamarnexample.debug.xcconfig"; path = "Target Support Files/Pods-llamarnexample/Pods-llamarnexample.debug.xcconfig"; sourceTree = "<group>"; };
+		5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"; sourceTree = "<group>"; };
+		5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"; sourceTree = "<group>"; };
 		6FDE3BC8A6BAF7E61BB5319F /* Pods-llamarnexample.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-llamarnexample.release.xcconfig"; path = "Target Support Files/Pods-llamarnexample/Pods-llamarnexample.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = llamarnexample/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = llamarnexample/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -70,6 +74,8 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */,
+				5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */,
 				13B07FAE1A68108700A75B9A /* llamarnexample */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
@@ -162,6 +168,8 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				750CBE78C1C2A29E28EFE37B /* PrivacyInfo.xcprivacy in Resources */,
+				5CDDD2ED2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf in Resources */,
+				5CDDD2EE2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
