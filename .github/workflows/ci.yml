@@ -603,10 +603,6 @@ jobs:
             echo "✅ iOS framework present"
             ls -la ios/libs/llama.xcframework
           fi
-          
-          # List what would be included in the package
-          echo "Files that will be included in the package:"
-          npm pack --dry-run
       
       - name: Publish to NPM
         run: npm publish --access public
