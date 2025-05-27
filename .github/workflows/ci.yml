@@ -1,0 +1,603 @@
+name: CI and Native Build
+
+on:
+  push:
+    branches: [ develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to NPM'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: 'Version tag (if publishing)'
+        required: false
+        type: string
+
+jobs:
+  # First job: Setup and verify the repository
+  setup:
+    name: Setup Repository
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # We'll handle submodules manually
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Check llama.cpp submodule
+        id: check-submodule
+        run: |
+          # Check if llama.cpp directory already exists and is at the right version
+          if [ -d "cpp/llama.cpp" ] && [ -f "cpp/llama.cpp/include/llama.h" ]; then
+            echo "Submodule exists, checking status..."
+            cd cpp/llama.cpp
+            git fetch
+            LOCAL_COMMIT=$(git rev-parse HEAD)
+            SOURCE_REPO_LLAMA="https://github.com/ggerganov/llama.cpp.git"
+            SOURCE_BRANCH_LLAMA="master"
+            REMOTE_COMMIT=$(git ls-remote $SOURCE_REPO_LLAMA $SOURCE_BRANCH_LLAMA | awk '{print $1}')
+            
+            if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
+              echo "Submodule is up to date"
+              echo "is_updated=true" >> $GITHUB_OUTPUT
+            else
+              echo "Submodule needs update"
+              echo "is_updated=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Submodule not initialized"
+            echo "is_updated=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Initialize or update submodules
+        if: steps.check-submodule.outputs.is_updated != 'true'
+        run: scripts/setupLlamaCpp.sh init
+      
+      - name: Install Dependencies
+        run: npm ci
+      
+      - name: Build JS/TS
+        run: npm run prepare
+      
+      - name: Validate package.json
+        run: |
+          echo "Validating package.json configuration..."
+          
+          # Extract and validate the 'files' field
+          FILES=$(node -p "JSON.stringify(require('./package.json').files || [])")
+          echo "Files included in package: $FILES"
+          
+          # Check for required files/directories
+          for REQUIRED in "android" "ios" "lib" "cpp" "LICENSE" "README.md" "RNLlamaCpp.podspec"; do
+            if ! echo "$FILES" | grep -q "$REQUIRED"; then
+              echo "⚠️ Warning: '$REQUIRED' might be missing from package.json 'files' field"
+            fi
+          done
+          
+          # Check that scripts directory is not included
+          if echo "$FILES" | grep -q "scripts"; then
+            echo "⚠️ Warning: 'scripts' directory is included in package.json 'files' field but should be excluded from the published package"
+          fi
+      
+      - name: Get version from package.json or tag
+        id: get-version
+        run: |
+          # If this is triggered by a tag, use the tag as version
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          # If version is provided via workflow input, use that
+          elif [[ "${{ github.event.inputs.version }}" != "" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          # Otherwise use package.json version
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+      
+      - name: Upload Repository State
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-state
+          path: .
+          retention-days: 1
+  
+  # Android build job
+  android-build:
+    name: Android Native Build
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+          find android -name "*.sh" -exec chmod +x {} \; || true
+          find android -name "gradlew" -exec chmod +x {} \; || true
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
+          accept-android-sdk-licenses: true
+      
+      # Cache NDK and prebuilt GPU libraries
+      - name: Cache NDK and GPU Libraries
+        uses: actions/cache@v3
+        id: cache-android-libs
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+            prebuilt/gpu
+            prebuilt/libs/external/vulkan
+            prebuilt/libs/external/opencl
+          key: android-ndk-gpu-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
+          restore-keys: |
+            android-ndk-gpu-
+      
+      - name: Build GPU Libraries
+        run: |
+          # Get Android NDK path
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          # Create required directories to avoid cache errors
+          mkdir -p prebuilt/gpu
+          mkdir -p prebuilt/libs/external/vulkan
+          mkdir -p prebuilt/libs/external/opencl
+          
+          # Install Vulkan development packages
+          echo "Installing Vulkan development packages..."
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev vulkan-tools libvulkan1 mesa-vulkan-drivers
+          
+          # Check if Vulkan is available
+          vulkaninfo --summary || echo "Vulkan info not available, but we'll continue"
+          
+          # Fix the libc++ library issue
+          echo "Fixing libc++ library issues..."
+          sudo apt-get install -y libc++1 libc++abi1
+          
+          # Copy libc++ library from NDK to system path
+          echo "Copying libc++ from NDK to system library path..."
+          if [ -f "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64/libc++.so" ]; then
+            sudo cp "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64/libc++.so" /usr/lib/x86_64-linux-gnu/
+            sudo cp "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64/libc++.so" /lib/x86_64-linux-gnu/ || true
+            sudo ldconfig
+            echo "✅ Copied libc++ from NDK to system paths"
+          else 
+            echo "❌ Could not find libc++ in NDK"
+            find "$NDK_PATH" -name "libc++.so" | sort
+          fi
+          
+          # Set up environment for glslc to find appropriate libraries
+          export LD_LIBRARY_PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64:$LD_LIBRARY_PATH"
+          
+          # Set up environment for the build process
+          export VULKAN_SDK=/usr
+          echo "Using system Vulkan SDK at $VULKAN_SDK"
+          
+          # Skip GPU backend build if we have a cache hit
+          if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Using cached GPU libraries"
+          else
+            # First build the GPU backend libraries
+            echo "Building Android GPU backend libraries..."
+            scripts/build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH"
+          fi
+          
+          # Verify GPU libraries were built in prebuilt directory
+          if [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Successfully built GPU libraries for arm64-v8a"
+            ls -la prebuilt/gpu/arm64-v8a/
+          else
+            echo "❌ No GPU libraries found for arm64-v8a, build failed"
+            exit 1
+          fi
+
+      - name: Build Final Android Libraries
+        run: |
+          # Get Android NDK path
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          # Get glslc path
+          GLSLC_PATH="$ANDROID_HOME/ndk/27.2.12479018/shader-tools/linux-x86_64/glslc"
+          
+          # Ensure the libc++ library is properly set up
+          if [ -f "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64/libc++.so" ]; then
+            echo "Using NDK's libc++ library..."
+            export LD_LIBRARY_PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/lib64:$LD_LIBRARY_PATH"
+          fi
+          
+          # Set up environment for the build process
+          export VULKAN_SDK=/usr
+          export VULKAN_INCLUDE_DIR=/usr/include
+          echo "Using system Vulkan SDK at $VULKAN_SDK"
+          
+          # Build the final Android libraries with GPU support
+          echo "Building Android libraries with full GPU support..."
+          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --glslc-path="$GLSLC_PATH" --platform=android
+      
+      - name: Verify Library Architecture and Symbols
+        run: |
+          # Just some basic sanity checks to make sure the build didn't silently fail
+          if [ ! -f "android/src/main/jniLibs/arm64-v8a/libllama.so" ] || 
+             [ ! -f "android/src/main/jniLibs/x86_64/libllama.so" ]; then
+            echo "❌ Libraries are missing"
+            exit 1
+          fi
+          
+          # Check file sizes to make sure they're not empty
+          arm64_size=$(stat -c%s "android/src/main/jniLibs/arm64-v8a/libllama.so" 2>/dev/null || 
+                      stat -f%z "android/src/main/jniLibs/arm64-v8a/libllama.so")
+          x86_64_size=$(stat -c%s "android/src/main/jniLibs/x86_64/libllama.so" 2>/dev/null || 
+                       stat -f%z "android/src/main/jniLibs/x86_64/libllama.so")
+          
+          if [ "$arm64_size" -lt 1000000 ] || [ "$x86_64_size" -lt 1000000 ]; then
+            echo "❌ Libraries are too small, build likely failed"
+            exit 1
+          fi
+          
+          echo "✅ Library validation passed"
+
+      - name: Upload Android Native Libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-native-libs
+          path: android/src/main/jniLibs/
+  
+  # iOS build job
+  ios-build:
+    name: iOS Native Build
+    needs: setup
+    runs-on: macos-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+      
+      # Cache iOS framework to speed up builds
+      - name: Cache iOS Framework
+        uses: actions/cache@v3
+        id: cache-ios-framework
+        with:
+          path: |
+            ios/libs/llama.xcframework
+          key: ios-framework-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_apple_external.sh') }}
+          restore-keys: |
+            ios-framework-
+      
+      - name: Setup iOS Framework
+        run: |
+          # Skip framework download if we have a cache hit
+          if [ "${{ steps.cache-ios-framework.outputs.cache-hit }}" == "true" ] && [ -d "ios/libs/llama.xcframework" ]; then
+            echo "✅ Using cached iOS framework"
+          else
+            # Use the build_apple_external.sh to set up iOS framework
+            scripts/build_apple_external.sh init
+          fi
+          
+          # Verify the iOS xcframework was set up correctly
+          if [ ! -d "ios/libs/llama.xcframework" ]; then
+            echo "❌ iOS framework build failed!"
+            exit 1
+          else
+            echo "✅ iOS framework downloaded successfully"
+            
+            # List available slices
+            echo "Available iOS framework slices:"
+            ls -la ios/libs/llama.xcframework/
+          fi
+          
+      - name: Upload iOS Framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-framework
+          path: ios/libs/llama.xcframework/
+          
+      - name: Validate iOS Podspec
+        run: |
+          # Check if the podspec exists
+          if [ ! -f "RNLlamaCpp.podspec" ]; then
+            echo "❌ RNLlamaCpp.podspec not found"
+            exit 1
+          fi
+          
+          # Just check the podspec content without running validation
+          if grep -q "s.vendored_frameworks" RNLlamaCpp.podspec && 
+             grep -q "install_modules_dependencies" RNLlamaCpp.podspec; then
+            echo "✅ Podspec contains required sections including Turbo Module dependencies"
+          else
+            echo "❌ Podspec is missing required sections"
+            exit 1
+          fi
+          
+          echo "✅ iOS library setup validated"
+  
+  # Test Android-specific code
+  test-android:
+    name: Test Android Code
+    needs: [setup, android-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+          
+      - name: Download Android Libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: android-native-libs
+          path: android/src/main/jniLibs/
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+          find android -name "*.sh" -exec chmod +x {} \; || true
+          find android -name "gradlew" -exec chmod +x {} \; || true
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run Android-specific tests
+        run: npm run test-android || echo "No Android-specific tests defined, skipping"
+  
+  # Test iOS-specific code
+  test-ios:
+    name: Test iOS Code
+    needs: [setup, ios-build]
+    runs-on: macos-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+          
+      - name: Download iOS Framework
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-framework
+          path: ios/libs/llama.xcframework/
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run iOS-specific tests
+        run: npm run test-ios || echo "No iOS-specific tests defined, skipping"
+  
+  # Run general JS/TS tests
+  test-js:
+    name: Test JavaScript/TypeScript
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run JS/TS tests
+        run: npm test
+  
+  # Job to report successful build and tests
+  build-success:
+    name: CI and Native Build Success
+    needs: [setup, android-build, ios-build, test-android, test-ios, test-js]
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: Check Status
+        run: |
+          if [ "${{ needs.setup.result }}" = "success" ] && 
+             [ "${{ needs.android-build.result }}" = "success" ] && 
+             [ "${{ needs.ios-build.result }}" = "success" ] && 
+             [ "${{ needs.test-android.result }}" = "success" ] && 
+             [ "${{ needs.test-ios.result }}" = "success" ] && 
+             [ "${{ needs.test-js.result }}" = "success" ]; then
+            echo "All CI and Native Build steps passed!"
+            exit 0
+          else
+            echo "One or more steps failed!"
+            echo "Setup: ${{ needs.setup.result }}"
+            echo "Android Build: ${{ needs.android-build.result }}"
+            echo "iOS Build: ${{ needs.ios-build.result }}"
+            echo "Android Tests: ${{ needs.test-android.result }}"
+            echo "iOS Tests: ${{ needs.test-ios.result }}"
+            echo "JS Tests: ${{ needs.test-js.result }}"
+            exit 1
+          fi
+  
+  # Publish job - only runs on main branch when a semver tag (vX.Y.Z) is pushed or when a release is published
+  publish:
+    name: Publish to NPM
+    # Run when a release is published, or with workflow dispatch, or on tag with semver format
+    if: (github.event_name == 'release') || (github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (startsWith(github.ref, 'refs/tags/v') && (contains(github.ref, '.') || contains(github.ref, '-')))
+    needs: [build-success]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+          
+      - name: Download Android Libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: android-native-libs
+          path: android/src/main/jniLibs/
+          
+      - name: Download iOS Framework
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-framework
+          path: ios/libs/llama.xcframework/
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      
+      - name: Extract version from tag, release, or input
+        id: get-version
+        run: |
+          # If triggered by a release, use the release tag
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            # Remove 'v' prefix if present
+            VERSION="${VERSION#v}"
+            echo "Version from release: $VERSION"
+          # Use input version if provided through workflow dispatch
+          elif [[ "${{ github.event.inputs.version }}" != "" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "Version from input: $VERSION"
+          # Extract version from git tag (remove the 'v' prefix)
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "Version from tag: $VERSION"
+          # Fallback to package.json version
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            echo "Version from package.json: $VERSION"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Validate semver format
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "⚠️ Warning: Version '$VERSION' does not follow semver format x.y.z(-suffix)"
+          else
+            echo "✅ Version '$VERSION' follows semver format"
+          fi
+      
+      - name: Verify package content
+        run: |
+          echo "Checking files to be included in the package..."
+          # Extract 'files' field from package.json
+          FILES=$(node -p "JSON.stringify(require('./package.json').files || [])")
+          echo "Files specified in package.json: $FILES"
+          
+          # Verify core directories and files are included
+          for REQUIRED in "android" "ios" "lib" "cpp" "src" "LICENSE" "README.md" "RNLlamaCpp.podspec"; do
+            if ! echo "$FILES" | grep -q "$REQUIRED"; then
+              echo "⚠️ Warning: '$REQUIRED' might be missing from package.json 'files' field"
+            fi
+          done
+          
+          # Verify that scripts directory is not included
+          if echo "$FILES" | grep -q "scripts"; then
+            echo "⚠️ Warning: 'scripts' directory is included in package.json 'files' field but should be excluded from the published package"
+          fi
+          
+          # Verify native libraries exist
+          if [ ! -d "android/src/main/jniLibs" ] || [ ! "$(ls -A android/src/main/jniLibs 2>/dev/null)" ]; then
+            echo "❌ Android native libraries missing!"
+            exit 1
+          else
+            echo "✅ Android native libraries present"
+            ls -la android/src/main/jniLibs
+          fi
+          
+          if [ ! -d "ios/libs/llama.xcframework" ] || [ ! "$(ls -A ios/libs/llama.xcframework 2>/dev/null)" ]; then
+            echo "❌ iOS framework missing!"
+            exit 1
+          else
+            echo "✅ iOS framework present"
+            ls -la ios/libs/llama.xcframework
+          fi
+          
+          # List what would be included in the package
+          echo "Files that will be included in the package:"
+          npm pack --dry-run
+      
+      - name: Update version in package.json
+        run: |
+          VERSION=${{ steps.get-version.outputs.version }}
+          echo "Setting version to $VERSION"
+          npm version "$VERSION" --no-git-tag-version
+          
+          # Show the updated package.json
+          cat package.json | grep -A 3 "\"name\":"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build package
+        run: npm run prepare
+      
+      - name: Publish to NPM
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}

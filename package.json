@@ -67,8 +67,11 @@
   },
   "keywords": [
     "react-native",
-    "ios",
-    "android"
+    "ai",
+    "llama",
+    "llama.cpp",
+    "llama-cpp",
+    "llama-cpp-turbo-module-library"
   ],
   "author": {
     "name": "Hassan",
@@ -80,21 +83,14 @@
     "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@commitlint/config-conventional": "^19.6.0",
-    "@evilmartians/lefthook": "^1.5.0",
-    "@react-native-community/cli": "15.0.1",
-    "@release-it/conventional-changelog": "^10.0.1",
     "@types/jest": "^29.5.5",
     "@types/react": "^19.0.0",
-    "commitlint": "^19.6.1",
-    "del-cli": "^5.1.0",
+    "del-cli": "^6.0.0",
     "jest": "^29.7.0",
     "prettier": "^3.0.3",
     "react": "19.0.0",
     "react-native": "0.79.2",
     "react-native-builder-bob": "^0.40.6",
-    "release-it": "^19.0.0",
-    "turbo": "^1.10.7",
     "typescript": "^5.2.2"
   },
   "peerDependencies": {
@@ -115,25 +111,6 @@
     "extends": [
       "@commitlint/config-conventional"
     ]
-  },
-  "release-it": {
-    "git": {
-      "commitMessage": "chore: release ${version}",
-      "tagName": "v${version}"
-    },
-    "npm": {
-      "publish": true
-    },
-    "github": {
-      "release": true
-    },
-    "plugins": {
-      "@release-it/conventional-changelog": {
-        "preset": {
-          "name": "angular"
-        }
-      }
-    }
   },
   "prettier": {
     "quoteProps": "consistent",
