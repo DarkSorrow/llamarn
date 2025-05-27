@@ -506,6 +506,14 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       
+      - name: Install dependencies
+        run: |
+          # Install dependencies including react-native-builder-bob
+          npm ci
+          
+          # Verify bob is installed
+          npx bob --version || echo "❌ bob not found after installation"
+      
       - name: Extract version from tag, release, or input
         id: get-version
         run: |
@@ -537,6 +545,28 @@ jobs:
           else
             echo "✅ Version '$VERSION' follows semver format"
           fi
+      
+      - name: Update version in package.json
+        run: |
+          VERSION=${{ steps.get-version.outputs.version }}
+          echo "Setting version to $VERSION"
+          npm version "$VERSION" --no-git-tag-version
+          
+          # Show the updated package.json
+          cat package.json | grep -A 3 "\"name\":"
+      
+      - name: Build package
+        run: |
+          # Run prepare script which uses bob
+          npm run prepare
+          
+          # Verify the build output
+          if [ ! -d "lib" ] || [ ! "$(ls -A lib 2>/dev/null)" ]; then
+            echo "❌ Build failed - lib directory is empty or missing"
+            exit 1
+          fi
+          echo "✅ Build completed successfully"
+          ls -la lib
       
       - name: Verify package content
         run: |
@@ -577,31 +607,6 @@ jobs:
           # List what would be included in the package
           echo "Files that will be included in the package:"
           npm pack --dry-run
-      
-      - name: Update version in package.json
-        run: |
-          VERSION=${{ steps.get-version.outputs.version }}
-          echo "Setting version to $VERSION"
-          npm version "$VERSION" --no-git-tag-version
-          
-          # Show the updated package.json
-          cat package.json | grep -A 3 "\"name\":"
-      
-      - name: Install dependencies
-        run: |
-          # Install dependencies including react-native-builder-bob
-          npm ci
-          
-          # Verify bob is installed
-          npx bob --version || echo "❌ bob not found after installation"
-
-          # Verify the build output
-          if [ ! -d "lib" ] || [ ! "$(ls -A lib 2>/dev/null)" ]; then
-            echo "❌ Build failed - lib directory is empty or missing"
-            exit 1
-          fi
-          echo "✅ Build completed successfully"
-          ls -la lib
       
       - name: Publish to NPM
         run: npm publish --access public
