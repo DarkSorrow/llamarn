@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { multiply } from '@novastera-oss/llamarn';
 import ConsolidatedTestScreen from './ConsolidatedTestScreen';
+import ModelChatTestScreen from './ModelChatTestScreen';
 
 // Placeholder for the actual test components we will create later
 // const ConsolidatedTestScreen = () => ( <--- THIS LINE AND ITS BODY NEED TO BE DELETED
@@ -19,14 +20,6 @@ import ConsolidatedTestScreen from './ConsolidatedTestScreen';
 // {/* We will later integrate model loading, info display, and various tests here */}
 // </View>
 // );
-
-const ModelChatTestScreen = () => (
-  <View style={styles.pageContainer}>
-    <Text style={styles.pageTitle}>Model Chat Test Screen</Text>
-    <Text>Functionality for model chat tests will be implemented here.</Text>
-    {/* We will later integrate chat UI and model interaction here */}
-  </View>
-);
 
 type Screen = 'menu' | 'consolidatedTest' | 'modelChatTest';
 
