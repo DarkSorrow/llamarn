@@ -187,7 +187,7 @@ static T json_value(const json & body, const std::string & key, const T & defaul
     }
 }
 
-static std::string gen_chatcmplid() {
+inline std::string gen_chatcmplid() {
     static const std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
     std::random_device rd;
     std::mt19937 generator(rd());
@@ -198,11 +198,11 @@ static std::string gen_chatcmplid() {
     return "chatcmpl-" + result;
 }
 
-static bool ends_with(const std::string & str, const std::string & suffix) {
+inline bool ends_with(const std::string & str, const std::string & suffix) {
     return str.size() >= suffix.size() && 0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix);
 }
 
-static size_t find_partial_stop_string(const std::string &stop, const std::string &text) {
+inline size_t find_partial_stop_string(const std::string &stop, const std::string &text) {
     if (!text.empty() && !stop.empty()) {
         const char text_last_char = text.back();
         for (int64_t char_index = stop.size() - 1; char_index >= 0; char_index--) {
@@ -218,7 +218,7 @@ static size_t find_partial_stop_string(const std::string &stop, const std::strin
     return std::string::npos;
 }
 
-static bool json_is_array_of_numbers(const json & data) {
+inline bool json_is_array_of_numbers(const json & data) {
     if (data.is_array()) {
         for (const auto & e : data) {
             if (!e.is_number_integer()) {
@@ -231,7 +231,7 @@ static bool json_is_array_of_numbers(const json & data) {
 }
 
 // is array having BOTH numbers & strings?
-static bool json_is_array_of_mixed_numbers_strings(const json & data) {
+inline bool json_is_array_of_mixed_numbers_strings(const json & data) {
     bool seen_string = false;
     bool seen_number = false;
     if (data.is_array()) {
@@ -251,7 +251,7 @@ static bool json_is_array_of_mixed_numbers_strings(const json & data) {
  * - only string, example: "string"
  * - mixed string and tokens, example: [12, 34, "string", 56, 78]
  */
-static llama_tokens tokenize_mixed(const llama_vocab * vocab, const json & json_prompt, bool add_special, bool parse_special) {
+inline llama_tokens tokenize_mixed(const llama_vocab * vocab, const json & json_prompt, bool add_special, bool parse_special) {
     // If `add_bos` is true, we only add BOS, when json_prompt is a string,
     // or the first element of the json_prompt array is a string.
     llama_tokens prompt_tokens;
@@ -299,7 +299,7 @@ static llama_tokens tokenize_mixed(const llama_vocab * vocab, const json & json_
  * - "prompt": [[12, 34, 56], [78, 90, 12]]
  * - "prompt": [[12, 34, "string", 56, 78], [12, 34, 56]]
  */
-static std::vector<llama_tokens> tokenize_input_prompts(const llama_vocab * vocab, const json & json_prompt, bool add_special, bool parse_special) {
+inline std::vector<llama_tokens> tokenize_input_prompts(const llama_vocab * vocab, const json & json_prompt, bool add_special, bool parse_special) {
     std::vector<llama_tokens> result;
     if (json_prompt.is_string() || json_is_array_of_mixed_numbers_strings(json_prompt)) {
         // string or mixed
