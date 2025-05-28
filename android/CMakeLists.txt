@@ -39,14 +39,37 @@ add_library(ggml SHARED IMPORTED)
 set_target_properties(ggml PROPERTIES IMPORTED_LOCATION
     ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so)
 
-# CPU backend is essential and always built
-add_library(ggml-cpu SHARED IMPORTED)
-set_target_properties(ggml-cpu PROPERTIES IMPORTED_LOCATION
-    ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so)
+# Note: With GGML_BACKEND_DL, CPU backend is integrated into libggml.so
+# GPU backends are built as separate dynamic libraries
 
 # With GGML_BACKEND_DL, GPU backends are loaded dynamically at runtime
-# So we don't need to link against them directly - they'll be separate .so files
-# that get loaded when available
+# Optional: Add GPU backend libraries if they exist (for debugging/logging)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
+    add_library(ggml-vulkan SHARED IMPORTED)
+    set_target_properties(ggml-vulkan PROPERTIES IMPORTED_LOCATION
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
+    set(VULKAN_BACKEND_AVAILABLE TRUE)
+else()
+    set(VULKAN_BACKEND_AVAILABLE FALSE)
+endif()
+
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
+    add_library(ggml-opencl SHARED IMPORTED)
+    set_target_properties(ggml-opencl PROPERTIES IMPORTED_LOCATION
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
+    set(OPENCL_BACKEND_AVAILABLE TRUE)
+else()
+    set(OPENCL_BACKEND_AVAILABLE FALSE)
+endif()
+
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
+    add_library(OpenCL SHARED IMPORTED)
+    set_target_properties(OpenCL PROPERTIES IMPORTED_LOCATION
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
+    set(OPENCL_LIB_AVAILABLE TRUE)
+else()
+    set(OPENCL_LIB_AVAILABLE FALSE)
+endif()
 
 # Create a minimal common library with only essential files that don't require missing GGML symbols
 add_library(
@@ -112,7 +135,6 @@ target_link_libraries(
     llama       # Link against the imported prebuilt core llama library
     ggml-base   # Link against the imported GGML base library (contains ggml_abort, ggml_time_us, gguf_*)
     ggml        # Link against the imported GGML library (contains ggml_backend_load_all for dynamic loading)
-    ggml-cpu    # Link against the CPU backend (essential for basic functionality)
     jsi
     reactnative
     fbjni
@@ -120,6 +142,22 @@ target_link_libraries(
     log
     dl          # Required for dynamic loading of backend libraries
 )
+
+# Conditionally link GPU backend libraries if they are available
+if(VULKAN_BACKEND_AVAILABLE)
+    target_link_libraries(RNLlamaCpp ggml-vulkan)
+    message(STATUS "Linking against Vulkan backend")
+endif()
+
+if(OPENCL_BACKEND_AVAILABLE)
+    target_link_libraries(RNLlamaCpp ggml-opencl)
+    message(STATUS "Linking against OpenCL backend")
+endif()
+
+if(OPENCL_LIB_AVAILABLE)
+    target_link_libraries(RNLlamaCpp OpenCL)
+    message(STATUS "Linking against OpenCL library")
+endif()
 
 # Expose our headers to consuming targets (for autolinking)
 target_include_directories(RNLlamaCpp INTERFACE

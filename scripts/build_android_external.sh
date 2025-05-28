@@ -684,7 +684,6 @@ build_for_abi() {
     fi
   fi
   
-  # Copy all GGML shared libraries that our CMakeLists.txt expects
   # Copy libggml-base.so
   if [ -f "$BUILD_DIR/bin/libggml-base.so" ]; then
     cp "$BUILD_DIR/bin/libggml-base.so" "$ANDROID_JNI_DIR/$ABI/"
@@ -694,13 +693,13 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml-base.so for $ABI${NC}"
   fi
   
-  # Copy libggml.so
+  # Copy libggml.so (includes CPU backend with GGML_BACKEND_DL)
   if [ -f "$BUILD_DIR/bin/libggml.so" ]; then
     cp "$BUILD_DIR/bin/libggml.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
+    echo -e "${GREEN}Copied libggml.so for $ABI (includes CPU backend)${NC}"
   elif [ -f "$BUILD_DIR/libggml.so" ]; then
     cp "$BUILD_DIR/libggml.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
+    echo -e "${GREEN}Copied libggml.so for $ABI (includes CPU backend)${NC}"
   fi
   
   # With GGML_BACKEND_DL, backends are built as separate dynamic libraries
