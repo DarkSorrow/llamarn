@@ -1,0 +1,341 @@
+name: Android GPU Backend Test
+
+on:
+  push:
+    branches: [ gpu ]
+  pull_request:
+    branches: [ gpu ]
+  workflow_dispatch:
+
+jobs:
+  # First job: Setup and verify the repository
+  setup:
+    name: Setup Repository
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # We'll handle submodules manually
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Check llama.cpp submodule
+        id: check-submodule
+        run: |
+          # Check if llama.cpp directory already exists and is at the right version
+          if [ -d "cpp/llama.cpp" ] && [ -f "cpp/llama.cpp/include/llama.h" ]; then
+            echo "Submodule exists, checking status..."
+            cd cpp/llama.cpp
+            git fetch
+            LOCAL_COMMIT=$(git rev-parse HEAD)
+            SOURCE_REPO_LLAMA="https://github.com/ggerganov/llama.cpp.git"
+            SOURCE_BRANCH_LLAMA="master"
+            REMOTE_COMMIT=$(git ls-remote $SOURCE_REPO_LLAMA $SOURCE_BRANCH_LLAMA | awk '{print $1}')
+            
+            if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
+              echo "Submodule is up to date"
+              echo "is_updated=true" >> $GITHUB_OUTPUT
+            else
+              echo "Submodule needs update"
+              echo "is_updated=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Submodule not initialized"
+            echo "is_updated=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Initialize or update submodules
+        if: steps.check-submodule.outputs.is_updated != 'true'
+        run: scripts/setupLlamaCpp.sh init
+      
+      - name: Install Dependencies
+        run: npm ci
+      
+      - name: Get version from package.json
+        id: get-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+      
+      - name: Upload Repository State
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-state
+          path: .
+          retention-days: 1
+  
+  # Android GPU backend build test
+  android-gpu-build:
+    name: Android GPU Backend Build Test
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+      
+      - name: Restore file permissions
+        run: |
+          chmod +x scripts/*.sh
+          find android -name "*.sh" -exec chmod +x {} \; || true
+          find android -name "gradlew" -exec chmod +x {} \; || true
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
+          accept-android-sdk-licenses: true
+      
+      # Cache NDK and prebuilt GPU libraries
+      - name: Cache NDK and GPU Libraries
+        uses: actions/cache@v3
+        id: cache-android-libs
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+            prebuilt/gpu
+            prebuilt/libs/external/vulkan
+            prebuilt/libs/external/opencl
+          key: android-ndk-gpu-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
+          restore-keys: |
+            android-ndk-gpu-
+      
+      - name: Install Vulkan Headers
+        run: |
+          # Install basic Vulkan packages
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev vulkan-tools
+          
+          # Get the complete Vulkan headers that the NDK doesn't have
+          VULKAN_VERSION=1.3.292
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          echo "Installing complete Vulkan headers..."
+          wget -q https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${VULKAN_VERSION}.zip -O vulkan-headers.zip
+          unzip -q vulkan-headers.zip
+          
+          # Copy the complete headers structure (vulkan + vk_video) to NDK include directory
+          sudo cp -r ./Vulkan-Headers-${VULKAN_VERSION}/include/* ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/
+          
+          # Clean up
+          rm -rf vulkan-headers.zip Vulkan-Headers-${VULKAN_VERSION}
+          
+          echo "Vulkan headers installed successfully!"
+          echo "Checking for vulkan.hpp:"
+          find ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include -name "vulkan.hpp" || echo "vulkan.hpp not found"
+          echo "Checking for vk_video directory:"
+          ls -la ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/vk_video/ || echo "vk_video directory not found"
+      
+      - name: Build GPU Libraries
+        run: |
+          # Get Android NDK path
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          # Skip GPU backend build if we have a cache hit
+          if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Using cached GPU libraries"
+          else
+            # First build the GPU backend libraries
+            echo "Building Android GPU backend libraries..."
+            cd scripts
+            export GGML_VK_DISABLE_COOPMAT=1
+            export GGML_VK_DISABLE_COOPMAT2=1
+            bash build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH"
+            cd ..
+          fi
+          
+          # Verify GPU libraries were built in prebuilt directory
+          if [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Successfully built GPU libraries for arm64-v8a"
+            ls -la prebuilt/gpu/arm64-v8a/
+          else
+            echo "❌ No GPU libraries found for arm64-v8a, build failed"
+            exit 1
+          fi
+          
+          # Check for Vulkan environment files
+          if [ -f "prebuilt/gpu/arm64-v8a/.vulkan_env" ]; then
+            echo "✅ Vulkan environment file created"
+            cat prebuilt/gpu/arm64-v8a/.vulkan_env
+          else
+            echo "⚠️ No Vulkan environment file found"
+          fi
+
+      - name: Build Final Android Libraries with GPU Support
+        run: |
+          # Get Android NDK path
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          # Get glslc path
+          GLSLC_PATH="$ANDROID_HOME/ndk/27.2.12479018/shader-tools/linux-x86_64/glslc"
+          
+          # Set up environment for the build process
+          export VULKAN_SDK=/usr
+          export VULKAN_INCLUDE_DIR=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
+          export GGML_VK_DISABLE_COOPMAT=1
+          export GGML_VK_DISABLE_COOPMAT2=1
+          echo "Using Vulkan SDK at $VULKAN_SDK"
+          echo "Using Vulkan headers from NDK at $VULKAN_INCLUDE_DIR"
+          echo "Disabled cooperative matrix support to avoid shader compilation issues"
+          
+          # Build the final Android libraries with GPU support
+          echo "Building Android libraries with full GPU support..."
+          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --glslc-path="$GLSLC_PATH" --platform=android
+      
+      - name: Verify GPU Backend Libraries
+        run: |
+          echo "=== Verifying GPU Backend Build Results ==="
+          
+          # Check if main libraries exist
+          if [ ! -f "android/src/main/jniLibs/arm64-v8a/libllama.so" ] || 
+             [ ! -f "android/src/main/jniLibs/x86_64/libllama.so" ]; then
+            echo "❌ Main libraries are missing"
+            exit 1
+          fi
+          
+          # Check file sizes to make sure they're not empty
+          arm64_size=$(stat -c%s "android/src/main/jniLibs/arm64-v8a/libllama.so" 2>/dev/null || 
+                      stat -f%z "android/src/main/jniLibs/arm64-v8a/libllama.so")
+          x86_64_size=$(stat -c%s "android/src/main/jniLibs/x86_64/libllama.so" 2>/dev/null || 
+                       stat -f%z "android/src/main/jniLibs/x86_64/libllama.so")
+          
+          if [ "$arm64_size" -lt 1000000 ] || [ "$x86_64_size" -lt 1000000 ]; then
+            echo "❌ Libraries are too small, build likely failed"
+            exit 1
+          fi
+          
+          echo "✅ Main library validation passed"
+          echo "arm64-v8a libllama.so size: $arm64_size bytes"
+          echo "x86_64 libllama.so size: $x86_64_size bytes"
+          
+          # Check for GPU backend libraries
+          echo ""
+          echo "=== GPU Backend Libraries Check ==="
+          for ABI in arm64-v8a x86_64; do
+            echo "Checking $ABI:"
+            
+            # Check for OpenCL
+            if [ -f "android/src/main/jniLibs/$ABI/libOpenCL.so" ]; then
+              echo "  ✅ OpenCL library found"
+              ls -la "android/src/main/jniLibs/$ABI/libOpenCL.so"
+            else
+              echo "  ⚠️ OpenCL library not found"
+            fi
+            
+            # Check for dynamic GPU backends
+            if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
+              echo "  ✅ Vulkan backend library found"
+              ls -la "android/src/main/jniLibs/$ABI/libggml-vulkan.so"
+            else
+              echo "  ⚠️ Vulkan backend library not found"
+            fi
+            
+            if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
+              echo "  ✅ OpenCL backend library found"
+              ls -la "android/src/main/jniLibs/$ABI/libggml-opencl.so"
+            else
+              echo "  ⚠️ OpenCL backend library not found"
+            fi
+            
+            if [ -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
+              echo "  ✅ CPU backend library found"
+              ls -la "android/src/main/jniLibs/$ABI/libggml-cpu.so"
+            else
+              echo "  ⚠️ CPU backend library not found"
+            fi
+            
+            # Check for flag files
+            if [ -f "android/src/main/jniLibs/$ABI/.vulkan_enabled" ]; then
+              echo "  ✅ Vulkan enabled flag found"
+            else
+              echo "  ⚠️ Vulkan enabled flag not found"
+            fi
+            
+            if [ -f "android/src/main/jniLibs/$ABI/.opencl_enabled" ]; then
+              echo "  ✅ OpenCL enabled flag found"
+            else
+              echo "  ⚠️ OpenCL enabled flag not found"
+            fi
+            
+            echo "  All files in $ABI:"
+            ls -la "android/src/main/jniLibs/$ABI/"
+            echo ""
+          done
+
+      - name: Upload Android GPU Libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-gpu-libs
+          path: android/src/main/jniLibs/
+          
+      - name: Upload GPU Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-build-artifacts
+          path: prebuilt/gpu/
+  
+  # Run basic JS/TS tests
+  test-js:
+    name: Test JavaScript/TypeScript
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Repository
+        uses: actions/download-artifact@v4
+        with:
+          name: repo-state
+          path: .
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run JS/TS tests
+        run: npm test
+  
+  # Job to report successful build and tests
+  build-success:
+    name: Android GPU Build Test Success
+    needs: [setup, android-gpu-build, test-js]
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: Check Status
+        run: |
+          if [ "${{ needs.setup.result }}" = "success" ] && 
+             [ "${{ needs.android-gpu-build.result }}" = "success" ] && 
+             [ "${{ needs.test-js.result }}" = "success" ]; then
+            echo "✅ All Android GPU build tests passed!"
+            echo "Setup: ${{ needs.setup.result }}"
+            echo "Android GPU Build: ${{ needs.android-gpu-build.result }}"
+            echo "JS Tests: ${{ needs.test-js.result }}"
+            exit 0
+          else
+            echo "❌ One or more steps failed!"
+            echo "Setup: ${{ needs.setup.result }}"
+            echo "Android GPU Build: ${{ needs.android-gpu-build.result }}"
+            echo "JS Tests: ${{ needs.test-js.result }}"
+            exit 1
+          fi

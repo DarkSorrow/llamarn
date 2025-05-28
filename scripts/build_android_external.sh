@@ -352,69 +352,28 @@ VULKAN_AVAILABLE=false
 VULKAN_SDK_PATH=""
 GLSLC_PATH="$CUSTOM_GLSLC_PATH"
 
-# Check for prebuilt or system Vulkan
-if [ "$USE_PREBUILT_GPU" = true ]; then
-  # First check the prebuilt/gpu directory (from build_android_gpu_backend.sh)
-  VULKAN_FLAG_COUNT=0
-  for ABI in "${ABIS[@]}"; do
-    if [ -f "$PREBUILT_GPU_DIR/$ABI/.vulkan_enabled" ]; then
-      ((VULKAN_FLAG_COUNT++))
-    fi
-  done
-  
-  if [ "$VULKAN_FLAG_COUNT" -eq "${#ABIS[@]}" ] && [ -d "$VULKAN_INCLUDE_DIR" ]; then
-    VULKAN_AVAILABLE=true
-    echo -e "${GREEN}Found Vulkan support flags in prebuilt/gpu directory${NC}"
-    
-    # Check for glslc in the prebuilt GPU tools directory
-    if [ -z "$GLSLC_PATH" ] && [ -f "$PREBUILT_GPU_DIR/tools/glslc" ]; then
-      GLSLC_PATH="$PREBUILT_GPU_DIR/tools/glslc"
-      echo -e "${GREEN}Found glslc compiler in prebuilt GPU tools: $GLSLC_PATH${NC}"
-    fi
-  elif [ -d "$VULKAN_INCLUDE_DIR" ]; then
-    VULKAN_AVAILABLE=true
-    echo -e "${GREEN}Found prebuilt Vulkan headers${NC}"
+# Define the host platform dir first (needed for Vulkan detection)
+HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
+
+# Since NDK 23+, Vulkan is included in the NDK, so we can always enable it
+VULKAN_AVAILABLE=true
+echo -e "${GREEN}Using NDK built-in Vulkan support (NDK 23+)${NC}"
+
+# Look for glslc in NDK if not specified by user
+if [ -z "$GLSLC_PATH" ]; then
+  NDK_GLSLC="$NDK_PATH/shader-tools/$HOST_TAG/glslc"
+  if [ -f "$NDK_GLSLC" ]; then
+    GLSLC_PATH="$NDK_GLSLC"
+    echo -e "${GREEN}Found glslc compiler in NDK: $GLSLC_PATH${NC}"
   else
-    echo -e "${YELLOW}Prebuilt Vulkan headers not found${NC}"
-  fi
-  
-  # Look for glslc in NDK if not specified by user and not found in prebuilt
-  if [ -z "$GLSLC_PATH" ]; then
-    NDK_GLSLC="$NDK_PATH/shader-tools/$HOST_TAG/glslc"
-    if [ -f "$NDK_GLSLC" ]; then
-      GLSLC_PATH="$NDK_GLSLC"
-      echo -e "${GREEN}Found glslc compiler in NDK: $GLSLC_PATH${NC}"
+    # Look for glslc in system path
+    SYS_GLSLC=$(which glslc 2>/dev/null || echo "")
+    if [ -n "$SYS_GLSLC" ]; then
+      GLSLC_PATH="$SYS_GLSLC"
+      echo -e "${GREEN}Found glslc compiler in system PATH: $GLSLC_PATH${NC}"
     else
-      # Look for glslc in system path
-      SYS_GLSLC=$(which glslc 2>/dev/null || echo "")
-      if [ -n "$SYS_GLSLC" ]; then
-        GLSLC_PATH="$SYS_GLSLC"
-        echo -e "${GREEN}Found glslc compiler in system PATH: $GLSLC_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: glslc compiler not found, this may cause shader compilation issues${NC}"
-      fi
+      echo -e "${YELLOW}Warning: glslc compiler not found, this may cause shader compilation issues${NC}"
     fi
-  fi
-else
-  echo -e "${YELLOW}Prebuilt Vulkan headers not found${NC}"
-  
-  # Check for system Vulkan SDK
-  if [ -n "$VULKAN_SDK" ]; then
-    VULKAN_SDK_PATH="$VULKAN_SDK"
-    VULKAN_AVAILABLE=true
-    echo -e "${GREEN}Found system Vulkan SDK at $VULKAN_SDK_PATH${NC}"
-    
-    # Use system glslc if available and not specified by user
-    if [ -z "$GLSLC_PATH" ]; then
-      if [ -f "$VULKAN_SDK_PATH/bin/glslc" ]; then
-        GLSLC_PATH="$VULKAN_SDK_PATH/bin/glslc"
-        echo -e "${GREEN}Found glslc compiler in Vulkan SDK: $GLSLC_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: glslc compiler not found in Vulkan SDK${NC}"
-      fi
-    fi
-  else
-    echo -e "${YELLOW}Vulkan SDK not found. Set VULKAN_SDK environment variable if needed.${NC}"
   fi
 fi
 
@@ -434,6 +393,9 @@ CMAKE_ARGS=(
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
+  -DGGML_BACKEND_DL=ON  # Enable dynamic backend loading for runtime GPU detection
+  -DGGML_CPU=ON  # Explicitly enable CPU backend (essential)
+  -DGGML_CPU_ALL_VARIANTS=ON  # Build optimized CPU variants for different architectures
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -468,10 +430,12 @@ if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
     -DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR"
     -DCL_LIBRARY="$OPENCL_LIB_DIR"
   )
+  echo -e "${GREEN}OpenCL backend will be built as dynamic library${NC}"
 else
   CMAKE_ARGS+=(
     -DGGML_OPENCL=OFF
   )
+  echo -e "${YELLOW}OpenCL backend disabled${NC}"
 fi
 
 # Configure Vulkan flags if available and enabled
@@ -480,26 +444,117 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     -DGGML_VULKAN=ON
   )
   
-  # Add Vulkan include directory if available from prebuilt
-  if [ -d "$VULKAN_INCLUDE_DIR" ]; then
-    CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_DIR")
+  # Disable cooperative matrix features if environment variables are set
+  if [ -n "$GGML_VK_DISABLE_COOPMAT" ]; then
+    export GGML_VK_DISABLE_COOPMAT="$GGML_VK_DISABLE_COOPMAT"
+    echo -e "${YELLOW}Cooperative matrix support disabled via environment variable${NC}"
   fi
   
-  # Add glslc path if available
-  if [ -n "$GLSLC_PATH" ]; then
-    CMAKE_ARGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
+  if [ -n "$GGML_VK_DISABLE_COOPMAT2" ]; then
+    export GGML_VK_DISABLE_COOPMAT2="$GGML_VK_DISABLE_COOPMAT2"
+    echo -e "${YELLOW}Cooperative matrix 2 support disabled via environment variable${NC}"
+  fi
+  
+  # Check if we have Vulkan environment info from build_android_gpu_backend.sh
+  VULKAN_ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
+  if [ -f "$VULKAN_ENV_FILE" ]; then
+    echo -e "${GREEN}Loading Vulkan environment from: $VULKAN_ENV_FILE${NC}"
+    source "$VULKAN_ENV_FILE"
     
-    # Verify the glslc executable is usable
-    if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
-      echo -e "${GREEN}Using glslc from: $GLSLC_PATH${NC}"
+    # Use the environment variables from the file
+    if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
+      CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
+      echo -e "${GREEN}Using Vulkan library from env: $VULKAN_LIBRARY_PATH${NC}"
+    fi
+    
+    if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ]; then
+      # Check if this include path has vulkan.hpp
+      if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+        CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+        echo -e "${GREEN}Using Vulkan include path from env: $VULKAN_INCLUDE_PATH${NC}"
+      else
+        # NDK include path doesn't have vulkan.hpp, check for system headers
+        if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
+          echo -e "${YELLOW}NDK headers missing vulkan.hpp, using system headers for C++${NC}"
+          CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
+          # Also add NDK headers as additional include for vulkan.h
+          CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-I$VULKAN_INCLUDE_PATH -Wno-deprecated-declarations")
+          echo -e "${GREEN}Using system Vulkan C++ headers: /usr/include${NC}"
+          echo -e "${GREEN}Adding NDK Vulkan C headers: $VULKAN_INCLUDE_PATH${NC}"
+        else
+          CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+          echo -e "${YELLOW}Warning: Using NDK headers without vulkan.hpp${NC}"
+        fi
+      fi
+    fi
+    
+    if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
+      CMAKE_ARGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_EXECUTABLE")
+      echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
+    fi
+  else
+    # Fallback to the original logic
+    echo -e "${YELLOW}No Vulkan environment file found, using fallback detection${NC}"
+    
+    # Check for system Vulkan headers first (they're more likely to have vulkan.hpp)
+    if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
+      echo -e "${GREEN}Found system Vulkan C++ headers, using them${NC}"
+      CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
+      
+      # Set architecture-specific Vulkan library path from NDK for linking
+      if [ "$ABI" = "arm64-v8a" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86_64" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      fi
+      
+      # Add Vulkan library path if it exists
+      if [ -f "$VULKAN_LIB_PATH" ]; then
+        CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+        echo -e "${GREEN}Using NDK Vulkan library for linking: $VULKAN_LIB_PATH${NC}"
+      fi
     else
-      echo -e "${YELLOW}Warning: glslc at $GLSLC_PATH is not executable or doesn't exist${NC}"
+      # Fall back to NDK headers
+      echo -e "${YELLOW}No system Vulkan headers found, trying NDK headers${NC}"
+      
+      # Set architecture-specific Vulkan library path from NDK
+      if [ "$ABI" = "arm64-v8a" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86_64" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      fi
+      
+      # Add Vulkan library path if it exists
+      if [ -f "$VULKAN_LIB_PATH" ]; then
+        CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+        echo -e "${GREEN}Using NDK Vulkan library: $VULKAN_LIB_PATH${NC}"
+      else
+        echo -e "${YELLOW}Warning: NDK Vulkan library not found at $VULKAN_LIB_PATH${NC}"
+      fi
+      
+      # Add Vulkan include directory (NDK headers)
+      VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
+      CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+    fi
+    
+    # Add glslc path if available
+    if [ -n "$GLSLC_PATH" ]; then
+      CMAKE_ARGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
+      
+      # Verify the glslc executable is usable
+      if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
+        echo -e "${GREEN}Using glslc from: $GLSLC_PATH${NC}"
+      else
+        echo -e "${YELLOW}Warning: glslc at $GLSLC_PATH is not executable or doesn't exist${NC}"
+      fi
     fi
   fi
+  echo -e "${GREEN}Vulkan backend will be built as dynamic library${NC}"
 else
   CMAKE_ARGS+=(
     -DGGML_VULKAN=OFF
   )
+  echo -e "${YELLOW}Vulkan backend disabled${NC}"
 fi
 
 # Define ABIs to build (only 64-bit architectures)
@@ -648,28 +703,23 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
   fi
   
-  # Copy libggml-cpu.so
-  if [ -f "$BUILD_DIR/bin/libggml-cpu.so" ]; then
-    cp "$BUILD_DIR/bin/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
-  elif [ -f "$BUILD_DIR/libggml-cpu.so" ]; then
-    cp "$BUILD_DIR/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
-  fi
+  # With GGML_BACKEND_DL, backends are built as separate dynamic libraries
+  # Copy all available backend libraries (they'll be loaded dynamically at runtime)
+  for backend_lib in libggml-cpu.so libggml-opencl.so libggml-vulkan.so; do
+    if [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
+      cp "$BUILD_DIR/bin/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+    elif [ -f "$BUILD_DIR/$backend_lib" ]; then
+      cp "$BUILD_DIR/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+    fi
+  done
   
   # Copy static libraries if they exist (for fallback)
   for lib in libggml.a libllama.a; do
     if [ -f "$BUILD_DIR/$lib" ]; then
       cp "$BUILD_DIR/$lib" "$ANDROID_JNI_DIR/$ABI/"
       echo -e "${GREEN}Copied $lib for $ABI${NC}"
-    fi
-  done
-  
-  # Copy GPU-specific libraries if they exist
-  for gpu_lib in libggml-cuda.so libggml-opencl.so libggml-vulkan.so; do
-    if [ -f "$BUILD_DIR/$gpu_lib" ]; then
-      cp "$BUILD_DIR/$gpu_lib" "$ANDROID_JNI_DIR/$ABI/"
-      echo -e "${GREEN}Copied $gpu_lib for $ABI${NC}"
     fi
   done
   
@@ -838,6 +888,21 @@ if [ "$BUILD_SUCCESS" = true ]; then
       cp -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
       touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
     fi
+    
+    # Also check for and copy dynamic backend libraries from prebuilt/gpu directory
+    for backend_lib in libggml-vulkan.so libggml-opencl.so libggml-cpu.so; do
+      if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
+        echo -e "${GREEN}Found $backend_lib for $ABI in prebuilt/gpu, ensuring it's copied${NC}"
+        cp -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
+        
+        # Create appropriate flag files
+        if [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+          touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+        elif [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+          touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+        fi
+      fi
+    done
   done
   
   # Final verification

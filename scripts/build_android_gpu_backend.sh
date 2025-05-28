@@ -333,6 +333,62 @@ fi
 if [ "$BUILD_VULKAN" = true ]; then
   echo -e "${GREEN}=== Building Vulkan libraries ===${NC}"
   
+  # Check for Vulkan headers in NDK first
+  VULKAN_INCLUDE_PATH=""
+  
+  # NDK 23+ includes Vulkan headers in the sysroot
+  NDK_VULKAN_INCLUDE="$HOST_PLATFORM_DIR/sysroot/usr/include"
+  if [ -f "$NDK_VULKAN_INCLUDE/vulkan/vulkan.h" ]; then
+    VULKAN_INCLUDE_PATH="$NDK_VULKAN_INCLUDE"
+    echo -e "${GREEN}Found Vulkan headers in NDK sysroot: $VULKAN_INCLUDE_PATH${NC}"
+  else
+    # Try alternative NDK locations
+    ALT_VULKAN_INCLUDE="$NDK_PATH/sources/third_party/vulkan/src/include"
+    if [ -f "$ALT_VULKAN_INCLUDE/vulkan/vulkan.h" ]; then
+      VULKAN_INCLUDE_PATH="$ALT_VULKAN_INCLUDE"
+      echo -e "${GREEN}Found Vulkan headers in NDK third_party: $VULKAN_INCLUDE_PATH${NC}"
+    else
+      echo -e "${YELLOW}Warning: Vulkan headers not found in expected NDK locations${NC}"
+      echo -e "${YELLOW}Checked: $NDK_VULKAN_INCLUDE/vulkan/vulkan.h${NC}"
+      echo -e "${YELLOW}Checked: $ALT_VULKAN_INCLUDE/vulkan/vulkan.h${NC}"
+      
+      # List what's actually available
+      echo -e "${YELLOW}Available include directories in NDK:${NC}"
+      find "$NDK_PATH" -name "vulkan.h" 2>/dev/null | head -5
+      find "$HOST_PLATFORM_DIR/sysroot/usr/include" -name "vulkan*" -type d 2>/dev/null | head -5
+    fi
+  fi
+  
+  # Check for vulkan.hpp (C++ headers)
+  if [ -n "$VULKAN_INCLUDE_PATH" ]; then
+    if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+      echo -e "${GREEN}Found Vulkan C++ headers: $VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp${NC}"
+    else
+      echo -e "${YELLOW}Warning: Vulkan C++ headers (vulkan.hpp) not found in NDK${NC}"
+      echo -e "${YELLOW}This may cause build issues with ggml-vulkan.cpp${NC}"
+      
+      # Check if we can find vulkan.hpp anywhere in the NDK
+      VULKAN_HPP_LOCATION=$(find "$NDK_PATH" -name "vulkan.hpp" 2>/dev/null | head -1)
+      if [ -n "$VULKAN_HPP_LOCATION" ]; then
+        VULKAN_HPP_DIR=$(dirname "$VULKAN_HPP_LOCATION")
+        VULKAN_INCLUDE_PATH=$(dirname "$VULKAN_HPP_DIR")
+        echo -e "${GREEN}Found vulkan.hpp at: $VULKAN_HPP_LOCATION${NC}"
+        echo -e "${GREEN}Updated Vulkan include path to: $VULKAN_INCLUDE_PATH${NC}"
+      else
+        # Check for system Vulkan headers (from Vulkan SDK)
+        if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
+          echo -e "${GREEN}Found system Vulkan C++ headers: /usr/include/vulkan/vulkan.hpp${NC}"
+          echo -e "${GREEN}Will use system headers for C++ compilation${NC}"
+          VULKAN_INCLUDE_PATH="/usr/include"
+        else
+          echo -e "${RED}Error: vulkan.hpp not found in NDK or system${NC}"
+          echo -e "${RED}Please install Vulkan SDK or ensure NDK has C++ headers${NC}"
+          VULKAN_AVAILABLE=false
+        fi
+      fi
+    fi
+  fi
+  
   # Get Vulkan Headers
   if [ ! -d "$VULKAN_HEADERS_DIR" ]; then
     echo -e "${YELLOW}Cloning Vulkan-Headers...${NC}"
@@ -344,27 +400,6 @@ if [ "$BUILD_VULKAN" = true ]; then
   # Install Vulkan headers to our prebuilt dir
   mkdir -p "$VULKAN_INCLUDE_DIR"
   cp -r "$VULKAN_HEADERS_DIR/include/"* "$VULKAN_INCLUDE_DIR/"
-  
-  # The NDK already has Vulkan libraries, so we verify they're available
-  # and print information about them
-  for ABI in "${ABIS[@]}"; do
-    if [ "$ABI" = "arm64-v8a" ]; then
-      ARCH="aarch64"
-    elif [ "$ABI" = "x86_64" ]; then
-      ARCH="x86_64"
-    fi
-    
-    # Check if Vulkan library exists in NDK
-    NDK_VULKAN_LIB="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-    
-    if [ -f "$NDK_VULKAN_LIB" ]; then
-      echo -e "${GREEN}Found Vulkan library in NDK for $ABI: $NDK_VULKAN_LIB${NC}"
-    else
-      echo -e "${YELLOW}Warning: Vulkan library not found in NDK for $ABI${NC}"
-      echo -e "${YELLOW}Expected at: $NDK_VULKAN_LIB${NC}"
-      echo -e "${YELLOW}Android app will need to include Vulkan library from device${NC}"
-    fi
-  done
   
   # Install glslc compiler to our PATH if it's available
   GLSLC_PATH=""
@@ -382,48 +417,45 @@ if [ "$BUILD_VULKAN" = true ]; then
       echo -e "${GREEN}Found glslc compiler in system PATH: $GLSLC_PATH${NC}"
     else
       echo -e "${YELLOW}Warning: glslc compiler not found in NDK or system PATH${NC}"
+      echo -e "${YELLOW}Expected NDK location: $NDK_GLSLC${NC}"
       echo -e "${YELLOW}This might cause issues when building apps that use Vulkan shaders${NC}"
     fi
   fi
   
-  # If we found glslc, test if it supports the extensions we need
-  if [ -n "$GLSLC_PATH" ]; then
-    # Create a temporary shader file to test capabilities
-    TMP_SHADER_FILE=$(mktemp)
-    echo -e "#version 450\n#extension GL_KHR_cooperative_matrix : enable\nvoid main() {}" > "$TMP_SHADER_FILE"
+  # Verify NDK Vulkan libraries and create environment info
+  for ABI in "${ABIS[@]}"; do
+    if [ "$ABI" = "arm64-v8a" ]; then
+      ARCH="aarch64"
+    elif [ "$ABI" = "x86_64" ]; then
+      ARCH="x86_64"
+    fi
     
-    # Test KHR_cooperative_matrix support
-    $GLSLC_PATH -o /dev/null -fshader-stage=compute --target-env=vulkan1.3 "$TMP_SHADER_FILE" 2>/dev/null
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}glslc supports GL_KHR_cooperative_matrix extension${NC}"
+    # Check if Vulkan library exists in NDK
+    NDK_VULKAN_LIB="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+    
+    if [ -f "$NDK_VULKAN_LIB" ]; then
+      echo -e "${GREEN}Found Vulkan library in NDK for $ABI: $NDK_VULKAN_LIB${NC}"
       
-      # Create Vulkan flag files for each ABI
-      for ABI in "${ABIS[@]}"; do
-        touch "$PREBUILT_GPU_DIR/$ABI/.vulkan_enabled"
-        
-        # Copy glslc to the GPU prebuilt directory for reference
-        if [ "$HOST_TAG" = "linux-x86_64" ]; then
-          # Only copy for Linux as it will be used by the CI workflow
-          mkdir -p "$PREBUILT_GPU_DIR/tools"
-          cp "$GLSLC_PATH" "$PREBUILT_GPU_DIR/tools/glslc"
-        fi
-      done
+      # Create environment info file for the external build script
+      ENV_INFO_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
+      cat > "$ENV_INFO_FILE" << EOF
+# Vulkan environment for $ABI
+VULKAN_LIBRARY_PATH=$NDK_VULKAN_LIB
+VULKAN_INCLUDE_PATH=$VULKAN_INCLUDE_PATH
+GLSLC_EXECUTABLE=$GLSLC_PATH
+ANDROID_MIN_SDK=$ANDROID_MIN_SDK
+HOST_PLATFORM_DIR=$HOST_PLATFORM_DIR
+EOF
+      echo -e "${GREEN}Created Vulkan environment file: $ENV_INFO_FILE${NC}"
+      echo -e "${GREEN}  Vulkan library: $NDK_VULKAN_LIB${NC}"
+      echo -e "${GREEN}  Vulkan include: $VULKAN_INCLUDE_PATH${NC}"
+      echo -e "${GREEN}  glslc: $GLSLC_PATH${NC}"
     else
-      echo -e "${YELLOW}Warning: glslc does not support GL_KHR_cooperative_matrix extension${NC}"
+      echo -e "${YELLOW}Warning: Vulkan library not found in NDK for $ABI${NC}"
+      echo -e "${YELLOW}Expected at: $NDK_VULKAN_LIB${NC}"
+      echo -e "${YELLOW}Android app will need to include Vulkan library from device${NC}"
     fi
-    
-    # Test NV_cooperative_matrix2 support
-    echo -e "#version 450\n#extension GL_NV_cooperative_matrix2 : enable\nvoid main() {}" > "$TMP_SHADER_FILE"
-    $GLSLC_PATH -o /dev/null -fshader-stage=compute --target-env=vulkan1.3 "$TMP_SHADER_FILE" 2>/dev/null
-    if [ $? -eq 0 ]; then
-      echo -e "${GREEN}glslc supports GL_NV_cooperative_matrix2 extension${NC}"
-    else
-      echo -e "${YELLOW}Warning: glslc does not support GL_NV_cooperative_matrix2 extension${NC}"
-    fi
-    
-    # Clean up
-    rm "$TMP_SHADER_FILE"
-  fi
+  done
 else
   echo -e "${YELLOW}Vulkan support is disabled${NC}"
   

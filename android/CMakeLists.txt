@@ -18,6 +18,14 @@ if(NOT EXISTS "${LLAMA_CPP_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "llama.cpp submodule not found at ${LLAMA_CPP_DIR}. Please run 'git submodule update --init --recursive'")
 endif()
 
+# Find Vulkan (available in NDK 23+)
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+    message(STATUS "Found Vulkan: ${Vulkan_LIBRARIES}")
+else()
+    message(STATUS "Vulkan not found - GPU acceleration will be limited")
+endif()
+
 # Add the prebuilt libraries as IMPORTED (64-bit architectures only: arm64-v8a, x86_64)
 add_library(llama SHARED IMPORTED)
 set_target_properties(llama PROPERTIES IMPORTED_LOCATION
@@ -31,9 +39,14 @@ add_library(ggml SHARED IMPORTED)
 set_target_properties(ggml PROPERTIES IMPORTED_LOCATION
     ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so)
 
+# CPU backend is essential and always built
 add_library(ggml-cpu SHARED IMPORTED)
 set_target_properties(ggml-cpu PROPERTIES IMPORTED_LOCATION
     ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so)
+
+# With GGML_BACKEND_DL, GPU backends are loaded dynamically at runtime
+# So we don't need to link against them directly - they'll be separate .so files
+# that get loaded when available
 
 # Create a minimal common library with only essential files that don't require missing GGML symbols
 add_library(
@@ -62,9 +75,12 @@ add_library(
 target_compile_options(common PRIVATE -Wno-unused-function)
 target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 
-# Explicitly disable Vulkan until libggml-vulkan.so is properly built
-target_compile_definitions(common PRIVATE -DGGML_USE_VULKAN=0)
-target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_USE_VULKAN=0)
+# Enable dynamic backend loading to match external build configuration
+target_compile_definitions(common PRIVATE -DGGML_BACKEND_DL)
+target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_BACKEND_DL)
+
+# With GGML_BACKEND_DL, GPU backends are loaded dynamically, so we don't need to disable them
+# The runtime will detect and load available backends automatically
 
 # Include directories
 target_include_directories(common PRIVATE
@@ -93,15 +109,16 @@ target_link_libraries(
     RNLlamaCpp
     common
     react_codegen_RNLlamaCppSpec  # Link against the generated TurboModule code
-    llama       # Link against the imported prebuilt core llama library (now named llama)
+    llama       # Link against the imported prebuilt core llama library
     ggml-base   # Link against the imported GGML base library (contains ggml_abort, ggml_time_us, gguf_*)
-    ggml        # Link against the imported GGML library (contains ggml_backend_load_all)
-    ggml-cpu    # Link against the imported GGML CPU library
+    ggml        # Link against the imported GGML library (contains ggml_backend_load_all for dynamic loading)
+    ggml-cpu    # Link against the CPU backend (essential for basic functionality)
     jsi
     reactnative
     fbjni
     android
     log
+    dl          # Required for dynamic loading of backend libraries
 )
 
 # Expose our headers to consuming targets (for autolinking)
