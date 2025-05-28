@@ -62,6 +62,10 @@ add_library(
 target_compile_options(common PRIVATE -Wno-unused-function)
 target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 
+# Explicitly disable Vulkan until libggml-vulkan.so is properly built
+target_compile_definitions(common PRIVATE -DGGML_USE_VULKAN=0)
+target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_USE_VULKAN=0)
+
 # Include directories
 target_include_directories(common PRIVATE
     ${CPP_DIR}
