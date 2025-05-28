@@ -393,8 +393,13 @@ CMAKE_ARGS=(
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
-  -DGGML_BACKEND_DL=ON  # Enable dynamic backend loading for runtime GPU detection
-  -DGGML_CPU=ON  # Explicitly enable CPU backend (essential)
+  -DGGML_BACKEND_DL=OFF  # Static libraries - CPU backend built into main libraries
+  -DGGML_CPU=ON  # CPU backend statically built into libggml.so and libllama.so
+  -DGGML_METAL=OFF  # Disable Metal (Apple GPU) for Android
+  -DGGML_VULKAN=OFF  # Static build - GPU backends added separately later
+  -DGGML_CUDA=OFF   # Static build - GPU backends added separately later
+  -DGGML_HIP=OFF    # Static build - GPU backends added separately later
+  -DGGML_OPENCL=OFF # Static build - GPU backends added separately later
 )
 
 # Check if llama.cpp repository exists and is properly set up

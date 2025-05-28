@@ -74,9 +74,21 @@ add_library(
 target_compile_options(common PRIVATE -Wno-unused-function)
 target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 
-# Enable dynamic backend loading for GPU acceleration
-target_compile_definitions(common PRIVATE -DGGML_BACKEND_DL)
-target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_BACKEND_DL)
+# Hybrid backend approach: CPU static (built into main libraries), GPU dynamic
+# CPU backend will be statically linked into main libraries (libggml.so, libllama.so)
+# GPU backends (OpenCL, Vulkan) will be dynamically loaded at runtime
+target_compile_definitions(common PRIVATE 
+    -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
+    -DGGML_CPU=1         # CPU backend statically built into main libraries
+    -DGGML_VULKAN=1      # Enable Vulkan backend support for dynamic loading
+    -DGGML_OPENCL=1      # Enable OpenCL backend support for dynamic loading
+)
+target_compile_definitions(RNLlamaCpp PRIVATE 
+    -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
+    -DGGML_CPU=1         # CPU backend statically built into main libraries
+    -DGGML_VULKAN=1      # Enable Vulkan backend support for dynamic loading
+    -DGGML_OPENCL=1      # Enable OpenCL backend support for dynamic loading
+)
 
 # Include directories
 target_include_directories(common PRIVATE
@@ -116,6 +128,19 @@ target_link_libraries(
     log
     dl          # Required for dynamic loading of backend libraries
 )
+
+# Add Vulkan support if available
+if(Vulkan_FOUND)
+    target_link_libraries(RNLlamaCpp ${Vulkan_LIBRARIES})
+    target_include_directories(RNLlamaCpp PRIVATE ${Vulkan_INCLUDE_DIRS})
+    message(STATUS "Vulkan support enabled for dynamic GPU backend loading")
+else()
+    # Even without system Vulkan, we can still support dynamic loading if Vulkan library is present at runtime
+    message(STATUS "System Vulkan not found, but dynamic Vulkan loading may still work at runtime")
+endif()
+
+# Add OpenCL support - OpenCL will be loaded dynamically at runtime
+# No need to link against OpenCL here since we use dynamic loading
 
 # Copy dependency libraries to build output directory so they get packaged into APK
 add_custom_command(TARGET RNLlamaCpp POST_BUILD
