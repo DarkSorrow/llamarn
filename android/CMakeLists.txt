@@ -58,6 +58,10 @@ add_library(
     ${CPP_DIR}/rn-completion.cpp
 )
 
+# Suppress unused function warnings for llama.cpp code
+target_compile_options(common PRIVATE -Wno-unused-function)
+target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
+
 # Include directories
 target_include_directories(common PRIVATE
     ${CPP_DIR}

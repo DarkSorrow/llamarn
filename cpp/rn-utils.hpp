@@ -1,8 +1,12 @@
 #pragma once
 
+// Suppress unused function warnings from llama.cpp headers
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "common.h"
 #include "llama.h"
 #include "sampling.h"
+#pragma GCC diagnostic pop
 
 // Change JSON_ASSERT from assert() to GGML_ASSERT:
 #define JSON_ASSERT GGML_ASSERT

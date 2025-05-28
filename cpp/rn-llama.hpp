@@ -1,10 +1,15 @@
 #pragma once
 
+// Suppress unused function warnings from llama.cpp headers
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "common.h"
 #include "llama.h"
 #include "chat.h"
 #include "chat-template.hpp"
 #include "json-schema-to-grammar.h"
+#pragma GCC diagnostic pop
+
 #include "rn-utils.hpp"
 
 #include <functional>

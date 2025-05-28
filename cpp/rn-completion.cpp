@@ -1,8 +1,12 @@
 #include "rn-llama.hpp"
+// Suppress unused function warnings from llama.cpp headers
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "common.h"
 #include "chat.h"
 #include "llama.h"
 #include "sampling.h"
+#pragma GCC diagnostic pop
 #include "rn-utils.hpp"
 
 #include <string>
