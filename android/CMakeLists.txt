@@ -26,50 +26,26 @@ else()
     message(STATUS "Vulkan not found - GPU acceleration will be limited")
 endif()
 
-# Add the prebuilt libraries as IMPORTED (64-bit architectures only: arm64-v8a, x86_64)
+# Add the prebuilt libraries as IMPORTED with IMPORTED_NO_SONAME to avoid absolute path embedding
 add_library(llama SHARED IMPORTED)
-set_target_properties(llama PROPERTIES IMPORTED_LOCATION
-    ${JNI_LIBS_DIR}/${ANDROID_ABI}/libllama.so)
+set_target_properties(llama PROPERTIES 
+    IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libllama.so
+    IMPORTED_NO_SONAME TRUE)
 
 add_library(ggml-base SHARED IMPORTED)
-set_target_properties(ggml-base PROPERTIES IMPORTED_LOCATION
-    ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-base.so)
+set_target_properties(ggml-base PROPERTIES 
+    IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-base.so
+    IMPORTED_NO_SONAME TRUE)
 
 add_library(ggml SHARED IMPORTED)
-set_target_properties(ggml PROPERTIES IMPORTED_LOCATION
-    ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so)
+set_target_properties(ggml PROPERTIES 
+    IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so
+    IMPORTED_NO_SONAME TRUE)
 
-# Note: With GGML_BACKEND_DL, CPU backend is integrated into libggml.so
-# GPU backends are built as separate dynamic libraries
-
-# With GGML_BACKEND_DL, GPU backends are loaded dynamically at runtime
-# Optional: Add GPU backend libraries if they exist (for debugging/logging)
-if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
-    add_library(ggml-vulkan SHARED IMPORTED)
-    set_target_properties(ggml-vulkan PROPERTIES IMPORTED_LOCATION
-        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
-    set(VULKAN_BACKEND_AVAILABLE TRUE)
-else()
-    set(VULKAN_BACKEND_AVAILABLE FALSE)
-endif()
-
-if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
-    add_library(ggml-opencl SHARED IMPORTED)
-    set_target_properties(ggml-opencl PROPERTIES IMPORTED_LOCATION
-        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
-    set(OPENCL_BACKEND_AVAILABLE TRUE)
-else()
-    set(OPENCL_BACKEND_AVAILABLE FALSE)
-endif()
-
-if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
-    add_library(OpenCL SHARED IMPORTED)
-    set_target_properties(OpenCL PROPERTIES IMPORTED_LOCATION
-        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
-    set(OPENCL_LIB_AVAILABLE TRUE)
-else()
-    set(OPENCL_LIB_AVAILABLE FALSE)
-endif()
+add_library(ggml-cpu SHARED IMPORTED)
+set_target_properties(ggml-cpu PROPERTIES 
+    IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
+    IMPORTED_NO_SONAME TRUE)
 
 # Create a minimal common library with only essential files that don't require missing GGML symbols
 add_library(
@@ -98,12 +74,9 @@ add_library(
 target_compile_options(common PRIVATE -Wno-unused-function)
 target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 
-# Enable dynamic backend loading to match external build configuration
+# Enable dynamic backend loading for GPU acceleration
 target_compile_definitions(common PRIVATE -DGGML_BACKEND_DL)
 target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_BACKEND_DL)
-
-# With GGML_BACKEND_DL, GPU backends are loaded dynamically, so we don't need to disable them
-# The runtime will detect and load available backends automatically
 
 # Include directories
 target_include_directories(common PRIVATE
@@ -127,14 +100,15 @@ target_include_directories(RNLlamaCpp PRIVATE
     ${MODULE_ROOT}/android/generated/jni/react/renderer/components/RNLlamaCppSpec
 )
 
-# Link libraries
+# Link libraries with proper dependencies
 target_link_libraries(
     RNLlamaCpp
     common
     react_codegen_RNLlamaCppSpec  # Link against the generated TurboModule code
     llama       # Link against the imported prebuilt core llama library
-    ggml-base   # Link against the imported GGML base library (contains ggml_abort, ggml_time_us, gguf_*)
-    ggml        # Link against the imported GGML library (contains ggml_backend_load_all for dynamic loading)
+    ggml-base   # Link against the imported GGML base library
+    ggml        # Link against the imported GGML library
+    ggml-cpu    # Link against the imported GGML CPU library
     jsi
     reactnative
     fbjni
@@ -143,20 +117,49 @@ target_link_libraries(
     dl          # Required for dynamic loading of backend libraries
 )
 
-# Conditionally link GPU backend libraries if they are available
-if(VULKAN_BACKEND_AVAILABLE)
-    target_link_libraries(RNLlamaCpp ggml-vulkan)
-    message(STATUS "Linking against Vulkan backend")
+# Copy dependency libraries to build output directory so they get packaged into APK
+add_custom_command(TARGET RNLlamaCpp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libllama.so
+        $<TARGET_FILE_DIR:RNLlamaCpp>/libllama.so
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-base.so
+        $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-base.so
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so
+        $<TARGET_FILE_DIR:RNLlamaCpp>/libggml.so
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
+        $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-cpu.so
+    COMMENT "Copying dependency libraries to build output directory"
+)
+
+# Also copy any optional GPU libraries if they exist
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
+    add_custom_command(TARGET RNLlamaCpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so
+            $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-vulkan.so
+        COMMENT "Copying Vulkan library to build output directory"
+    )
 endif()
 
-if(OPENCL_BACKEND_AVAILABLE)
-    target_link_libraries(RNLlamaCpp ggml-opencl)
-    message(STATUS "Linking against OpenCL backend")
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
+    add_custom_command(TARGET RNLlamaCpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so
+            $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-opencl.so
+        COMMENT "Copying OpenCL library to build output directory"
+    )
 endif()
 
-if(OPENCL_LIB_AVAILABLE)
-    target_link_libraries(RNLlamaCpp OpenCL)
-    message(STATUS "Linking against OpenCL library")
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
+    add_custom_command(TARGET RNLlamaCpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so
+            $<TARGET_FILE_DIR:RNLlamaCpp>/libOpenCL.so
+        COMMENT "Copying OpenCL loader library to build output directory"
+    )
 endif()
 
 # Expose our headers to consuming targets (for autolinking)

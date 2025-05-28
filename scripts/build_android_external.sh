@@ -395,7 +395,6 @@ CMAKE_ARGS=(
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
   -DGGML_BACKEND_DL=ON  # Enable dynamic backend loading for runtime GPU detection
   -DGGML_CPU=ON  # Explicitly enable CPU backend (essential)
-  -DGGML_CPU_ALL_VARIANTS=ON  # Build optimized CPU variants for different architectures
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -700,6 +699,15 @@ build_for_abi() {
   elif [ -f "$BUILD_DIR/libggml.so" ]; then
     cp "$BUILD_DIR/libggml.so" "$ANDROID_JNI_DIR/$ABI/"
     echo -e "${GREEN}Copied libggml.so for $ABI (includes CPU backend)${NC}"
+  fi
+  
+  # Copy libggml-cpu.so (essential CPU backend)
+  if [ -f "$BUILD_DIR/bin/libggml-cpu.so" ]; then
+    cp "$BUILD_DIR/bin/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
+    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
+  elif [ -f "$BUILD_DIR/libggml-cpu.so" ]; then
+    cp "$BUILD_DIR/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
+    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
   fi
   
   # With GGML_BACKEND_DL, backends are built as separate dynamic libraries
