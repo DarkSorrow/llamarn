@@ -2,8 +2,6 @@
 
 > ⚠️ **WORK IN PROGRESS**: This package is currently under active development. Community help and feedback are greatly appreciated, especially in the areas mentioned in What Needs Help.
 
-A React Native wrapper for llama.cpp focused on providing a simple, reliable way to run LLMs on mobile devices. This project was inspired by and builds upon the excellent work of [llama.rn](https://github.com/mybigday/llama.rn).
-
 ## Goals
 
 * Provide a thin, reliable wrapper around llama.cpp for React Native
@@ -25,11 +23,12 @@ A React Native wrapper for llama.cpp focused on providing a simple, reliable way
 
 We welcome contributions, especially in these areas:
 
-1. **Android GPU Testing**:
-   * Testing on a variety of Android devices with different GPUs
-   * Verifying OpenCL and Vulkan acceleration on real hardware
-   * Performance profiling and optimization for mobile GPUs
-   * Adding automated GPU detection tests
+1. **Android GPU Testing and Detection**:
+   * Development of reliable GPU detection mechanism in React Native
+   * Implementation of proper backend initialization verification
+   * Creation of robust testing framework for GPU availability
+   * Integration of OpenCL and Vulkan acceleration once detection is stable
+   * Performance benchmarking and optimization for mobile GPUs
 
 2. **CI Improvements**:
    * Adding automated Android GPU tests to CI pipeline
@@ -224,12 +223,12 @@ Apache 2.0 © [Novastera](https://novastera.com)
 
 ## Acknowledgments
 
-We extend our heartfelt gratitude to the following projects and communities that made this library possible:
+We acknowledge the following projects and communities that have contributed to the development of this library:
 
-* **[mybigday/llama.rn](https://github.com/mybigday/llama.rn)** - A pioneering React Native binding for llama.cpp that demonstrated the feasibility of on-device LLM inference in mobile applications.
+* **[mybigday/llama.rn](https://github.com/mybigday/llama.rn)** - A foundational React Native binding for llama.cpp that demonstrated the viability of on-device LLM inference in mobile applications.
 
-* **[Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)** - A good resource that enabled us to successfully build the Android Turbo Module when the official React Native documentation proved insufficient. This repository provided the missing pieces for proper C++ integration on Android.
+* **[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** - The core C++ library that enables efficient LLM inference, serving as the foundation for this project.
 
-* **[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** - The underlying C++ library that powers all llama.cpp-based projects, providing efficient LLM inference capabilities.
+* The test implementation of the Android Turbo Module ([react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)) provided valuable insights for our C++ integration.
 
-Without these contributions to the open-source community, this project would not have been possible. We're proud to continue building upon this foundation and contributing back to the ecosystem.
+These projects have significantly contributed to the open-source ecosystem, and we are committed to building upon their work while maintaining the same spirit of collaboration and innovation.
