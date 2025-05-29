@@ -523,10 +523,21 @@ jobs:
       - name: Update version in package.json
         run: |
           VERSION=${{ steps.get-version.outputs.version }}
-          echo "Setting version to $VERSION"
-          npm version "$VERSION" --no-git-tag-version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
           
-          # Show the updated package.json
+          echo "Target version: $VERSION"
+          echo "Current version: $CURRENT_VERSION"
+          
+          if [ "$VERSION" = "$CURRENT_VERSION" ]; then
+            echo "✅ Version is already correct ($VERSION), no update needed"
+          else
+            echo "Updating version from $CURRENT_VERSION to $VERSION"
+            npm version "$VERSION" --no-git-tag-version
+            echo "✅ Version updated successfully"
+          fi
+          
+          # Show the final package.json version
+          echo "Final version in package.json:"
           cat package.json | grep -A 3 "\"name\":"
       
       - name: Build package
