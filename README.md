@@ -215,11 +215,11 @@ The module accepts different path formats depending on the platform:
 
 ## About
 
-Part of [Novastera's](https://novastera.com) suite of privacy-focused solutions, this package enables on-device LLM inference with no data leaving the user's device. We're committed to helping developers build AI-powered applications that respect user privacy.
+This library is currently being used in [Novastera's](https://novastera.com) mobile application, demonstrating its capabilities in production environments. We're committed to enabling on-device LLM inference with no data leaving the user's device, helping developers build AI-powered applications that respect user privacy.
 
 ## License
 
-Apache 2.0 © [Novastera](https://novastera.com)
+Apache 2.0
 
 ## Acknowledgments
 
