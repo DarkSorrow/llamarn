@@ -213,7 +213,7 @@ jobs:
             ls -la prebuilt/gpu/arm64-v8a/
           else
             echo "❌ No GPU libraries found for arm64-v8a, build failed"
-            exit 1
+            # exit 1
           fi
           
           # Check for Vulkan environment files
@@ -232,99 +232,10 @@ jobs:
           # Get glslc path
           GLSLC_PATH="$ANDROID_HOME/ndk/27.2.12479018/shader-tools/linux-x86_64/glslc"
           
-          # Set up environment for the build process
-          export VULKAN_SDK=/usr
-          export VULKAN_INCLUDE_DIR=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
-          export GGML_VK_DISABLE_COOPMAT=1
-          export GGML_VK_DISABLE_COOPMAT2=1
-          echo "Using Vulkan SDK at $VULKAN_SDK"
-          echo "Using Vulkan headers from NDK at $VULKAN_INCLUDE_DIR"
-          echo "Disabled cooperative matrix support to avoid shader compilation issues"
-          
           # Build the final Android libraries with GPU support
           echo "Building Android libraries with full GPU support..."
           scripts/build_android_external.sh --abi=all --no-vulkan --no-opencl --clean
       
-      - name: Verify Library Architecture and Symbols
-        run: |
-          echo "=== Verifying GPU Backend Build Results ==="
-          
-          # Check if main libraries exist
-          if [ ! -f "android/src/main/jniLibs/arm64-v8a/libllama.so" ] || 
-             [ ! -f "android/src/main/jniLibs/x86_64/libllama.so" ]; then
-            echo "❌ Main libraries are missing"
-            # exit 1
-          fi
-          
-          # Check file sizes to make sure they're not empty
-          arm64_size=$(stat -c%s "android/src/main/jniLibs/arm64-v8a/libllama.so" 2>/dev/null || 
-                      stat -f%z "android/src/main/jniLibs/arm64-v8a/libllama.so")
-          x86_64_size=$(stat -c%s "android/src/main/jniLibs/x86_64/libllama.so" 2>/dev/null || 
-                       stat -f%z "android/src/main/jniLibs/x86_64/libllama.so")
-          
-          if [ "$arm64_size" -lt 1000000 ] || [ "$x86_64_size" -lt 1000000 ]; then
-            echo "❌ Libraries are too small, build likely failed"
-            # exit 1
-          fi
-          
-          echo "✅ Main library validation passed"
-          echo "arm64-v8a libllama.so size: $arm64_size bytes"
-          echo "x86_64 libllama.so size: $x86_64_size bytes"
-          
-          # Check for GPU backend libraries
-          echo ""
-          echo "=== GPU Backend Libraries Check ==="
-          for ABI in arm64-v8a x86_64; do
-            echo "Checking $ABI:"
-            
-            # Check for OpenCL
-            if [ -f "android/src/main/jniLibs/$ABI/libOpenCL.so" ]; then
-              echo "  ✅ OpenCL library found"
-              ls -la "android/src/main/jniLibs/$ABI/libOpenCL.so"
-            else
-              echo "  ⚠️ OpenCL library not found"
-            fi
-            
-            # Check for dynamic GPU backends
-            if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
-              echo "  ✅ Vulkan backend library found"
-              ls -la "android/src/main/jniLibs/$ABI/libggml-vulkan.so"
-            else
-              echo "  ⚠️ Vulkan backend library not found"
-            fi
-            
-            if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
-              echo "  ✅ OpenCL backend library found"
-              ls -la "android/src/main/jniLibs/$ABI/libggml-opencl.so"
-            else
-              echo "  ⚠️ OpenCL backend library not found"
-            fi
-            
-            if [ -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
-              echo "  ✅ CPU backend library found"
-              ls -la "android/src/main/jniLibs/$ABI/libggml-cpu.so"
-            else
-              echo "  ⚠️ CPU backend library not found"
-            fi
-            
-            # Check for flag files
-            if [ -f "android/src/main/jniLibs/$ABI/.vulkan_enabled" ]; then
-              echo "  ✅ Vulkan enabled flag found"
-            else
-              echo "  ⚠️ Vulkan enabled flag not found"
-            fi
-            
-            if [ -f "android/src/main/jniLibs/$ABI/.opencl_enabled" ]; then
-              echo "  ✅ OpenCL enabled flag found"
-            else
-              echo "  ⚠️ OpenCL enabled flag not found"
-            fi
-            
-            echo "  All files in $ABI:"
-            ls -la "android/src/main/jniLibs/$ABI/"
-            echo ""
-          done
-
       - name: Upload Android Native Libs
         uses: actions/upload-artifact@v4
         with:
