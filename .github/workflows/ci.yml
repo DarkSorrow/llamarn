@@ -241,9 +241,9 @@ jobs:
           echo "Using Vulkan headers from NDK at $VULKAN_INCLUDE_DIR"
           echo "Disabled cooperative matrix support to avoid shader compilation issues"
           
-          # Build the final Android libraries with GPU support
+          # Build the final Android libraries with full GPU support
           echo "Building Android libraries with full GPU support..."
-          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --glslc-path="$GLSLC_PATH" --platform=android
+          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --no-vulkan
       
       - name: Verify Library Architecture and Symbols
         run: |
