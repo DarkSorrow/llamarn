@@ -155,14 +155,31 @@ jobs:
           restore-keys: |
             android-ndk-
       
+      - name: Install Minimal Vulkan Headers (for build compatibility)
+        run: |
+          # Install minimal Vulkan packages (needed even when GPU disabled)
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev
+          
+          echo "Minimal Vulkan headers installed for build compatibility"
+      
+      - name: Build GPU Libraries (GPU Disabled)
+        run: |
+          # Get Android NDK path
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          # Build GPU backend libraries with GPU disabled (matches user's working local command)
+          echo "Building GPU backend libraries with GPU disabled..."
+          scripts/build_android_gpu_backend.sh --no-vulkan --no-opencl --clean --abi=all --ndk-path="$NDK_PATH"
+
       - name: Build Final Android Libraries
         run: |
           # Get Android NDK path
           NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
           
-          # Build CPU-only Android libraries (no GPU backends at all)
-          echo "Building Android libraries with CPU-only support..."
-          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --no-opencl --no-vulkan
+          # Build final Android libraries with GPU disabled (matches user's working local command)
+          echo "Building Android libraries with GPU disabled..."
+          scripts/build_android_external.sh --no-vulkan --no-opencl --clean --abi=all --ndk-path="$NDK_PATH"
       
       - name: Verify Library Architecture and Symbols
         run: |
