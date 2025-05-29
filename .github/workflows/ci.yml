@@ -144,46 +144,110 @@ jobs:
           packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
           accept-android-sdk-licenses: true
       
-      # Cache NDK only (no GPU libraries for CPU-only build)
-      - name: Cache NDK
+      # Cache NDK and prebuilt GPU libraries
+      - name: Cache NDK and GPU Libraries
         uses: actions/cache@v3
-        id: cache-android-ndk
+        id: cache-android-libs
         with:
           path: |
             ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-          key: android-ndk-${{ hashFiles('scripts/used_version.sh') }}
+            prebuilt/gpu
+            prebuilt/libs/external/vulkan
+            prebuilt/libs/external/opencl
+          key: android-ndk-gpu-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
           restore-keys: |
-            android-ndk-
+            android-ndk-gpu-
       
-      - name: Install Minimal Vulkan Headers (for build compatibility)
+      - name: Install Vulkan Headers
         run: |
-          # Install minimal Vulkan packages (needed even when GPU disabled)
+          # Install basic Vulkan packages
           sudo apt-get update
-          sudo apt-get install -y libvulkan-dev
+          sudo apt-get install -y libvulkan-dev vulkan-tools
           
-          echo "Minimal Vulkan headers installed for build compatibility"
+          # Get the complete Vulkan headers that the NDK doesn't have
+          VULKAN_VERSION=1.3.292
+          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          echo "Installing complete Vulkan headers..."
+          wget -q https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${VULKAN_VERSION}.zip -O vulkan-headers.zip
+          unzip -q vulkan-headers.zip
+          
+          # Copy the complete headers structure (vulkan + vk_video) to NDK include directory
+          sudo cp -r ./Vulkan-Headers-${VULKAN_VERSION}/include/* ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/
+          
+          # Clean up
+          rm -rf vulkan-headers.zip Vulkan-Headers-${VULKAN_VERSION}
+          
+          echo "Vulkan headers installed successfully!"
+          echo "Checking for vulkan.hpp:"
+          find ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include -name "vulkan.hpp" || echo "vulkan.hpp not found"
+          echo "Checking for vk_video directory:"
+          ls -la ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/vk_video/ || echo "vk_video directory not found"
       
-      - name: Build GPU Libraries (GPU Disabled)
+      - name: Build GPU Libraries
         run: |
           # Get Android NDK path
           NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
           
-          # Build GPU backend libraries with GPU disabled (matches user's working local command)
-          echo "Building GPU backend libraries with GPU disabled..."
-          scripts/build_android_gpu_backend.sh --no-vulkan --no-opencl --clean --abi=all --ndk-path="$NDK_PATH"
+          # Create required directories to avoid cache errors
+          mkdir -p prebuilt/gpu
+          mkdir -p prebuilt/libs/external/vulkan
+          mkdir -p prebuilt/libs/external/opencl
+          
+          # Skip GPU backend build if we have a cache hit
+          if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Using cached GPU libraries"
+          else
+            # First build the GPU backend libraries
+            echo "Building Android GPU backend libraries..."
+            cd scripts
+            export GGML_VK_DISABLE_COOPMAT=1
+            export GGML_VK_DISABLE_COOPMAT2=1
+            bash build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH"
+            cd ..
+          fi
+          
+          # Verify GPU libraries were built in prebuilt directory
+          if [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
+            echo "✅ Successfully built GPU libraries for arm64-v8a"
+            ls -la prebuilt/gpu/arm64-v8a/
+          else
+            echo "❌ No GPU libraries found for arm64-v8a, build failed"
+            exit 1
+          fi
+          
+          # Check for Vulkan environment files
+          if [ -f "prebuilt/gpu/arm64-v8a/.vulkan_env" ]; then
+            echo "✅ Vulkan environment file created"
+            cat prebuilt/gpu/arm64-v8a/.vulkan_env
+          else
+            echo "⚠️ No Vulkan environment file found"
+          fi
 
       - name: Build Final Android Libraries
         run: |
           # Get Android NDK path
           NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
           
-          # Build final Android libraries with GPU disabled (matches user's working local command)
-          echo "Building Android libraries with GPU disabled..."
-          scripts/build_android_external.sh --no-vulkan --no-opencl --clean --abi=all --ndk-path="$NDK_PATH"
+          # Get glslc path
+          GLSLC_PATH="$ANDROID_HOME/ndk/27.2.12479018/shader-tools/linux-x86_64/glslc"
+          
+          # Set up environment for the build process
+          export VULKAN_SDK=/usr
+          export VULKAN_INCLUDE_DIR=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
+          export GGML_VK_DISABLE_COOPMAT=1
+          export GGML_VK_DISABLE_COOPMAT2=1
+          echo "Using Vulkan SDK at $VULKAN_SDK"
+          echo "Using Vulkan headers from NDK at $VULKAN_INCLUDE_DIR"
+          echo "Disabled cooperative matrix support to avoid shader compilation issues"
+          
+          # Build the final Android libraries with GPU support
+          echo "Building Android libraries with full GPU support..."
+          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --glslc-path="$GLSLC_PATH" --platform=android
       
       - name: Verify Library Architecture and Symbols
         run: |
-          echo "=== Verifying CPU-Only Build Results ==="
+          echo "=== Verifying GPU Backend Build Results ==="
           
           # Check if main libraries exist
           if [ ! -f "android/src/main/jniLibs/arm64-v8a/libllama.so" ] || 
@@ -207,36 +271,35 @@ jobs:
           echo "arm64-v8a libllama.so size: $arm64_size bytes"
           echo "x86_64 libllama.so size: $x86_64_size bytes"
           
-          # Check that NO GPU backend libraries exist (CPU-only build)
+          # Check for GPU backend libraries
           echo ""
-          echo "=== CPU-Only Build Verification (No GPU Libraries Expected) ==="
+          echo "=== GPU Backend Libraries Check ==="
           for ABI in arm64-v8a x86_64; do
             echo "Checking $ABI:"
             
-            # Check that OpenCL libraries are NOT present
+            # Check for OpenCL
             if [ -f "android/src/main/jniLibs/$ABI/libOpenCL.so" ]; then
-              echo "  ❌ OpenCL library found but should not be present in CPU-only build"
-              exit 1
+              echo "  ✅ OpenCL library found"
+              ls -la "android/src/main/jniLibs/$ABI/libOpenCL.so"
             else
-              echo "  ✅ OpenCL library correctly absent (CPU-only build)"
+              echo "  ⚠️ OpenCL library not found"
             fi
             
-            # Check that GPU backend libraries are NOT present
+            # Check for dynamic GPU backends
             if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
-              echo "  ❌ Vulkan backend library found but should not be present in CPU-only build"
-              exit 1
+              echo "  ✅ Vulkan backend library found"
+              ls -la "android/src/main/jniLibs/$ABI/libggml-vulkan.so"
             else
-              echo "  ✅ Vulkan backend library correctly absent (CPU-only build)"
+              echo "  ⚠️ Vulkan backend library not found"
             fi
             
             if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
-              echo "  ❌ OpenCL backend library found but should not be present in CPU-only build"
-              exit 1
+              echo "  ✅ OpenCL backend library found"
+              ls -la "android/src/main/jniLibs/$ABI/libggml-opencl.so"
             else
-              echo "  ✅ OpenCL backend library correctly absent (CPU-only build)"
+              echo "  ⚠️ OpenCL backend library not found"
             fi
             
-            # Check for CPU backend library (should exist)
             if [ -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
               echo "  ✅ CPU backend library found"
               ls -la "android/src/main/jniLibs/$ABI/libggml-cpu.so"
@@ -244,29 +307,23 @@ jobs:
               echo "  ⚠️ CPU backend library not found"
             fi
             
-            # Check that flag files for GPU are NOT present
+            # Check for flag files
             if [ -f "android/src/main/jniLibs/$ABI/.vulkan_enabled" ]; then
-              echo "  ❌ Vulkan enabled flag found but should not be present in CPU-only build"
-              exit 1
+              echo "  ✅ Vulkan enabled flag found"
             else
-              echo "  ✅ Vulkan enabled flag correctly absent (CPU-only build)"
+              echo "  ⚠️ Vulkan enabled flag not found"
             fi
             
             if [ -f "android/src/main/jniLibs/$ABI/.opencl_enabled" ]; then
-              echo "  ❌ OpenCL enabled flag found but should not be present in CPU-only build"
-              exit 1
+              echo "  ✅ OpenCL enabled flag found"
             else
-              echo "  ✅ OpenCL enabled flag correctly absent (CPU-only build)"
+              echo "  ⚠️ OpenCL enabled flag not found"
             fi
             
             echo "  All files in $ABI:"
             ls -la "android/src/main/jniLibs/$ABI/"
             echo ""
           done
-
-          echo ""
-          echo "✅ CPU-only build verification completed successfully"
-          echo "   This build should not have any OpenCL/Vulkan related model loading issues"
 
       - name: Upload Android Native Libs
         uses: actions/upload-artifact@v4
