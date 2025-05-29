@@ -132,8 +132,8 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
       throw std::runtime_error("model path is required");
     }
 
-    // Load dynamic backends if needed
-    ggml_backend_load_all();
+    // Initialize llama backend
+    llama_backend_init();
 
     std::string model_path = options.getProperty(runtime, "model").asString(runtime).utf8(runtime);
     SystemUtils::normalizeFilePath(model_path);
