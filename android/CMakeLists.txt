@@ -90,6 +90,24 @@ target_compile_definitions(RNLlamaCpp PRIVATE
     -DGGML_OPENCL=1      # Enable OpenCL backend support for dynamic loading
 )
 
+# Conditionally enable GPU backends only if they're actually available
+if(VULKAN_BACKEND_AVAILABLE)
+    # Don't enable Vulkan on Android - causes crashes during auto-initialization
+    # target_compile_definitions(common PRIVATE -DGGML_VULKAN=1)
+    # target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_VULKAN=1)
+    message(STATUS "Vulkan backend support disabled on Android to prevent crashes")
+else()
+    message(STATUS "Vulkan backend support disabled - library not available")
+endif()
+
+if(OPENCL_BACKEND_AVAILABLE)
+    target_compile_definitions(common PRIVATE -DGGML_OPENCL=1)
+    target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_OPENCL=1)
+    message(STATUS "OpenCL backend support enabled for dynamic loading")
+else()
+    message(STATUS "OpenCL backend support disabled - library not available")
+endif()
+
 # Include directories
 target_include_directories(common PRIVATE
     ${CPP_DIR}
@@ -161,12 +179,16 @@ add_custom_command(TARGET RNLlamaCpp POST_BUILD
 
 # Also copy any optional GPU libraries if they exist
 if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
-    add_custom_command(TARGET RNLlamaCpp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so
-            $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-vulkan.so
-        COMMENT "Copying Vulkan library to build output directory"
-    )
+    # Don't copy Vulkan backend on Android - it crashes on emulators during auto-initialization
+    # Even with n_gpu_layers=0, llama.cpp tries to initialize all available backends
+    # and the Android emulator Vulkan driver is broken
+    message(STATUS "Skipping Vulkan backend copy to prevent emulator crashes")
+    # add_custom_command(TARGET RNLlamaCpp POST_BUILD
+    #     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    #         ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so
+    #         $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-vulkan.so
+    #     COMMENT "Copying Vulkan library to build output directory"
+    # )
 endif()
 
 if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)

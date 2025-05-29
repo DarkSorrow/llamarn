@@ -245,40 +245,8 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
         throw std::runtime_error("Failed to initialize model and context");
       }
     } catch (const std::exception& e) {
-      std::string error_msg = e.what();
-      
-      // Check for specific Vulkan errors that indicate Adreno GPU shader incompatibility
-      bool isVulkanShaderError = (
-        error_msg.find("createComputePipeline") != std::string::npos ||
-        error_msg.find("ErrorUnknown") != std::string::npos ||
-        error_msg.find("matmul_q4_k") != std::string::npos ||
-        error_msg.find("matmul_q5_k") != std::string::npos ||
-        error_msg.find("dequant_q4_K") != std::string::npos ||
-        error_msg.find("dequant_q5_K") != std::string::npos ||
-        error_msg.find("vulkan") != std::string::npos
-      );
-      
       // If we were trying to use GPU and got a Vulkan/shader error, retry with CPU-only
-      if (params.n_gpu_layers > 0 && isVulkanShaderError) {
-        fprintf(stderr, "Vulkan shader compilation failed (likely Adreno GPU incompatibility): %s\n", e.what());
-        fprintf(stderr, "This is a known issue with Q4_K/Q5_K shaders on Qualcomm Adreno GPUs\n");
-        fprintf(stderr, "Retrying with CPU-only mode...\n");
-        
-        // Retry with CPU-only
-        params.n_gpu_layers = 0;
-        
-        try {
-          result = common_init_from_params(params);
-          
-          if (!result.model || !result.context) {
-            throw std::runtime_error("Failed to initialize model and context even with CPU-only mode");
-          }
-          
-          fprintf(stderr, "Successfully recovered with CPU-only mode after Vulkan shader failure\n");
-        } catch (const std::exception& cpu_e) {
-          throw std::runtime_error(std::string("Model initialization failed: ") + cpu_e.what());
-        }
-      } else if (params.n_gpu_layers > 0) {
+      if (params.n_gpu_layers > 0) {
         // Other GPU error, still try CPU fallback
         fprintf(stderr, "GPU initialization failed (%s), retrying with CPU-only\n", e.what());
         
