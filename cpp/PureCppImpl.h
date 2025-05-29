@@ -54,6 +54,9 @@ private:
 
     // Mutex for thread safety when accessing rn_ctx_ or other shared resources
     std::mutex mutex_;
+    
+    // CallInvoker for async operations
+    std::shared_ptr<CallInvoker> jsInvoker_;
 };
 
 } // namespace facebook::react

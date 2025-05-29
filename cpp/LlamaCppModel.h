@@ -8,6 +8,9 @@
 #include <unordered_map>
 #include <functional>
 
+// Add ReactCommon includes for proper async handling
+#include <ReactCommon/CallInvoker.h>
+
 // Include all necessary common headers from llama.cpp
 #include "common.h"
 #include "sampling.h"
@@ -70,13 +73,14 @@ struct ToolCall {
  * - Uses common_token_to_piece for token->text conversion
  * - Leverages the llama.cpp chat template system
  */
-class LlamaCppModel : public jsi::HostObject {
+class LlamaCppModel : public jsi::HostObject, public std::enable_shared_from_this<LlamaCppModel> {
 public:
   /**
    * Constructor
    * @param rn_ctx A pointer to an initialized rn_llama_context
+   * @param jsInvoker CallInvoker for async operations (optional, for async completion)
    */
-  LlamaCppModel(rn_llama_context* rn_ctx);
+  LlamaCppModel(rn_llama_context* rn_ctx, std::shared_ptr<CallInvoker> jsInvoker = nullptr);
   virtual ~LlamaCppModel();
 
   /**
@@ -124,6 +128,8 @@ private:
    * JSI method implementations
    */
   jsi::Value completionJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value completionAsyncJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value stopCompletionJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
   jsi::Value tokenizeJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
   jsi::Value detokenizeJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
   jsi::Value embeddingJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
@@ -157,6 +163,9 @@ private:
   // Completion state
   bool should_stop_completion_;
   bool is_predicting_;
+
+  // Add CallInvoker for async operations
+  std::shared_ptr<CallInvoker> jsInvoker_;
 };
 
 } // namespace facebook::react

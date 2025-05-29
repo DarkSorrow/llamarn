@@ -35,7 +35,7 @@ std::shared_ptr<TurboModule> PureCppImpl::create(std::shared_ptr<CallInvoker> js
 }
 
 PureCppImpl::PureCppImpl(std::shared_ptr<CallInvoker> jsInvoker)
-    : NativeRNLlamaCppCxxSpec(std::move(jsInvoker)) {
+    : NativeRNLlamaCppCxxSpec(jsInvoker), jsInvoker_(jsInvoker) {
 }
 
 double PureCppImpl::multiply(jsi::Runtime& rt, double a, double b) {
@@ -325,8 +325,8 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
 }
 
 jsi::Object PureCppImpl::createModelObject(jsi::Runtime& runtime, rn_llama_context* rn_ctx) {
-  // Create a shared_ptr to a new LlamaCppModel instance
-  auto llamaModel = std::make_shared<LlamaCppModel>(rn_ctx);
+  // Create a shared_ptr to a new LlamaCppModel instance with CallInvoker
+  auto llamaModel = std::make_shared<LlamaCppModel>(rn_ctx, jsInvoker_);
 
   // Create a host object from the LlamaCppModel instance
   return jsi::Object::createFromHostObject(runtime, std::move(llamaModel));

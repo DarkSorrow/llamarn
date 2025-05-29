@@ -195,6 +195,7 @@ export interface EmbeddingResponse {
 
 export interface LlamaContextMethods {
   completion(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): Promise<LlamaCompletionResult>;
+  completionSync(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): LlamaCompletionResult;
 
   // Updated tokenize method to match server.cpp interface
   tokenize(options: {

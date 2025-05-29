@@ -35,8 +35,8 @@
 
 namespace facebook::react {
 
-LlamaCppModel::LlamaCppModel(rn_llama_context* rn_ctx)
-    : rn_ctx_(rn_ctx), should_stop_completion_(false), is_predicting_(false) {
+LlamaCppModel::LlamaCppModel(rn_llama_context* rn_ctx, std::shared_ptr<CallInvoker> jsInvoker)
+    : rn_ctx_(rn_ctx), should_stop_completion_(false), is_predicting_(false), jsInvoker_(jsInvoker) {
     initHelpers();
 }
 
@@ -435,11 +435,18 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   rn_ctx_->params.n_predict = options.n_predict;
 
   // Check for a partial callback
-  auto callback_adapter = [&partialCallback, runtime](const std::string& token, bool is_done) -> bool {
+  auto callback_adapter = [&partialCallback, runtime, this](const std::string& token, bool is_done) -> bool {
+    // Check for stop condition first
+    if (should_stop_completion_) {
+      return false; // Signal to stop completion
+    }
+    
     if (partialCallback && runtime && !is_done) {
       partialCallback(*runtime, token.c_str());
     }
-    return true;
+    
+    // Return true to continue, false to stop
+    return !should_stop_completion_;
   };
 
   // Run the completion based on whether we have messages or prompt
@@ -546,7 +553,7 @@ jsi::Value LlamaCppModel::jsonToJsi(jsi::Runtime& rt, const json& j) {
   return jsi::Value::undefined();
 }
 
-// JSI method for completions
+// JSI method for completions (synchronous - kept for compatibility)
 jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
   if (count < 1 || !args[0].isObject()) {
     throw jsi::JSError(rt, "completion requires an options object");
@@ -576,6 +583,116 @@ jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args
 
     // Convert the result to a JSI object using our helper
     return completionResultToJsi(rt, result);
+  } catch (const std::exception& e) {
+    throw jsi::JSError(rt, e.what());
+  }
+}
+
+// JSI method for async completions (recommended approach)
+jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  if (count < 1 || !args[0].isObject()) {
+    throw jsi::JSError(rt, "completion requires an options object");
+  }
+
+  if (!jsInvoker_) {
+    // Fallback to synchronous if no CallInvoker available
+    return completionJsi(rt, args, count);
+  }
+
+  // Parse options and callback on the current thread
+  CompletionOptions options;
+  std::shared_ptr<jsi::Function> callbackFn = nullptr;
+  
+  try {
+    options = parseCompletionOptions(rt, args[0].getObject(rt));
+    
+    if (count > 1 && args[1].isObject() && args[1].getObject(rt).isFunction(rt)) {
+      callbackFn = std::make_shared<jsi::Function>(args[1].getObject(rt).getFunction(rt));
+      options.stream = true;
+    }
+  } catch (const std::exception& e) {
+    throw jsi::JSError(rt, e.what());
+  }
+
+  // Create Promise constructor
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  
+  auto executor = jsi::Function::createFromHostFunction(
+    rt,
+    jsi::PropNameID::forAscii(rt, "executor"),
+    2,
+    [this, options, callbackFn](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
+      
+      auto resolve = std::make_shared<jsi::Function>(args[0].asObject(runtime).asFunction(runtime));
+      auto reject = std::make_shared<jsi::Function>(args[1].asObject(runtime).asFunction(runtime));
+      
+      // Create shared references to runtime and invoker for thread safety
+      auto runtimePtr = &runtime;
+      auto invoker = jsInvoker_;
+      auto selfPtr = shared_from_this(); // This requires LlamaCppModel to inherit from std::enable_shared_from_this
+      
+      // Launch background thread for completion
+      std::thread([selfPtr, options, callbackFn, resolve, reject, runtimePtr, invoker]() {
+        try {
+          // Create callback that schedules token updates on JS thread
+          std::function<void(jsi::Runtime&, const char*)> partialCallback = nullptr;
+          
+          if (callbackFn && invoker) {
+            partialCallback = [callbackFn, invoker, runtimePtr](jsi::Runtime& rt, const char* token) {
+              std::string tokenCopy(token);
+              invoker->invokeAsync([callbackFn, tokenCopy, runtimePtr]() {
+                try {
+                  jsi::Object data(*runtimePtr);
+                  data.setProperty(*runtimePtr, "token", jsi::String::createFromUtf8(*runtimePtr, tokenCopy));
+                  callbackFn->call(*runtimePtr, data);
+                } catch (...) {
+                  // Ignore callback errors
+                }
+              });
+            };
+          }
+          
+          // Run completion
+          CompletionResult result = selfPtr->completion(options, partialCallback, runtimePtr);
+          
+          // Schedule success callback on JS thread
+          invoker->invokeAsync([selfPtr, resolve, result, runtimePtr]() {
+            try {
+              jsi::Object jsResult = selfPtr->completionResultToJsi(*runtimePtr, result);
+              resolve->call(*runtimePtr, jsResult);
+            } catch (const std::exception& e) {
+              // If conversion fails, create a simple error response
+              jsi::Object errorObj(*runtimePtr);
+              errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
+              resolve->call(*runtimePtr, errorObj);
+            }
+          });
+          
+        } catch (const std::exception& e) {
+          // Schedule error callback on JS thread
+          std::string errorMsg(e.what());
+          invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
+            try {
+              reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg));
+            } catch (...) {
+              // Ignore rejection errors
+            }
+          });
+        }
+      }).detach();
+      
+      return jsi::Value::undefined();
+    }
+  );
+  
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
+// JSI method for stopping completion
+jsi::Value LlamaCppModel::stopCompletionJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  try {
+    setShouldStopCompletion(true);
+    return jsi::Value(true);
   } catch (const std::exception& e) {
     throw jsi::JSError(rt, e.what());
   }
@@ -930,10 +1047,34 @@ jsi::Value LlamaCppModel::get(jsi::Runtime& rt, const jsi::PropNameID& name) {
       });
   }
   else if (nameStr == "completion") {
+    // Use async completion as the default to provide better UX
+    if (jsInvoker_) {
+      return jsi::Function::createFromHostFunction(
+        rt, name, 2,
+        [this](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) {
+          return this->completionAsyncJsi(runtime, args, count);
+        });
+    } else {
+      // Fallback to sync completion if no CallInvoker
+      return jsi::Function::createFromHostFunction(
+        rt, name, 2,
+        [this](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) {
+          return this->completionJsi(runtime, args, count);
+        });
+    }
+  }
+  else if (nameStr == "completionSync") {
     return jsi::Function::createFromHostFunction(
       rt, name, 2,
       [this](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) {
         return this->completionJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "stopCompletion") {
+    return jsi::Function::createFromHostFunction(
+      rt, name, 0,
+      [this](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) {
+        return this->stopCompletionJsi(runtime, args, count);
       });
   }
   else if (nameStr == "embedding") {
@@ -973,6 +1114,8 @@ std::vector<jsi::PropNameID> LlamaCppModel::getPropertyNames(jsi::Runtime& rt) {
   result.push_back(jsi::PropNameID::forAscii(rt, "tokenize"));
   result.push_back(jsi::PropNameID::forAscii(rt, "detokenize"));
   result.push_back(jsi::PropNameID::forAscii(rt, "completion"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "completionSync"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "stopCompletion"));
   result.push_back(jsi::PropNameID::forAscii(rt, "embedding"));
   result.push_back(jsi::PropNameID::forAscii(rt, "release"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_vocab"));
