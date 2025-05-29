@@ -203,7 +203,7 @@ jobs:
             cd scripts
             export GGML_VK_DISABLE_COOPMAT=1
             export GGML_VK_DISABLE_COOPMAT2=1
-            bash build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH"
+            bash build_android_gpu_backend.sh --abi=all --no-vulkan --no-opencl --clean
             cd ..
           fi
           
@@ -243,7 +243,7 @@ jobs:
           
           # Build the final Android libraries with GPU support
           echo "Building Android libraries with full GPU support..."
-          scripts/build_android_external.sh --abi=all --ndk-path="$NDK_PATH" --glslc-path="$GLSLC_PATH" --platform=android
+          scripts/build_android_external.sh --abi=all --no-vulkan --no-opencl --clean
       
       - name: Verify Library Architecture and Symbols
         run: |
