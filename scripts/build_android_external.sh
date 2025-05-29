@@ -46,7 +46,7 @@ print_usage() {
 # Default values
 BUILD_ABI="all"
 BUILD_OPENCL=true
-BUILD_VULKAN=true  # Enable Vulkan by default
+BUILD_VULKAN=true  # Enable Vulkan by default - packaging controlled by Android CMakeLists.txt
 BUILD_TYPE="Release"
 CLEAN_BUILD=false
 CLEAN_PREBUILT=false
@@ -396,19 +396,10 @@ CMAKE_ARGS=(
   -DGGML_BACKEND_DL=OFF  # Static libraries - CPU backend built into main libraries
   -DGGML_CPU=ON  # CPU backend statically built into libggml.so and libllama.so
   -DGGML_METAL=OFF  # Disable Metal (Apple GPU) for Android
-  -DGGML_VULKAN=ON
-  -DGGML_VULKAN_CHECK_RESULTS=OFF
-  -DGGML_VULKAN_DEBUG=OFF
-  -DGGML_VULKAN_MEMORY_DEBUG=OFF
-  -DGGML_VULKAN_SHADER_DEBUG_INFO=OFF
-  -DGGML_VULKAN_PERF=OFF
-  -DGGML_VULKAN_VALIDATE=OFF
-  -DGGML_VULKAN_RUN_TESTS=OFF
-  -DVK_USE_PLATFORM_ANDROID_KHR=ON
-  -DGGML_VULKAN_DISABLE_FLASHATTN=ON  # Disable flash attention for Adreno compatibility
   -DGGML_CUDA=OFF   # Static build - GPU backends added separately later
   -DGGML_HIP=OFF    # Static build - GPU backends added separately later
-  -DGGML_OPENCL=OFF # Static build - GPU backends added separately later
+  -DGGML_OPENCL=OFF  # Build as separate dynamic library only
+  -DGGML_VULKAN=OFF  # Build as separate dynamic library only
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -436,25 +427,37 @@ fi
 
 echo -e "${GREEN}llama.cpp repository found and appears valid at: $LLAMA_CPP_DIR${NC}"
 
-# Configure OpenCL flags if available and enabled
+# Configure additional GPU backend flags
+# Note: Core libraries are built with CPU-only to ensure stability
+# GPU backends are built as separate dynamic libraries when enabled
+
+GPU_CMAKE_FLAGS=()
+
+# Add OpenCL backend if available and enabled
 if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
-  CMAKE_ARGS+=(
+  GPU_CMAKE_FLAGS+=(
     -DGGML_OPENCL=ON
     -DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR"
     -DCL_LIBRARY="$OPENCL_LIB_DIR"
   )
-  echo -e "${GREEN}OpenCL backend will be built as dynamic library${NC}"
+  echo -e "${GREEN}OpenCL backend will be built as separate dynamic library${NC}"
 else
-  CMAKE_ARGS+=(
-    -DGGML_OPENCL=OFF
-  )
   echo -e "${YELLOW}OpenCL backend disabled${NC}"
 fi
 
-# Configure Vulkan flags if available and enabled
+# Add Vulkan backend if available and enabled
 if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
-  CMAKE_ARGS+=(
+  GPU_CMAKE_FLAGS+=(
     -DGGML_VULKAN=ON
+    -DGGML_VULKAN_CHECK_RESULTS=OFF
+    -DGGML_VULKAN_DEBUG=OFF
+    -DGGML_VULKAN_MEMORY_DEBUG=OFF
+    -DGGML_VULKAN_SHADER_DEBUG_INFO=OFF
+    -DGGML_VULKAN_PERF=OFF
+    -DGGML_VULKAN_VALIDATE=OFF
+    -DGGML_VULKAN_RUN_TESTS=OFF
+    -DVK_USE_PLATFORM_ANDROID_KHR=ON
+    -DGGML_VULKAN_DISABLE_FLASHATTN=ON  # Disable flash attention for Adreno compatibility
   )
   
   # Disable cooperative matrix features if environment variables are set
@@ -476,33 +479,33 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     
     # Use the environment variables from the file
     if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
-      CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
+      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
       echo -e "${GREEN}Using Vulkan library from env: $VULKAN_LIBRARY_PATH${NC}"
     fi
     
     if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ]; then
       # Check if this include path has vulkan.hpp
       if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
-        CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+        GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
         echo -e "${GREEN}Using Vulkan include path from env: $VULKAN_INCLUDE_PATH${NC}"
       else
         # NDK include path doesn't have vulkan.hpp, check for system headers
         if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
           echo -e "${YELLOW}NDK headers missing vulkan.hpp, using system headers for C++${NC}"
-          CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
+          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
           # Also add NDK headers as additional include for vulkan.h
-          CMAKE_ARGS+=(-DCMAKE_CXX_FLAGS="-I$VULKAN_INCLUDE_PATH -Wno-deprecated-declarations")
+          GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I$VULKAN_INCLUDE_PATH -Wno-deprecated-declarations")
           echo -e "${GREEN}Using system Vulkan C++ headers: /usr/include${NC}"
           echo -e "${GREEN}Adding NDK Vulkan C headers: $VULKAN_INCLUDE_PATH${NC}"
         else
-          CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
           echo -e "${YELLOW}Warning: Using NDK headers without vulkan.hpp${NC}"
         fi
       fi
     fi
     
     if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
-      CMAKE_ARGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_EXECUTABLE")
+      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_EXECUTABLE")
       echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
     fi
   else
@@ -512,7 +515,7 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     # Check for system Vulkan headers first (they're more likely to have vulkan.hpp)
     if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
       echo -e "${GREEN}Found system Vulkan C++ headers, using them${NC}"
-      CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
+      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
       
       # Set architecture-specific Vulkan library path from NDK for linking
       if [ "$ABI" = "arm64-v8a" ]; then
@@ -523,7 +526,7 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       
       # Add Vulkan library path if it exists
       if [ -f "$VULKAN_LIB_PATH" ]; then
-        CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
         echo -e "${GREEN}Using NDK Vulkan library for linking: $VULKAN_LIB_PATH${NC}"
       fi
     else
@@ -539,7 +542,7 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       
       # Add Vulkan library path if it exists
       if [ -f "$VULKAN_LIB_PATH" ]; then
-        CMAKE_ARGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
         echo -e "${GREEN}Using NDK Vulkan library: $VULKAN_LIB_PATH${NC}"
       else
         echo -e "${YELLOW}Warning: NDK Vulkan library not found at $VULKAN_LIB_PATH${NC}"
@@ -547,12 +550,12 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       
       # Add Vulkan include directory (NDK headers)
       VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
-      CMAKE_ARGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
     fi
     
     # Add glslc path if available
     if [ -n "$GLSLC_PATH" ]; then
-      CMAKE_ARGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
+      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
       
       # Verify the glslc executable is usable
       if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
@@ -562,11 +565,8 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       fi
     fi
   fi
-  echo -e "${GREEN}Vulkan backend will be built as dynamic library${NC}"
+  echo -e "${GREEN}Vulkan backend will be built as separate dynamic library${NC}"
 else
-  CMAKE_ARGS+=(
-    -DGGML_VULKAN=OFF
-  )
   echo -e "${YELLOW}Vulkan backend disabled${NC}"
 fi
 
@@ -612,9 +612,9 @@ build_for_abi() {
   
   # Print the exact cmake command for debugging
   echo -e "${YELLOW}Running cmake with options:${NC}"
-  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS}"
+  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[*]}"
   
-  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} || {
+  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[@]} || {
     echo -e "${RED}CMake configuration failed for $ABI${NC}"
     popd
     return 1

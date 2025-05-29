@@ -74,32 +74,51 @@ add_library(
 target_compile_options(common PRIVATE -Wno-unused-function)
 target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 
+# Check if Vulkan backend library is available
+set(VULKAN_BACKEND_AVAILABLE FALSE)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
+    set(VULKAN_BACKEND_AVAILABLE TRUE)
+    message(STATUS "Vulkan backend library found for ${ANDROID_ABI}")
+else()
+    message(STATUS "Vulkan backend library not found for ${ANDROID_ABI}")
+endif()
+
+# Check if OpenCL backend library is available
+set(OPENCL_BACKEND_AVAILABLE FALSE)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so AND EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
+    set(OPENCL_BACKEND_AVAILABLE TRUE)
+    message(STATUS "OpenCL backend libraries found for ${ANDROID_ABI}")
+else()
+    message(STATUS "OpenCL backend libraries not found for ${ANDROID_ABI}")
+endif()
+
 # Hybrid backend approach: CPU static (built into main libraries), GPU dynamic
 # CPU backend will be statically linked into main libraries (libggml.so, libllama.so)
-# GPU backends (OpenCL, Vulkan) will be dynamically loaded at runtime
+# GPU backends (OpenCL, Vulkan) will be dynamically loaded at runtime only if available
 target_compile_definitions(common PRIVATE 
     -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
     -DGGML_CPU=1         # CPU backend statically built into main libraries
-    -DGGML_VULKAN=1      # Enable Vulkan backend support for dynamic loading
-    -DGGML_OPENCL=1      # Enable OpenCL backend support for dynamic loading
 )
 target_compile_definitions(RNLlamaCpp PRIVATE 
     -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
     -DGGML_CPU=1         # CPU backend statically built into main libraries
-    -DGGML_VULKAN=1      # Enable Vulkan backend support for dynamic loading
-    -DGGML_OPENCL=1      # Enable OpenCL backend support for dynamic loading
 )
 
-# Conditionally enable GPU backends only if they're actually available
-if(VULKAN_BACKEND_AVAILABLE)
-    # Don't enable Vulkan on Android - causes crashes during auto-initialization
-    # target_compile_definitions(common PRIVATE -DGGML_VULKAN=1)
-    # target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_VULKAN=1)
-    message(STATUS "Vulkan backend support disabled on Android to prevent crashes")
-else()
-    message(STATUS "Vulkan backend support disabled - library not available")
-endif()
+# DISABLE Vulkan on Android - causes crashes during auto-initialization on emulators
+# Even with n_gpu_layers=0, llama.cpp tries to initialize all available backends
+message(STATUS "Vulkan backend support DISABLED on Android to prevent emulator crashes")
 
+# TODO: Enable Vulkan backend if available (currently disabled due to emulator crashes)
+# Uncomment the lines below to test Vulkan support on real devices
+# if(VULKAN_BACKEND_AVAILABLE)
+#     target_compile_definitions(common PRIVATE -DGGML_VULKAN=1)
+#     target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_VULKAN=1)
+#     message(STATUS "Vulkan backend support enabled for dynamic loading")
+# else()
+#     message(STATUS "Vulkan backend support disabled - library not available")
+# endif()
+
+# Enable OpenCL backend if available
 if(OPENCL_BACKEND_AVAILABLE)
     target_compile_definitions(common PRIVATE -DGGML_OPENCL=1)
     target_compile_definitions(RNLlamaCpp PRIVATE -DGGML_OPENCL=1)
@@ -183,11 +202,13 @@ if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
     # Even with n_gpu_layers=0, llama.cpp tries to initialize all available backends
     # and the Android emulator Vulkan driver is broken
     message(STATUS "Skipping Vulkan backend copy to prevent emulator crashes")
+    
+    # TODO: Uncomment the lines below to enable Vulkan library copying for testing on real devices
     # add_custom_command(TARGET RNLlamaCpp POST_BUILD
     #     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     #         ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so
     #         $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-vulkan.so
-    #     COMMENT "Copying Vulkan library to build output directory"
+    #     COMMENT "Copying Vulkan backend library to build output directory"
     # )
 endif()
 
