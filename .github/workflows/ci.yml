@@ -189,40 +189,9 @@ jobs:
           # Get Android NDK path
           NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
           
-          # Create required directories to avoid cache errors
-          mkdir -p prebuilt/gpu
-          mkdir -p prebuilt/libs/external/vulkan
-          mkdir -p prebuilt/libs/external/opencl
-          
-          # Skip GPU backend build if we have a cache hit
-          if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
-            echo "✅ Using cached GPU libraries"
-          else
-            # First build the GPU backend libraries
-            echo "Building Android GPU backend libraries..."
-            cd scripts
-            export GGML_VK_DISABLE_COOPMAT=1
-            export GGML_VK_DISABLE_COOPMAT2=1
-            bash build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH"
-            cd ..
-          fi
-          
-          # Verify GPU libraries were built in prebuilt directory
-          if [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
-            echo "✅ Successfully built GPU libraries for arm64-v8a"
-            ls -la prebuilt/gpu/arm64-v8a/
-          else
-            echo "❌ No GPU libraries found for arm64-v8a, build failed"
-            exit 1
-          fi
-          
-          # Check for Vulkan environment files
-          if [ -f "prebuilt/gpu/arm64-v8a/.vulkan_env" ]; then
-            echo "✅ Vulkan environment file created"
-            cat prebuilt/gpu/arm64-v8a/.vulkan_env
-          else
-            echo "⚠️ No Vulkan environment file found"
-          fi
+          # Build GPU backend libraries first (OpenCL only, no Vulkan to avoid emulator crashes)
+          echo "Building GPU backend libraries..."
+          scripts/build_android_gpu_backend.sh --abi=all --ndk-path="$NDK_PATH" --no-vulkan
 
       - name: Build Final Android Libraries
         run: |

@@ -83,6 +83,7 @@ ANDROID_JNI_DIR="$ANDROID_DIR/src/main/jniLibs"
 CPP_DIR="$PROJECT_ROOT/cpp"
 LLAMA_CPP_DIR="$CPP_DIR/llama.cpp"
 BUILD_DIR="$PROJECT_ROOT/build-android"
+PREBUILT_GPU_DIR="$PROJECT_ROOT/prebuilt/gpu"
 
 # Clean up if requested
 if [ "$CLEAN_BUILD" = true ]; then
@@ -327,20 +328,31 @@ build_for_abi() {
     fi
   done
   
-  # GPU backend libraries (optional)
+  # GPU backend libraries - copy from prebuilt/gpu directory (built by build_android_gpu_backend.sh)
   if [ "$BUILD_OPENCL" = true ]; then
-    for lib in libggml-opencl.so libOpenCL.so; do
-      if [ -f "$ABI_BUILD_DIR/bin/$lib" ]; then
-        cp "$ABI_BUILD_DIR/bin/$lib" "$ANDROID_JNI_DIR/$ABI/"
-        echo -e "${GREEN}Copied OpenCL $lib for $ABI${NC}"
-      elif [ -f "$ABI_BUILD_DIR/$lib" ]; then
-        cp "$ABI_BUILD_DIR/$lib" "$ANDROID_JNI_DIR/$ABI/"
-        echo -e "${GREEN}Copied OpenCL $lib for $ABI${NC}"
-      fi
-    done
+    # Copy GGML OpenCL backend from main build
+    if [ -f "$ABI_BUILD_DIR/bin/libggml-opencl.so" ]; then
+      cp "$ABI_BUILD_DIR/bin/libggml-opencl.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied OpenCL backend for $ABI${NC}"
+    elif [ -f "$ABI_BUILD_DIR/libggml-opencl.so" ]; then
+      cp "$ABI_BUILD_DIR/libggml-opencl.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied OpenCL backend for $ABI${NC}"
+    else
+      echo -e "${YELLOW}OpenCL backend not found for $ABI${NC}"
+    fi
+    
+    # Copy OpenCL ICD loader from prebuilt directory (built by build_android_gpu_backend.sh)
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+      cp "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied OpenCL ICD loader for $ABI from prebuilt directory${NC}"
+    else
+      echo -e "${YELLOW}OpenCL ICD loader not found in prebuilt directory for $ABI${NC}"
+      echo -e "${YELLOW}Please run 'scripts/build_android_gpu_backend.sh' first${NC}"
+    fi
   fi
   
   if [ "$BUILD_VULKAN" = true ]; then
+    # Copy GGML Vulkan backend from main build  
     if [ -f "$ABI_BUILD_DIR/bin/libggml-vulkan.so" ]; then
       cp "$ABI_BUILD_DIR/bin/libggml-vulkan.so" "$ANDROID_JNI_DIR/$ABI/"
       echo -e "${GREEN}Copied Vulkan library for $ABI${NC}"
