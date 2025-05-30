@@ -61,6 +61,73 @@ If you're interested in helping with any of these areas, please check our Contri
 npm install @novastera-oss/llamarn
 ```
 
+## Developer Setup
+
+If you're contributing to the library or running the example project, follow these setup steps:
+
+### Prerequisites
+
+1. Clone the repository and navigate to the project directory
+2. Ensure you have React Native development environment set up for your target platform(s)
+
+### Initial Setup
+
+```sh
+# Install dependencies
+npm install
+
+# Optional if you already had previous version of llamacpp
+npm run clean-llama
+
+# Initialize llama.cpp submodule and dependencies
+npm run setup-llama-cpp
+```
+
+### Android Development
+
+1. Build the native Android libraries:
+```sh
+# Build the external native libraries for Android
+./scripts/build_android_external.sh
+```
+
+2. Run the example project:
+```sh
+cd example
+npm run android
+```
+
+### iOS Development
+
+1. Navigate to the example project and install iOS dependencies:
+```sh
+cd example
+cd ios
+
+# Install CocoaPods dependencies
+bundle exec pod install
+
+# Or if not using Bundler:
+# pod install
+
+cd ..
+```
+
+2. Run the example project:
+```sh
+npm run ios
+```
+
+### Development Notes
+
+- **Android**: The `build_android_external.sh` script compiles llama.cpp for Android architectures and sets up the necessary native libraries. This step is required before running the Android example.
+
+- **iOS**: The iOS setup uses CocoaPods to manage native dependencies. The prebuilt llama.cpp framework is included in the repository.
+
+- **Troubleshooting**: If you encounter build issues, try cleaning your build cache:
+  - Android: `cd android && ./gradlew clean`
+  - iOS: `cd example/ios && rm -rf build && rm Podfile.lock && pod install`
+
 ## Basic Usage
 
 ### Simple Completion

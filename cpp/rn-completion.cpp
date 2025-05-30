@@ -298,7 +298,8 @@ CompletionResult run_completion(
         }
 
         const int64_t t_end_generation = ggml_time_us();
-        const double generation_time_ms = (t_end_generation - t_start_generation) / 1000.0;
+        // Note: keeping generation_time_ms for future timing measurements
+        // const double generation_time_ms = (t_end_generation - t_start_generation) / 1000.0;
 
         // Set the result
         result.content = state.generated_text;
@@ -350,7 +351,8 @@ CompletionResult run_chat_completion(
         template_inputs.messages = chat_msgs;
         template_inputs.add_generation_prompt = true;
         template_inputs.use_jinja = options.use_jinja;
-        template_inputs.extract_reasoning = true; // Default to true to extract reasoning content if available
+        // Note: extract_reasoning field doesn't exist in current llama.cpp version
+        // template_inputs.extract_reasoning = true; // Default to true to extract reasoning content if available
 
         // Add grammar if present in options
         if (!options.grammar.empty()) {

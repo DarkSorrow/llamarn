@@ -27,11 +27,17 @@ Pod::Spec.new do |s|
                    # If these are compiled directly, their paths need to be relative to the podspec (e.g., "cpp/llama.cpp/common/common.{h,cpp}")
                    "cpp/llama.cpp/common/common.{h,cpp}",
                    "cpp/llama.cpp/common/log.{h,cpp}",
+                   "cpp/llama.cpp/common/arg.{h,cpp}",
                    "cpp/llama.cpp/common/sampling.{h,cpp}",
                    "cpp/llama.cpp/common/chat.{h,cpp}",
+                   "cpp/llama.cpp/common/chat-parser.{h,cpp}",
+                   "cpp/llama.cpp/common/regex-partial.{h,cpp}",
+                   "cpp/llama.cpp/common/console.{h,cpp}",
+                   "cpp/llama.cpp/common/json-partial.{h,cpp}",
                    "cpp/llama.cpp/common/ngram-cache.{h,cpp}",
                    "cpp/llama.cpp/common/json-schema-to-grammar.{h,cpp}",
                    "cpp/llama.cpp/common/speculative.{h,cpp}",
+                   "cpp/llama.cpp/common/llguidance.{h,cpp}",
                    "cpp/llama.cpp/common/*.hpp",
                    "cpp/llama.cpp/common/minja/*.hpp"
   
@@ -52,16 +58,17 @@ Pod::Spec.new do |s|
     "SWIFT_OPTIMIZATION_LEVEL" => "-O",
     "ENABLE_BITCODE" => "NO",
     "DEFINES_MODULE" => "YES",
-    "OTHER_LDFLAGS" => "$(inherited)",
+    "OTHER_LDFLAGS" => "$(inherited) -framework Accelerate -framework Foundation -framework Metal -framework MetalKit",
     # These preprocessor macros ensure TurboModule registration works correctly
     "GCC_PREPROCESSOR_DEFINITIONS" => ["$(inherited)", "RCT_NEW_ARCH_ENABLED=1", 
                                        "__STDC_FORMAT_MACROS=1", # For format macros in C++
                                        "LLAMA_SHARED=1"]         # For llama shared symbols
   }
 
-  # Add user_target_xcconfig to propagate linker flags
+  # Add user_target_xcconfig to propagate linker flags and fix framework issues
   s.user_target_xcconfig = {
-    "OTHER_LDFLAGS" => "$(inherited)"
+    "OTHER_LDFLAGS" => "$(inherited) -framework Accelerate -framework Foundation -framework Metal -framework MetalKit",
+    "FRAMEWORK_SEARCH_PATHS" => "$(inherited) $(PLATFORM_DIR)/Developer/Library/Frameworks"
   }
 
   # Install dependencies for Turbo Modules
