@@ -44,8 +44,8 @@ public:
    * Helper functions to easily set values from a JSI object if the property exists.
    * Returns true if the property was found and the value was set.
    */
-  // Template for all numeric types
-  template<typename T, typename = typename std::enable_if<std::is_arithmetic<T>::value>::type>
+  // Template for numeric types (excluding bool so bool specialization is used)
+  template<typename T, typename = typename std::enable_if<std::is_arithmetic<T>::value && !std::is_same<T, bool>::value>::type>
   static bool setIfExists(jsi::Runtime& rt, const jsi::Object& options, const std::string& key, T& outValue) {
     if (options.hasProperty(rt, key.c_str())) {
       jsi::Value val = options.getProperty(rt, key.c_str());

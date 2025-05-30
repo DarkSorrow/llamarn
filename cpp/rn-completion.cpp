@@ -350,7 +350,7 @@ CompletionResult run_chat_completion(
         common_chat_templates_inputs template_inputs;
         template_inputs.messages = chat_msgs;
         template_inputs.add_generation_prompt = true;
-        template_inputs.use_jinja = options.use_jinja;
+        template_inputs.use_jinja = rn_ctx->params.use_jinja;
         // Note: extract_reasoning field doesn't exist in current llama.cpp version
         // template_inputs.extract_reasoning = true; // Default to true to extract reasoning content if available
 
@@ -391,6 +391,31 @@ CompletionResult run_chat_completion(
         result = run_completion(rn_ctx, cmpl_options, callback);
 
         if (result.success) {
+            // Parse the generated content for tool calls and structured responses
+            common_chat_msg parsed_msg;
+            bool has_parsed_content = false;
+            
+            // Only parse if we have tools available and the response isn't empty
+            if (!template_inputs.tools.empty() && !result.content.empty()) {
+                try {
+                    // Construct the chat syntax for parsing using the format from template application
+                    common_chat_syntax syntax;
+                    syntax.format = chat_params.format;  // Use format from template, not from params
+                    syntax.reasoning_format = rn_ctx->params.reasoning_format;
+                    syntax.reasoning_in_content = true;
+                    syntax.thinking_forced_open = false;
+                    syntax.parse_tool_calls = true;
+                    
+                    // Parse the generated content for tool calls
+                    parsed_msg = common_chat_parse(result.content, false, syntax);
+                    has_parsed_content = true;
+                    
+                } catch (const std::exception& e) {
+                    // If parsing fails, treat as regular content
+                    has_parsed_content = false;
+                }
+            }
+            
             // Create OpenAI-compatible response
             json response = {
                 {"id", gen_chatcmplid()},
@@ -403,11 +428,39 @@ CompletionResult run_chat_completion(
             json choice = {
                 {"index", 0},
                 {"message", {
-                    {"role", "assistant"},
-                    {"content", result.content}
+                    {"role", "assistant"}
                 }},
                 {"finish_reason", "stop"}
             };
+            
+            // Add parsed content and tool calls if available
+            if (has_parsed_content && !parsed_msg.tool_calls.empty()) {
+                // Set content to the parsed content (may be null for tool-only responses)
+                if (!parsed_msg.content.empty()) {
+                    choice["message"]["content"] = parsed_msg.content;
+                } else {
+                    choice["message"]["content"] = nullptr;
+                }
+                
+                // Add tool calls to the message
+                json tool_calls = json::array();
+                for (const auto& tool_call : parsed_msg.tool_calls) {
+                    json tc = {
+                        {"id", tool_call.id.empty() ? ("call_" + std::to_string(std::rand())) : tool_call.id},
+                        {"type", "function"},
+                        {"function", {
+                            {"name", tool_call.name},
+                            {"arguments", tool_call.arguments}
+                        }}
+                    };
+                    tool_calls.push_back(tc);
+                }
+                choice["message"]["tool_calls"] = tool_calls;
+                choice["finish_reason"] = "tool_calls";
+            } else {
+                // Regular text response
+                choice["message"]["content"] = has_parsed_content ? parsed_msg.content : result.content;
+            }
 
             choices.push_back(choice);
             response["choices"] = choices;

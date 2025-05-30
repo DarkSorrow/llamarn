@@ -345,7 +345,8 @@ export default function ModelChatTestScreen() {
       // System message for the weather tool
       initialMessages = [{
         role: 'system',
-        content: 'You are a helpful assistant that can access the current weather information. When a user asks about the weather in a specific city, use the weather tool to fetch that information. If no city is specified, ask the user which city they want to know about.'
+        content: 
+`You are a helpful AI assistant. When asked for specific information like weather or location, you MUST use your available tools to find it. Respond with the information found by the tool.`
       }];
     } else {
       // Default system message
