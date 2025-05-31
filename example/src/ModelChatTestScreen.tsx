@@ -346,7 +346,8 @@ export default function ModelChatTestScreen() {
       initialMessages = [{
         role: 'system',
         content: 
-`You are a helpful AI assistant. When asked for specific information like weather or location, you MUST use your available tools to find it. Respond with the information found by the tool.`
+`You are a helpful AI assistant. When asked for specific information like weather or location, you MUST use your available tools to find it. Respond with the information found by the tool.
+You must use the tool get_weather each time someone ask you about the weather. YOU WILL ALWAYS HAVE ACCESS TO THE get_weather tools`
       }];
     } else {
       // Default system message
