@@ -234,7 +234,7 @@ export interface Spec extends TurboModule {
   // Initialize a Llama context with the given model parameters
   initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods>;
 
-  // Load model info without creating a full contex
+  // Load model info without creating a full context
   loadLlamaModelInfo(modelPath: string): Promise<{
     n_params: number;
     n_vocab: number;

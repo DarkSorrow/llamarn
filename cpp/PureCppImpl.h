@@ -28,7 +28,7 @@ class LlamaCppModel;     // Forward declare LlamaCppModel
 namespace facebook::react {
 
 // Note: The class name is PureCppImpl, and it derives from your project's C++ spec
-class PureCppImpl : public NativeRNLlamaCppCxxSpec<PureCppImpl> {
+class PureCppImpl : public NativeRNLlamaCppCxxSpec<PureCppImpl>, public std::enable_shared_from_this<PureCppImpl> {
 public:
     // Constructor
     PureCppImpl(std::shared_ptr<CallInvoker> jsInvoker);
