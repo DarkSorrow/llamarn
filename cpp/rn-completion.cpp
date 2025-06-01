@@ -228,7 +228,11 @@ CompletionResult run_completion(
                 return result;
             }
 
-            common_sampler_accept(state.sampler, token, true);
+            // Only accept tokens during prompt processing if no grammar is present
+            // Grammar-based sampling needs to start fresh from the generation phase
+            if (sampling_params.grammar.empty()) {
+                common_sampler_accept(state.sampler, token, true);
+            }
             state.n_past++;
         }
 
@@ -442,7 +446,7 @@ CompletionResult run_chat_completion(
             // Add parsed content and tool calls if available
             if (has_parsed_content && !parsed_msg.tool_calls.empty()) {
                 // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion
-                choice["message"] = json::parse(parsed_msg.to_json_oaicompat<std::string>());
+                choice["message"] = parsed_msg.to_json_oaicompat<json>();
                 choice["finish_reason"] = "tool_calls";
             } else if (has_parsed_content && !parsed_msg.content.empty()) {
                 // Regular text response with parsed content
