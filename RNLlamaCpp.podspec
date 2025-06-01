@@ -39,7 +39,8 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/speculative.{h,cpp}",
                    "cpp/llama.cpp/common/llguidance.{h,cpp}",
                    "cpp/llama.cpp/common/*.hpp",
-                   "cpp/llama.cpp/common/minja/*.hpp"
+                   "cpp/llama.cpp/vendor/minja/*.hpp"
+                   "cpp/llama.cpp/vendor/nlohmann/*.hpp"
   
   # Include all necessary headers for compilation
   s.preserve_paths = "ios/include/**/*.h",
@@ -51,7 +52,7 @@ Pod::Spec.new do |s|
 
   # Compiler settings
   s.pod_target_xcconfig = {
-    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
+    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
     "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1",
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++17",
     "GCC_OPTIMIZATION_LEVEL" => "3", # Maximum optimization

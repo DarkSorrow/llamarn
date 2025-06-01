@@ -141,7 +141,8 @@ target_include_directories(common PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/common/minja  # Add this for chat-template.hpp
+    ${LLAMA_CPP_DIR}/vendor/minja
+    ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
 )
 
@@ -150,7 +151,8 @@ target_include_directories(RNLlamaCpp PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/common/minja  # Add this for chat-template.hpp
+    ${LLAMA_CPP_DIR}/vendor/minja  # Add this for chat-template.hpp
+    ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
     # Add the generated headers path
     ${MODULE_ROOT}/android/generated/jni
@@ -244,6 +246,7 @@ target_include_directories(RNLlamaCpp INTERFACE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/common/minja
+    ${LLAMA_CPP_DIR}/vendor/minja
+    ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
 )

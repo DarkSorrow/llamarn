@@ -10,7 +10,7 @@
 
 // Change JSON_ASSERT from assert() to GGML_ASSERT:
 #define JSON_ASSERT GGML_ASSERT
-#include "json.hpp"
+#include "nlohmann/json.hpp"
 #include "base64.hpp"
 #include "chat.h"
 

@@ -79,11 +79,12 @@ copy_header_files() {
   mkdir -p "$INCLUDE_DIR/common/minja"
   
   # Minja headers
-  cp -f "$CPP_DIR/llama.cpp/common/minja/minja.hpp" "$INCLUDE_DIR/common/minja/"
-  cp -f "$CPP_DIR/llama.cpp/common/minja/chat-template.hpp" "$INCLUDE_DIR/common/minja/"
+  cp -f "$CPP_DIR/llama.cpp/vendor/minja/minja.hpp" "$INCLUDE_DIR/common/minja/"
+  cp -f "$CPP_DIR/llama.cpp/vendor/minja/chat-template.hpp" "$INCLUDE_DIR/common/minja/"
   
   # JSON headers
-  cp -f "$CPP_DIR/llama.cpp/common/json.hpp" "$INCLUDE_DIR/common/"
+  mkdir -p "$INCLUDE_DIR/nlohmann"
+  cp -f "$CPP_DIR/llama.cpp/vendor/nlohmann/json.hpp" "$INCLUDE_DIR/nlohmann/"
   cp -f "$CPP_DIR/llama.cpp/common/base64.hpp" "$INCLUDE_DIR/common/"
   
   echo -e "${GREEN}Header files copied successfully${NC}"
