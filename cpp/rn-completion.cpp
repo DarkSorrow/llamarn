@@ -355,11 +355,13 @@ CompletionResult run_chat_completion(
 
     CompletionResult result;
     // Log incoming tools via callback
+    /*
     if (callback) {
         std::string tools_json_str = options.tools.dump(2);
         std::string debug_msg = "[DEBUG RN_COMPLETION_OPTIONS_TOOLS] options.tools JSON: " + tools_json_str;
         callback(debug_msg, false); // false for is_done
     }
+    */
     completion_state state;
 
     if (!rn_ctx || !rn_ctx->model || !rn_ctx->ctx) {
@@ -429,6 +431,7 @@ CompletionResult run_chat_completion(
             bool original_grammar_lazy = chat_params.grammar_lazy; // Store original for logging
 
             // Add a debug log to observe final grammar_lazy and grammar_triggers
+            /*
             if (callback) {
                 std::string tool_choice_str;
                 switch (template_inputs.tool_choice) {
@@ -445,6 +448,7 @@ CompletionResult run_chat_completion(
                                       " | Original chat_params.grammar_lazy: " + std::string(original_grammar_lazy ? "true" : "false"); // Log original lazy
                 callback(debug_msg, false);
             }
+            */
         }
 
         // Run standard completion with the processed prompt
