@@ -147,6 +147,42 @@ CompletionResult run_completion(
         json data = options.to_json();
         // Prepare the sampling parameters
         const auto& params = rn_ctx->params;
+        
+        // Create a copy of sampling parameters and apply grammar if provided
+        common_params_sampling sampling_params = params.sampling;
+        if (!options.grammar.empty()) {
+            sampling_params.grammar = options.grammar;
+        }
+
+        // Parse tool_choice
+        if (options.tool_choice == "auto") {
+            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+        } else if (options.tool_choice == "none") {
+            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_NONE;
+        } else if (options.tool_choice == "required") {
+            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+        }
+        // Initialize the sampler with the updated sampling parameters
+        state.sampler = common_sampler_init(rn_ctx->model, sampling_params);
+        if (!state.sampler) {
+            result.success = false;
+            result.error_msg = "Failed to initialize sampler";
+            result.error_type = RN_ERROR_INFERENCE;
+            return result;
+        }
+
+        // Process stop words
+        if (data.contains("stop")) {
+            if (data["stop"].is_string()) {
+                state.antiprompt.push_back(data["stop"].get<std::string>());
+            } else if (data["stop"].is_array()) {
+                for (const auto& stop : data["stop"]) {
+                    if (stop.is_string()) {
+                        state.antiprompt.push_back(stop.get<std::string>());
+                    }
+                }
+            }
+        }
 
         // Set the prompt
         if (data.contains("prompt")) {
@@ -170,36 +206,6 @@ CompletionResult run_completion(
         state.n_ctx = llama_n_ctx(rn_ctx->ctx);
         state.n_predict = options.n_predict > 0 ? options.n_predict : params.n_predict;
         state.n_remaining = state.n_predict;
-
-        // Parse tool_choice
-        if (options.tool_choice == "auto") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
-        } else if (options.tool_choice == "none") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_NONE;
-        } else if (options.tool_choice == "required") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
-        }
-        // Initialize the sampler
-        state.sampler = common_sampler_init(rn_ctx->model, params.sampling);
-        if (!state.sampler) {
-            result.success = false;
-            result.error_msg = "Failed to initialize sampler";
-            result.error_type = RN_ERROR_INFERENCE;
-            return result;
-        }
-
-        // Process stop words
-        if (data.contains("stop")) {
-            if (data["stop"].is_string()) {
-                state.antiprompt.push_back(data["stop"].get<std::string>());
-            } else if (data["stop"].is_array()) {
-                for (const auto& stop : data["stop"]) {
-                    if (stop.is_string()) {
-                        state.antiprompt.push_back(stop.get<std::string>());
-                    }
-                }
-            }
-        }
 
         // Process the prompt
         for (int i = 0; i < (int)state.prompt_tokens.size(); ++i) {
@@ -435,31 +441,15 @@ CompletionResult run_chat_completion(
             
             // Add parsed content and tool calls if available
             if (has_parsed_content && !parsed_msg.tool_calls.empty()) {
-                // Set content to the parsed content (may be null for tool-only responses)
-                if (!parsed_msg.content.empty()) {
-                    choice["message"]["content"] = parsed_msg.content;
-                } else {
-                    choice["message"]["content"] = nullptr;
-                }
-                
-                // Add tool calls to the message
-                json tool_calls = json::array();
-                for (const auto& tool_call : parsed_msg.tool_calls) {
-                    json tc = {
-                        {"id", tool_call.id.empty() ? ("call_" + std::to_string(std::rand())) : tool_call.id},
-                        {"type", "function"},
-                        {"function", {
-                            {"name", tool_call.name},
-                            {"arguments", tool_call.arguments}
-                        }}
-                    };
-                    tool_calls.push_back(tc);
-                }
-                choice["message"]["tool_calls"] = tool_calls;
+                // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion
+                choice["message"] = json::parse(parsed_msg.to_json_oaicompat<std::string>());
                 choice["finish_reason"] = "tool_calls";
+            } else if (has_parsed_content && !parsed_msg.content.empty()) {
+                // Regular text response with parsed content
+                choice["message"]["content"] = parsed_msg.content;
             } else {
-                // Regular text response
-                choice["message"]["content"] = has_parsed_content ? parsed_msg.content : result.content;
+                // Fallback to raw content if parsing failed or no tools
+                choice["message"]["content"] = result.content;
             }
 
             choices.push_back(choice);
