@@ -153,6 +153,17 @@ CompletionResult run_completion(
         if (!options.grammar.empty()) {
             sampling_params.grammar = options.grammar;
         }
+        
+        // Apply grammar constraints from chat template
+        if (!chat_params.grammar.empty()) {
+            sampling_params.grammar = chat_params.grammar;
+            sampling_params.grammar_triggers = chat_params.grammar_triggers;
+            sampling_params.preserved_tokens = chat_params.preserved_tokens;
+            // Force non-lazy grammar for tool calls to ensure immediate activation
+            if (!template_inputs.tools.empty()) {
+                sampling_params.grammar_lazy = false;
+            }
+        }
 
         // Parse tool_choice
         if (options.tool_choice == "auto") {
