@@ -66,6 +66,7 @@ struct CompletionOptions {
     int seed = -1;
     json tools;         // tools for function calling
     std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
+    std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar
 
     // Convert to JSON for the completion API
     json to_json() const {
@@ -97,6 +98,12 @@ struct CompletionOptions {
         if (!tools.empty()) {
             j["tools"] = tools;
             j["tool_choice"] = tool_choice;
+        }
+        // Add grammar_triggers if available (mainly for internal use, not direct API option)
+        if (!grammar_triggers.empty()) {
+            // This part is tricky as json can't directly hold common_grammar_trigger easily.
+            // For now, we'll skip adding it to the generic to_json() as it's passed internally.
+            // If it were needed for an API, we'd need a proper serialization for grammar_triggers.
         }
         return j;
     }

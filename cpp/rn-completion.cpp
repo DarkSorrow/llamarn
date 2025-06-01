@@ -152,16 +152,15 @@ CompletionResult run_completion(
         common_params_sampling sampling_params = params.sampling;
         if (!options.grammar.empty()) {
             sampling_params.grammar = options.grammar;
-        }
-        
-        // Apply grammar constraints from chat template
-        if (!chat_params.grammar.empty()) {
-            sampling_params.grammar = chat_params.grammar;
-            sampling_params.grammar_triggers = chat_params.grammar_triggers;
-            sampling_params.preserved_tokens = chat_params.preserved_tokens;
-            // Force non-lazy grammar for tool calls to ensure immediate activation
-            if (!template_inputs.tools.empty()) {
+            // Force grammar_lazy to false whenever tools are present to ensure strict JSON format enforcement
+            if (!options.tools.empty()) {
                 sampling_params.grammar_lazy = false;
+            } else {
+                sampling_params.grammar_lazy = options.grammar_lazy;
+            }
+            // Pass grammar_triggers if any were provided by chat_params and passed via options
+            if (!options.grammar_triggers.empty()) {
+                sampling_params.grammar_triggers = options.grammar_triggers;
             }
         }
 
@@ -239,15 +238,21 @@ CompletionResult run_completion(
                 return result;
             }
 
-            // Only accept tokens during prompt processing if no grammar is present
-            // Grammar-based sampling needs to start fresh from the generation phase
-            if (sampling_params.grammar.empty()) {
+            // For lazy grammars, we need to accept prompt tokens to properly set up the grammar state
+            // For non-lazy grammars, we only accept if no grammar is present (grammar needs clean state)
+            if (sampling_params.grammar.empty() || sampling_params.grammar_lazy) {
                 common_sampler_accept(state.sampler, token, true);
             }
             state.n_past++;
         }
 
         result.n_prompt_tokens = state.prompt_tokens.size();
+
+        // If using a non-lazy grammar, ensure the sampler is in a clean state for the grammar
+        if (!sampling_params.grammar.empty() && !sampling_params.grammar_lazy) {
+            common_sampler_free(state.sampler);
+            state.sampler = common_sampler_init(rn_ctx->model, sampling_params);
+        }
 
         // Start generating tokens
         const int64_t t_start_generation = ggml_time_us();
@@ -383,9 +388,9 @@ CompletionResult run_chat_completion(
         // Parse tools if present
         if (data.contains("tools") && !data["tools"].empty()) {
             template_inputs.tools = common_chat_tools_parse_oaicompat(data["tools"]);
-            // Check if parallel tool calls are allowed (advanced feature)
-            template_inputs.parallel_tool_calls = data.contains("parallel_tool_calls") ?
-                json_value(data, "parallel_tool_calls", false) : false;
+            // Force parallel_tool_calls to true if tools are present, as this generally
+            // aligns with grammars expecting a list of tool calls.
+            template_inputs.parallel_tool_calls = true;
         }
 
         // Parse tool_choice if present
@@ -399,13 +404,40 @@ CompletionResult run_chat_completion(
         // Apply template
         const auto& chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
 
-        // Set up completion options
         CompletionOptions cmpl_options = options;
         cmpl_options.prompt = chat_params.prompt;
 
-        // Apply grammar if needed
         if (!chat_params.grammar.empty()) {
             cmpl_options.grammar = chat_params.grammar;
+            // Always force grammar_lazy to false when tools are present
+            if (!template_inputs.tools.empty()) {
+                cmpl_options.grammar_lazy = false;
+            } else {
+                // Only use chat_params.grammar_lazy if no tools are present
+                cmpl_options.grammar_lazy = chat_params.grammar_lazy;
+            }
+            // Default to grammar_triggers provided by chat_params
+            cmpl_options.grammar_triggers = chat_params.grammar_triggers;
+
+            bool original_grammar_lazy = chat_params.grammar_lazy; // Store original for logging
+
+            // Add a debug log to observe final grammar_lazy and grammar_triggers
+            if (callback) {
+                std::string tool_choice_str;
+                switch (template_inputs.tool_choice) {
+                    case COMMON_CHAT_TOOL_CHOICE_AUTO: tool_choice_str = "auto"; break;
+                    case COMMON_CHAT_TOOL_CHOICE_NONE: tool_choice_str = "none"; break;
+                    case COMMON_CHAT_TOOL_CHOICE_REQUIRED: tool_choice_str = "required"; break;
+                    default: tool_choice_str = "unknown"; break;
+                }
+                std::string debug_msg = "[DEBUG CHAT_PARAMS] grammar_lazy: " +
+                                      std::string(cmpl_options.grammar_lazy ? "true" : "false") +
+                                      " | grammar_triggers_count: " + std::to_string(cmpl_options.grammar_triggers.size()) + // Log triggers from cmpl_options
+                                      " | For Tool Choice: " + tool_choice_str +
+                                      " | Parallel Tool Calls: " + std::string(template_inputs.parallel_tool_calls ? "true" : "false") +
+                                      " | Original chat_params.grammar_lazy: " + std::string(original_grammar_lazy ? "true" : "false"); // Log original lazy
+                callback(debug_msg, false);
+            }
         }
 
         // Run standard completion with the processed prompt
@@ -491,4 +523,5 @@ CompletionResult run_chat_completion(
 }
 
 } // namespace facebook::react
+
 
