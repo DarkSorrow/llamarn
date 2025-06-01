@@ -354,6 +354,13 @@ CompletionResult run_chat_completion(
     std::function<bool(const std::string&, bool)> callback) {
 
     CompletionResult result;
+    // Log incoming tools via callback
+    if (callback) {
+        std::string tools_json_str = options.tools.dump(2);
+        std::string debug_msg = "[DEBUG RN_COMPLETION_OPTIONS_TOOLS] options.tools JSON: " + tools_json_str;
+        callback(debug_msg, false); // false for is_done
+    }
+    completion_state state;
 
     if (!rn_ctx || !rn_ctx->model || !rn_ctx->ctx) {
         result.success = false;

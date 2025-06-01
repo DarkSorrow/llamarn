@@ -21,6 +21,9 @@
 #include "rn-utils.hpp"
 #include "rn-llama.hpp"
 
+// Include json.hpp for json handling
+#include "nlohmann/json.hpp"
+
 namespace facebook::react {
 
 // Chat message structure for representing messages in a conversation
@@ -166,6 +169,8 @@ private:
 
   // Add CallInvoker for async operations
   std::shared_ptr<CallInvoker> jsInvoker_;
+
+  static json jsiValueToJson(jsi::Runtime& rt, const jsi::Value& val); // Declaration of new helper
 };
 
 } // namespace facebook::react
