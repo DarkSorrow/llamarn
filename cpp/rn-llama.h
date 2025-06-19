@@ -10,7 +10,7 @@
 #include "json-schema-to-grammar.h"
 #pragma GCC diagnostic pop
 
-#include "rn-utils.hpp"
+#include "rn-utils.h"
 
 #include <functional>
 #include <mutex>

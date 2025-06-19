@@ -17,9 +17,9 @@
 #include "chat.h"  // For chat format handling and templates
 #include "json-schema-to-grammar.h"
 
-// Include rn-utils.hpp which has the CompletionResult definition
-#include "rn-utils.hpp"
-#include "rn-llama.hpp"
+// Include rn-utils.h which has the CompletionResult definition
+#include "rn-utils.h"
+#include "rn-llama.h"
 
 // Include json.hpp for json handling
 #include "nlohmann/json.hpp"

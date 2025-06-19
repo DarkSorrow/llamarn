@@ -10,7 +10,7 @@
 #include <thread>
 #include "SystemUtils.h"
 // Include our custom headers - this was missing!
-#include "rn-llama.hpp"
+#include "rn-llama.h"
 #include "LlamaCppModel.h"
 // Include the llama.cpp common headers
 #include "chat.h"

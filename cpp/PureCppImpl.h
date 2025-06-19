@@ -9,7 +9,7 @@
 #include <mutex>
 
 // Include the header with the full definition of rn_llama_context
-#include "rn-llama.hpp"
+#include "rn-llama.h"
 
 // Forward declarations for C++ only
 struct llama_model;
@@ -49,7 +49,7 @@ private:
     jsi::Object createModelObject(jsi::Runtime& runtime, struct rn_llama_context* rn_ctx);
 
     // Context for the currently loaded model, if any.
-    // The actual definition of rn_llama_context should be in "rn-llama.hpp"
+    // The actual definition of rn_llama_context should be in "rn-llama.h"
     std::unique_ptr<struct rn_llama_context> rn_ctx_;
 
     // Mutex for thread safety when accessing rn_ctx_ or other shared resources

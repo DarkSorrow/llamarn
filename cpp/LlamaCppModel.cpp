@@ -17,8 +17,8 @@
 #include <memory>
 
 // Include rn-completion integration
-#include "rn-utils.hpp"
-#include "rn-llama.hpp"
+#include "rn-utils.h"
+#include "rn-llama.h"
 
 // Include llama.cpp headers
 #include "llama.h"
