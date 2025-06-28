@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		5CDCA2C92E10125D00DC27AB /* Qwen3-1.7B-Q4_K_M.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CDCA2C82E10125D00DC27AB /* Qwen3-1.7B-Q4_K_M.gguf */; };
 		5CDDD2ED2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */; };
 		5CDDD2EE2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */; };
 		750CBE78C1C2A29E28EFE37B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
@@ -23,6 +24,7 @@
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = llamarnexample/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		33A0CC882224FE725E2EDE41 /* libPods-llamarnexample.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-llamarnexample.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		59B66C4F42C7B1877CBDECE4 /* Pods-llamarnexample.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-llamarnexample.debug.xcconfig"; path = "Target Support Files/Pods-llamarnexample/Pods-llamarnexample.debug.xcconfig"; sourceTree = "<group>"; };
+		5CDCA2C82E10125D00DC27AB /* Qwen3-1.7B-Q4_K_M.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Qwen3-1.7B-Q4_K_M.gguf"; sourceTree = "<group>"; };
 		5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Llama-3.2-1B-Instruct-Q4_K_M.gguf"; sourceTree = "<group>"; };
 		5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"; sourceTree = "<group>"; };
 		6FDE3BC8A6BAF7E61BB5319F /* Pods-llamarnexample.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-llamarnexample.release.xcconfig"; path = "Target Support Files/Pods-llamarnexample/Pods-llamarnexample.release.xcconfig"; sourceTree = "<group>"; };
@@ -74,6 +76,7 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				5CDCA2C82E10125D00DC27AB /* Qwen3-1.7B-Q4_K_M.gguf */,
 				5CDDD2EB2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf */,
 				5CDDD2EC2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf */,
 				13B07FAE1A68108700A75B9A /* llamarnexample */,
@@ -167,6 +170,7 @@
 			files = (
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+				5CDCA2C92E10125D00DC27AB /* Qwen3-1.7B-Q4_K_M.gguf in Resources */,
 				750CBE78C1C2A29E28EFE37B /* PrivacyInfo.xcprivacy in Resources */,
 				5CDDD2ED2DE5DAE800CF9493 /* Llama-3.2-1B-Instruct-Q4_K_M.gguf in Resources */,
 				5CDDD2EE2DE5DAE800CF9493 /* Mistral-7B-Instruct-v0.3.Q4_K_M.gguf in Resources */,
@@ -520,10 +524,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				ONLY_ACTIVE_ARCH = YES;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = llamarnexample;
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../../node_modules/react-native";
@@ -571,10 +572,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = llamarnexample;
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../../node_modules/react-native";

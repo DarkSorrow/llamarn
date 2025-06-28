@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <chrono>
+#include <thread>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -50,33 +51,60 @@ LlamaCppModel::~LlamaCppModel() {
 }
 
 void LlamaCppModel::release() {
-  // Cancel any ongoing predictions
+  // Signal completion to stop and wait for it to finish gracefully
   if (is_predicting_) {
     should_stop_completion_ = true;
 
-    // Optionally wait a bit for completion to stop
+    // Wait more patiently for completion to stop, with proper backoff
     int retry = 0;
-    while (is_predicting_ && retry < 10) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    while (is_predicting_ && retry < 100) { // Increased from 10 to 100
+      std::this_thread::sleep_for(std::chrono::milliseconds(retry < 50 ? 10 : 50));
       retry++;
+    }
+
+    // Force stop if still predicting
+    if (is_predicting_) {
+      is_predicting_ = false;
     }
   }
 
-  // Clean up our resources
+  // Clean up our resources with proper mutex protection
   if (rn_ctx_) {
+    std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
+
+    // Clear KV cache before freeing context (following server.cpp pattern)
     if (rn_ctx_->ctx) {
+      try {
+        llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
+      } catch (...) {
+        // Ignore errors during cache clearing
+      }
+      
       llama_free(rn_ctx_->ctx);
       rn_ctx_->ctx = nullptr;
     }
 
+    // Free model after context (following server.cpp cleanup order)
     if (rn_ctx_->model) {
       llama_model_free(rn_ctx_->model);
       rn_ctx_->model = nullptr;
     }
 
+    // Clean up additional resources
+    rn_ctx_->vocab = nullptr; // This is owned by the model, so just null it
+    rn_ctx_->chat_templates.reset(); // Clean up chat templates
+    rn_ctx_->lora_adapters.clear(); // Clear LoRA adapters
+    
+    // Reset state flags
+    rn_ctx_->model_loaded = false;
+
     // Note: rn_ctx_ itself is owned by the module, so we don't delete it here
     rn_ctx_ = nullptr;
   }
+
+  // Reset our internal state
+  should_stop_completion_ = false;
+  is_predicting_ = false;
 }
 
 int32_t LlamaCppModel::getVocabSize() const {
@@ -365,7 +393,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
 
   // Clear the context KV cache
-  llama_kv_self_clear(rn_ctx_->ctx);
+  llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
 
   // Store original sampling parameters to restore later
   float orig_temp = rn_ctx_->params.sampling.temp;
@@ -885,28 +913,27 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     }
 
     // Clear the context KV cache to ensure clean embedding
-    llama_kv_self_clear(rn_ctx_->ctx);
+    llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
 
     // Enable embedding mode
     llama_set_embeddings(rn_ctx_->ctx, true);
 
-    // Evaluate tokens one by one
+    // Create and populate batch using common_batch functions (following server.cpp pattern)
+    llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
+    
+    common_batch_clear(batch);
     for (int i = 0; i < (int)tokens.size(); i++) {
-      llama_token token = tokens[i];
-      llama_batch batch = {
-        /* n_tokens    */ 1,
-        /* token       */ &token,
-        /* embd        */ nullptr,
-        /* pos         */ &i,
-        /* n_seq_id    */ nullptr,
-        /* seq_id      */ nullptr,
-        /* logits      */ nullptr
-      };
-
-      if (llama_decode(rn_ctx_->ctx, batch) != 0) {
-        throw std::runtime_error("Failed to decode token for embedding");
-      }
+      // For embeddings, we typically need logits for the last token (for pooling)
+      bool needs_logits = (i == (int)tokens.size() - 1);
+      common_batch_add(batch, tokens[i], i, {0}, needs_logits);
     }
+
+    if (llama_decode(rn_ctx_->ctx, batch) != 0) {
+      llama_batch_free(batch);
+      throw std::runtime_error("Failed to decode tokens for embedding");
+    }
+    
+    llama_batch_free(batch);
 
     // Get embedding size from the model
     const int n_embd = llama_model_n_embd(rn_ctx_->model);

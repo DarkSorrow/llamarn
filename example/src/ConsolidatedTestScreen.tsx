@@ -18,9 +18,10 @@ import RNFS from 'react-native-fs';
 const { AssetCheckModule } = NativeModules;
 
 // Use smaller model for Android to avoid build size issues
-const modelFileName = Platform.OS === 'android' 
+/*const modelFileName = Platform.OS === 'android' 
   ? "Llama-3.2-1B-Instruct-Q4_K_M.gguf"  // 770MB - smaller for Android
-  : "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"; // 4.1GB - full model for iOS
+  : "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"; // 4.1GB - full model for iOS*/
+const modelFileName = "Qwen3-1.7B-Q4_K_M.gguf";
 
 export default function ConsolidatedTestScreen() {
   const [llamaContext, setLlamaContext] = useState<LlamaModel | null>(null);
