@@ -161,6 +161,10 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.min_p = obj.getProperty(rt, "min_p").asNumber();
   }
 
+  if (obj.hasProperty(rt, "presence_penalty") && !obj.getProperty(rt, "presence_penalty").isUndefined()) {
+    options.presence_penalty = obj.getProperty(rt, "presence_penalty").asNumber();
+  }
+
   if (obj.hasProperty(rt, "n_predict") && !obj.getProperty(rt, "n_predict").isUndefined()) {
     options.n_predict = obj.getProperty(rt, "n_predict").asNumber();
   } else if (obj.hasProperty(rt, "max_tokens") && !obj.getProperty(rt, "max_tokens").isUndefined()) {
@@ -400,6 +404,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   float orig_top_p = rn_ctx_->params.sampling.top_p;
   float orig_top_k = rn_ctx_->params.sampling.top_k;
   float orig_min_p = rn_ctx_->params.sampling.min_p;
+  float orig_presence_penalty = rn_ctx_->params.sampling.penalty_present;
   int orig_n_predict = rn_ctx_->params.n_predict;
 
   // Set sampling parameters from options
@@ -407,6 +412,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   rn_ctx_->params.sampling.top_p = options.top_p;
   rn_ctx_->params.sampling.top_k = options.top_k;
   rn_ctx_->params.sampling.min_p = options.min_p;
+  rn_ctx_->params.sampling.penalty_present = options.presence_penalty;
   rn_ctx_->params.n_predict = options.n_predict;
 
   // Check for a partial callback
@@ -454,6 +460,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   rn_ctx_->params.sampling.top_p = orig_top_p;
   rn_ctx_->params.sampling.top_k = orig_top_k;
   rn_ctx_->params.sampling.min_p = orig_min_p;
+  rn_ctx_->params.sampling.penalty_present = orig_presence_penalty;
   rn_ctx_->params.n_predict = orig_n_predict;
 
   return result;

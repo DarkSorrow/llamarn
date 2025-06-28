@@ -54,6 +54,7 @@ struct CompletionOptions {
     float top_p = 0.9f;
     float top_k = 40.0f;
     float min_p = 0.05f;
+    float presence_penalty = 0.0f;  // for reducing repetitions (0-2 range)
     int n_keep = 0;
     int n_probs = 0;  // for log probabilities
     bool post_sampling_probs = false;
@@ -77,6 +78,7 @@ struct CompletionOptions {
             {"top_p", top_p},
             {"top_k", top_k},
             {"min_p", min_p},
+            {"presence_penalty", presence_penalty},
             {"n_predict", n_predict},
             {"n_keep", n_keep},
             {"n_probs", n_probs},
@@ -147,6 +149,7 @@ struct CompletionOptions {
         data["top_p"] = top_p;
         data["max_tokens"] = n_predict;
         data["stream"] = stream;
+        data["presence_penalty"] = presence_penalty;
 
         if (seed >= 0) {
             data["seed"] = seed;

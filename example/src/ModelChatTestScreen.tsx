@@ -347,11 +347,18 @@ export default function ModelChatTestScreen() {
       initialMessages = [{
         role: 'system',
         content: 
-`You are a helpful AI assistant. When asked for specific information like weather or location, you MUST use your available tools to find it. Respond with the information found by the tool.
-You must use the tool get_weather each time someone ask you about the weather. YOU WILL ALWAYS HAVE ACCESS TO THE get_weather tools`
+`You are a helpful AI assistant with access to tools. Use tools only when necessary.
+
+Rules:
+1. For weather information: Use the get_weather tool
+2. For location information: Use the get_location tool  
+3. For general questions: Answer directly without tools
+4. Only call tools when necessary to answer the user's specific question
+5. Don't make multiple tool calls for the same information
+6. Keep responses concise and helpful`
       }];
     } else {
-      // Default system message
+      // Default system message with Qwen3 thinking mode
       initialMessages = [{
         role: 'system',
         content: 'You are a helpful AI assistant.'
@@ -405,10 +412,13 @@ You must use the tool get_weather each time someone ask you about the weather. Y
           ...(msg.name && { name: msg.name }),
           ...(msg.tool_call_id && { tool_call_id: msg.tool_call_id })
         })) as LlamaMessage[],
-        temperature: 0.3,
-        top_p: 0.85,
-        top_k: 40,
-        max_tokens: 400,
+        // Qwen3 thinking mode settings (better for complex reasoning about tool usage)
+        temperature: 0.6,
+        top_p: 0.95,
+        top_k: 20,
+        min_p: 0,
+        presence_penalty: 1.5,  // Higher to prevent endless repetitions in thinking mode
+        max_tokens: 8192,       // More space for thinking + response
         stop: ["</s>", "<|im_end|>", "<|eot_id|>"],
       };
       
@@ -548,7 +558,14 @@ You must use the tool get_weather each time someone ask you about the weather. Y
           })) as LlamaMessage[],
           // Disable tools for the final response to prevent infinite loops
           tools: undefined,
-          tool_choice: undefined
+          tool_choice: undefined,
+          // Keep Qwen3 thinking mode settings for final response
+          temperature: 0.6,
+          top_p: 0.95,
+          top_k: 20,
+          min_p: 0,
+          presence_penalty: 1.5,
+          max_tokens: 4096,  // Smaller for final response
         },
         (data: { token: string }) => {
           handleStreamingToken(data.token);
@@ -722,7 +739,7 @@ You must use the tool get_weather each time someone ask you about the weather. Y
     return (
       <View style={styles.toolModeContainer}>
         <Text style={styles.toolModeText}>
-          <Text style={styles.toolModeHighlight}>Tool Mode Active:</Text> Ask about the weather
+          <Text style={styles.toolModeHighlight}>Tool Mode Active:</Text> Ask about weather or location
         </Text>
         <View style={styles.toolButtonsContainer}>
           <TouchableOpacity
