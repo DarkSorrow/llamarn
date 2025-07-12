@@ -28,7 +28,7 @@ print_usage() {
   echo "Usage: $0 [options]"
   echo "Options:"
   echo "  --help                 Print this help message"
-  echo "  --abi=[all|arm64-v8a|x86_64]  Specify which ABI to build for (default: all)"
+  echo "  --abi=[all|arm64-v8a|x86_64|armeabi-v7a|x86]  Specify which ABI to build for (default: all)"
   echo "  --no-opencl            Disable OpenCL GPU acceleration"
   echo "  --no-vulkan            Disable Vulkan GPU acceleration"
   echo "  --vulkan               Enable Vulkan GPU acceleration (default)"
@@ -155,6 +155,8 @@ mkdir -p "$OPENCL_LIB_DIR"
 mkdir -p "$VULKAN_INCLUDE_DIR"
 mkdir -p "$ANDROID_JNI_DIR/arm64-v8a"
 mkdir -p "$ANDROID_JNI_DIR/x86_64"
+mkdir -p "$ANDROID_JNI_DIR/armeabi-v7a"
+mkdir -p "$ANDROID_JNI_DIR/x86"
 mkdir -p "$ANDROID_CPP_DIR/include"
 
 # Determine platform and setup environment
@@ -522,6 +524,10 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
         VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
       elif [ "$ABI" = "x86_64" ]; then
         VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "armeabi-v7a" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
       fi
       
       # Add Vulkan library path if it exists
@@ -538,6 +544,10 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
         VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
       elif [ "$ABI" = "x86_64" ]; then
         VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "armeabi-v7a" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86" ]; then
+        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
       fi
       
       # Add Vulkan library path if it exists
@@ -570,13 +580,13 @@ else
   echo -e "${YELLOW}Vulkan backend disabled${NC}"
 fi
 
-# Define ABIs to build (only 64-bit architectures)
+# Define ABIs to build (both 32-bit and 64-bit architectures)
 if [ "$BUILD_ABI" = "all" ]; then
-  ABIS=("arm64-v8a" "x86_64")  # Only 64-bit architectures
-elif [ "$BUILD_ABI" = "arm64-v8a" ] || [ "$BUILD_ABI" = "x86_64" ]; then
+  ABIS=("arm64-v8a" "x86_64" "armeabi-v7a" "x86")  # All common Android architectures
+elif [ "$BUILD_ABI" = "arm64-v8a" ] || [ "$BUILD_ABI" = "x86_64" ] || [ "$BUILD_ABI" = "armeabi-v7a" ] || [ "$BUILD_ABI" = "x86" ]; then
   ABIS=("$BUILD_ABI")
 else
-  echo -e "${RED}Invalid ABI: $BUILD_ABI. Supported ABIs are: all, arm64-v8a, x86_64 (64-bit only)${NC}"
+  echo -e "${RED}Invalid ABI: $BUILD_ABI. Supported ABIs are: all, arm64-v8a, x86_64, armeabi-v7a, x86${NC}"
   exit 1
 fi
 
@@ -597,6 +607,26 @@ build_for_abi() {
       -DANDROID_ABI="x86_64"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
+    )
+  elif [ "$ABI" = "armeabi-v7a" ]; then
+    local ARCH_FLAGS=(
+      -DANDROID_ABI="armeabi-v7a"
+      -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
+      -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
+      -DGGML_FP16=OFF
+      -DGGML_ARM_FP16=OFF
+      -DGGML_LLAMAFILE=OFF
+      -DLLAMA_BUILD_TOOLS=OFF
+    )
+  elif [ "$ABI" = "x86" ]; then
+    local ARCH_FLAGS=(
+      -DANDROID_ABI="x86"
+      -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
+      -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
+      -DGGML_FP16=OFF
+      -DGGML_F16C=OFF
+      -DGGML_LLAMAFILE=OFF
+      -DLLAMA_BUILD_TOOLS=OFF
     )
   fi
   
@@ -952,6 +982,20 @@ if [ "$BUILD_SUCCESS" = true ]; then
           echo -e "${GREEN}✓ x86_64 library is correctly built for x86-64 architecture${NC}"
         else
           echo -e "${RED}✗ x86_64 library is NOT built for x86-64 architecture: $file_output${NC}"
+        fi
+      elif [ "$ABI" = "armeabi-v7a" ]; then
+        file_output=$(file "$ANDROID_JNI_DIR/$ABI/libllama.so")
+        if echo "$file_output" | grep -q -E "ARM|arm"; then
+          echo -e "${GREEN}✓ armeabi-v7a library is correctly built for ARM architecture${NC}"
+        else
+          echo -e "${RED}✗ armeabi-v7a library is NOT built for ARM architecture: $file_output${NC}"
+        fi
+      elif [ "$ABI" = "x86" ]; then
+        file_output=$(file "$ANDROID_JNI_DIR/$ABI/libllama.so")
+        if echo "$file_output" | grep -q "80386"; then
+          echo -e "${GREEN}✓ x86 library is correctly built for 80386 architecture${NC}"
+        else
+          echo -e "${RED}✗ x86 library is NOT built for 80386 architecture: $file_output${NC}"
         fi
       fi
       

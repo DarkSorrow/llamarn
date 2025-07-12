@@ -1,6 +1,6 @@
 {
   "name": "@novastera-oss/llamarn",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "An attempt at a pure cpp turbo module library",
   "source": "./src/index.tsx",
   "main": "./lib/module/index.js",
