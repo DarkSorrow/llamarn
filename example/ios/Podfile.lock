@@ -1656,7 +1656,7 @@ PODS:
     - React-utils (= 0.79.2)
   - RNFS (2.20.0):
     - React-Core
-  - RNLlamaCpp (0.3.0):
+  - RNLlamaCpp (0.3.1):
     - DoubleConversion
     - glog
     - hermes-engine
@@ -1981,7 +1981,7 @@ SPEC CHECKSUMS:
   ReactCodegen: 5bfd096912d526917ea0cfcba809bc6f33b1069a
   ReactCommon: 4d0da92a5eb8da86c08e3ec34bd23ab439fb2461
   RNFS: 4ac0f0ea233904cb798630b3c077808c06931688
-  RNLlamaCpp: 528c41a0b851f4349752fcf3ebbd5e6d6e5fde68
+  RNLlamaCpp: ee110750b20d29ae40de5e01de051915aa12ab03
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: 9f110fc4b7aa538663cba3c14cbb1c335f43c13f
 
