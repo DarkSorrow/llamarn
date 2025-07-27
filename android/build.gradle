@@ -67,7 +67,8 @@ android {
     minSdkVersion getExtOrIntegerDefault("minSdkVersion")
     targetSdkVersion getExtOrIntegerDefault("targetSdkVersion")
 
-
+    // Include ProGuard rules for apps that use this library
+    consumerProguardFiles 'proguard-rules.pro'
   }
 
 
