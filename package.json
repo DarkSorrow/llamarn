@@ -1,6 +1,6 @@
 {
   "name": "@novastera-oss/llamarn",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "An attempt at a pure cpp turbo module library",
   "source": "./src/index.tsx",
   "main": "./lib/module/index.js",
@@ -60,7 +60,6 @@
     "llama-init": "node scripts/setup-llama-cpp.js init",
     "llama-tags": "bash scripts/llama_cpp_source.sh list-tags",
     "llama-from-source": "LLAMACPPRN_BUILD_FROM_SOURCE=true node scripts/setup-llama-cpp.js",
-    "llama-prebuilt": "node scripts/setup-llama-cpp.js",
     "build-android": "npm run clean-android && bash scripts/build_android_gpu_backend.sh && bash scripts/build_android_external.sh",
     "build-android-gpu": "bash scripts/build_android_gpu_backend.sh",
     "build-android-external": "bash scripts/build_android_external.sh",

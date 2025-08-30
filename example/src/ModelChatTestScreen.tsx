@@ -416,7 +416,7 @@ Rules:
         min_p: 0,
         presence_penalty: 1.5,  // Higher to prevent endless repetitions in thinking mode
         max_tokens: 8192,       // More space for thinking + response
-        stop: ["</s>", "<|im_end|>", "<|eot_id|>"],
+        stop: ["</s>", "<|im_end|>", "<|eot_id|>", "<|eom_id|>"],
       };
       
       // Add tools and tool configuration only in tools mode

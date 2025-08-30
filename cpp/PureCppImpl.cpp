@@ -203,6 +203,13 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   float yarn_beta_fast = 32.0f;
   float yarn_beta_slow = 1.0f;
   std::string chat_template;
+  
+  // Thinking and reasoning options
+  int reasoning_budget = 0;  // -1 = unlimited, 0 = disabled, >0 = limited
+  common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
+  bool thinking_forced_open = false;
+  bool parse_tool_calls = true;  // Enabled by default for better tool support
+  bool parallel_tool_calls = false;  // Disabled by default for compatibility
 
   // Parse options to native types
   SystemUtils::setIfExists(runtime, options, "n_ctx", n_ctx);
@@ -219,6 +226,22 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   SystemUtils::setIfExists(runtime, options, "verbose", verbosity);
   SystemUtils::setIfExists(runtime, options, "logits_file", logits_file);
   SystemUtils::setIfExists(runtime, options, "chat_template", chat_template);
+  
+  // Parse thinking and reasoning options
+  SystemUtils::setIfExists(runtime, options, "reasoning_budget", reasoning_budget);
+  SystemUtils::setIfExists(runtime, options, "thinking_forced_open", thinking_forced_open);
+  SystemUtils::setIfExists(runtime, options, "parse_tool_calls", parse_tool_calls);
+  SystemUtils::setIfExists(runtime, options, "parallel_tool_calls", parallel_tool_calls);
+  
+  // Note: parse_tool_calls will be automatically enabled if use_jinja is true,
+  // as Jinja templates provide better tool calling capabilities
+  
+  // Parse reasoning_format as string and convert to enum
+  if (options.hasProperty(runtime, "reasoning_format")) {
+    reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+    std::string reasoning_format_str = options.getProperty(runtime, "reasoning_format").asString(runtime).utf8(runtime);
+    reasoning_format = common_reasoning_format_from_name(reasoning_format_str);
+  }
 
   if (options.hasProperty(runtime, "n_threads")) {
     n_threads = options.getProperty(runtime, "n_threads").asNumber();
@@ -275,7 +298,7 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
     runtime,
     jsi::PropNameID::forAscii(runtime, "executor"),
     2,
-    [this, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
+    [this, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters, reasoning_budget, reasoning_format, thinking_forced_open, parse_tool_calls, parallel_tool_calls](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
       
       auto resolve = std::make_shared<jsi::Function>(args[0].asObject(runtime).asFunction(runtime));
       auto reject = std::make_shared<jsi::Function>(args[1].asObject(runtime).asFunction(runtime));
@@ -286,7 +309,7 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
       auto selfPtr = shared_from_this();
       
       // Launch background thread for model initialization
-      std::thread([selfPtr, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters, resolve, reject, runtimePtr, invoker]() {
+      std::thread([selfPtr, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters, reasoning_budget, reasoning_format, thinking_forced_open, parse_tool_calls, parallel_tool_calls, resolve, reject, runtimePtr, invoker]() {
         try {
           // Thread-safe access to member variables
           std::lock_guard<std::mutex> lock(selfPtr->mutex_);
@@ -321,6 +344,10 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           params.yarn_attn_factor = yarn_attn_factor;
           params.yarn_beta_fast = yarn_beta_fast;
           params.yarn_beta_slow = yarn_beta_slow;
+          
+          // Set thinking and reasoning parameters
+          params.reasoning_budget = reasoning_budget;
+          params.reasoning_format = reasoning_format;
 
           if (!chat_template.empty()) {
             params.chat_template = chat_template;
@@ -381,13 +408,53 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           static_cast<common_params&>(rn_params) = params;
           // Set additional fields
           rn_params.use_jinja = params.use_jinja;
-          rn_params.reasoning_format = COMMON_REASONING_FORMAT_NONE;
+          // Use the reasoning_format from params instead of hardcoding to NONE
+          rn_params.reasoning_format = params.reasoning_format;
+          
+          // Configure chat template kwargs for thinking and tool calling functionality
+          // This ensures that the thinking feature is available as an option when supported
+          
+          // Configure chat template kwargs based on parsed options
+          // reasoning_budget: -1 = unlimited thinking, 0 = disabled, >0 = limited thinking
+          // This parameter comes from the JSI options and controls the thinking feature
+          if (reasoning_budget != 0) {
+              // Enable thinking if reasoning_budget is not 0 (allows -1 for unlimited or positive values)
+              params.default_template_kwargs["enable_thinking"] = "true";
+          } else {
+              // Disable thinking if reasoning_budget is 0
+              params.default_template_kwargs["enable_thinking"] = "false";
+          }
+          
+          // Add other important thinking-related kwargs based on reasoning_format
+          if (reasoning_format != COMMON_REASONING_FORMAT_NONE) {
+              // If reasoning is enabled, we can add thinking_forced_open as an option
+              // This allows users to force thinking output when needed
+              params.default_template_kwargs["thinking_forced_open"] = thinking_forced_open ? "true" : "false";
+              
+              // reasoning_in_content controls whether reasoning appears in the main content
+              // Default to false for cleaner output, but can be overridden
+              params.default_template_kwargs["reasoning_in_content"] = "false";
+          }
+          
+          // parse_tool_calls is enabled by default, but can be overridden by user options
+          // If use_jinja is enabled, parse_tool_calls should also be enabled for better tool support
+          // This is because Jinja templates often provide better tool calling capabilities
+          bool effective_parse_tool_calls = parse_tool_calls || use_jinja;
+          params.default_template_kwargs["parse_tool_calls"] = effective_parse_tool_calls ? "true" : "false";
+          
+          // parallel_tool_calls allows multiple tool calls in a single response
+          // Can be enabled for supported models
+          params.default_template_kwargs["parallel_tool_calls"] = parallel_tool_calls ? "true" : "false";
+          
+          // Note: Users can override these kwargs by setting them in params.default_template_kwargs
+          // before calling this function, or by using the --chat-template-kwargs CLI argument
+          
           // Now assign to the context
           selfPtr->rn_ctx_->params = rn_params;
 
           selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, params.chat_template);
           try {
-              common_chat_format_example(selfPtr->rn_ctx_->chat_templates.get(), params.use_jinja);
+              common_chat_format_example(selfPtr->rn_ctx_->chat_templates.get(), params.use_jinja, params.default_template_kwargs);
           } catch (const std::exception & e) {
               // Fallback to chatml if the original template parsing fails
               selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, "chatml");

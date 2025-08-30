@@ -4,11 +4,11 @@
 
 # The specific llama.cpp commit hash we want to use
 # Using a specific commit hash ensures a consistent build
-LLAMA_CPP_COMMIT="4762ad7316dcdec20016ab5985fb46a27902204d"  # Commit as specified by user
+LLAMA_CPP_COMMIT="ef476916bba4b44f44be0c98babc1cb025968e75"  # Commit as specified by user
 
 # The tag to use for prebuilt binaries
 # This might differ from the commit hash format
-LLAMA_CPP_TAG="b6000"  # Tag format for binary downloads
+LLAMA_CPP_TAG="b6322"  # Tag format for binary downloads
 
 # Vulkan and OpenCL versions
 VULKAN_SDK_VERSION="1.4.309"

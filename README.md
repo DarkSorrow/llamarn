@@ -18,6 +18,9 @@
 * Chat completion with templates (including Jinja template support)
 * Embeddings generation
 * Function/tool calling support
+* **Advanced thinking and reasoning support** for compatible models
+* **Flexible reasoning budget control** (unlimited, disabled, or limited)
+* **Multiple reasoning format support** (none, auto, deepseek, deepseek-legacy)
 
 ## What Needs Help
 
@@ -38,6 +41,8 @@ We welcome contributions, especially in these areas:
 3. **Tool Support**:
    * Improving tool calling functionality for complex interactions
    * Better JSON validation and error handling
+   * Enhanced thinking and reasoning model support
+   * Advanced reasoning format implementations
 
 4. **Testing**:
    * Automated testing using the example project
@@ -139,7 +144,10 @@ import { initLlama } from '@novastera-oss/llamarn';
 const context = await initLlama({
   model: 'path/to/model.gguf',
   n_ctx: 2048,
-  n_batch: 512
+  n_batch: 512,
+  // Optional: Enable thinking and reasoning capabilities
+  reasoning_budget: -1,  // Unlimited thinking
+  reasoning_format: 'auto'  // Automatic reasoning format detection
 });
 
 // Generate a completion
@@ -162,7 +170,10 @@ const context = await initLlama({
   model: 'path/to/model.gguf',
   n_ctx: 4096,
   n_batch: 512,
-  use_jinja: true  // Enable Jinja template parsing
+  use_jinja: true,  // Enable Jinja template parsing
+  // Optional: Configure thinking and reasoning
+  reasoning_budget: -1,  // Enable unlimited thinking
+  reasoning_format: 'deepseek'  // Use DeepSeek reasoning format
 });
 
 // Chat completion with messages
@@ -189,8 +200,46 @@ const context = await initLlama({
   model: 'path/to/model.gguf',
   n_ctx: 2048,
   n_batch: 512,
-  use_jinja: true  // Enable template handling for tool calls
+  use_jinja: true,  // Enable template handling for tool calls
+  parse_tool_calls: true,  // Enable tool call parsing (auto-enabled with use_jinja)
+  parallel_tool_calls: false  // Disable parallel tool calls for compatibility
 });
+```
+
+### Thinking and Reasoning Models
+
+For models that support reasoning and thinking, you can enable advanced thinking functionality:
+
+```js
+import { initLlama } from '@novastera-oss/llamarn';
+
+// Initialize a reasoning model with thinking capabilities
+const context = await initLlama({
+  model: 'path/to/reasoning-model.gguf',
+  n_ctx: 4096,
+  n_batch: 512,
+  use_jinja: true,
+  
+  // Thinking and reasoning options
+  reasoning_budget: -1,           // -1 = unlimited thinking, 0 = disabled, >0 = limited
+  reasoning_format: 'deepseek',   // Use DeepSeek reasoning format
+  thinking_forced_open: true,     // Force the model to always output thinking
+  parse_tool_calls: true,         // Enable tool call parsing
+  parallel_tool_calls: false      // Disable parallel tool calls for compatibility
+});
+
+// Chat completion with thinking enabled
+const result = await context.completion({
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant. Think through problems step by step.' },
+    { role: 'user', content: 'Solve this math problem: What is 15% of 240?' }
+  ],
+  temperature: 0.7
+});
+
+console.log('Response:', result.text);
+// The response may include thinking tags like <think>...</think> depending on the model
+```
 
 // Create a chat with tool calling
 const response = await context.completion({
@@ -259,6 +308,40 @@ const embeddingResponse = await context.embedding({
 
 console.log('Embedding:', embeddingResponse.data[0].embedding);
 ```
+
+## Advanced Configuration Options
+
+### Thinking and Reasoning Parameters
+
+The library supports advanced thinking and reasoning capabilities for models that support them:
+
+- **`reasoning_budget`**: Controls the amount of thinking allowed
+  - `-1`: Unlimited thinking (default)
+  - `0`: Disabled thinking
+  - `>0`: Limited thinking with the specified budget
+
+- **`reasoning_format`**: Controls how thinking is parsed and returned
+  - `'none'`: Leave thoughts unparsed in message content
+  - `'auto'`: Same as deepseek (default)
+  - `'deepseek'`: Extract thinking into `message.reasoning_content`
+  - `'deepseek-legacy'`: Extract thinking with streaming behavior
+
+- **`thinking_forced_open`**: Forces reasoning models to always output thinking
+  - `false`: Normal thinking behavior (default)
+  - `true`: Always include thinking tags in output
+
+- **`parse_tool_calls`**: Enables tool call parsing
+  - `true`: Parse and extract tool calls (default)
+  - `false`: Disable tool call parsing
+  - **Note**: Automatically enabled when `use_jinja` is true
+
+- **`parallel_tool_calls`**: Enables multiple tool calls in a single response
+  - `false`: Single tool calls only (default, for compatibility)
+  - `true`: Allow parallel tool calls (only supported by some models)
+
+### Automatic Tool Call Enhancement
+
+When `use_jinja` is enabled, `parse_tool_calls` is automatically enabled because Jinja templates provide better tool calling capabilities. This ensures optimal tool support when using advanced templates.
 
 ## Model Path Handling
 

@@ -52,6 +52,13 @@ export interface LlamaModelParams {
   use_jinja?: boolean;        // use Jinja template parser
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
+  // Thinking and reasoning options
+  reasoning_budget?: number;  // Controls thinking functionality: -1 = unlimited, 0 = disabled, >0 = limited
+  reasoning_format?: string;  // Reasoning format: 'none', 'auto', 'deepseek', 'deepseek-legacy'
+  thinking_forced_open?: boolean; // Force reasoning models to always output thinking
+  parse_tool_calls?: boolean; // Enable tool call parsing (auto-enabled when use_jinja is true)
+  parallel_tool_calls?: boolean; // Enable parallel/multiple tool calls for supported models
+
   // LoRA adapters
   lora_adapters?: Array<{
     path: string;             // path to LoRA adapter file
