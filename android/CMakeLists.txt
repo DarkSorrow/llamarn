@@ -78,12 +78,19 @@ add_library(
     ${CPP_DIR}/rn-completion.cpp
 )
 
-# Suppress unused function warnings for llama.cpp code
-target_compile_options(common PRIVATE -Wno-unused-function)
+# Suppress additional warnings that are treated as errors in Expo SDK 54
+target_compile_options(common PRIVATE )
 
 # Use React Native's compile options function for proper C++ flags and RN_SERIALIZABLE_STATE
 if(ReactAndroid_VERSION_MINOR GREATER_EQUAL 80)
+    # Add additional warning suppressions for RNLlamaCpp target
     target_compile_reactnative_options(RNLlamaCpp PRIVATE)
+    target_compile_options(RNLlamaCpp PRIVATE 
+        -Wno-unused-function
+        -Wno-unused-variable
+        -Wno-unused-const-variable
+        -Wno-unused-but-set-variable
+    )
 else()
     target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 endif()
