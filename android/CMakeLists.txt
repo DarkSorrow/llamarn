@@ -80,7 +80,13 @@ add_library(
 
 # Suppress unused function warnings for llama.cpp code
 target_compile_options(common PRIVATE -Wno-unused-function)
-target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
+
+# Use React Native's compile options function for proper C++ flags and RN_SERIALIZABLE_STATE
+if(ReactAndroid_VERSION_MINOR GREATER_EQUAL 80)
+    target_compile_reactnative_options(RNLlamaCpp PRIVATE)
+else()
+    target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
+endif()
 
 # Check if Vulkan backend library is available
 set(VULKAN_BACKEND_AVAILABLE FALSE)
