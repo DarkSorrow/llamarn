@@ -53,7 +53,7 @@ Pod::Spec.new do |s|
   # Compiler settings
   s.pod_target_xcconfig = {
     "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
-    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1",
+    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_CFG_NO_COROUTINES=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1",
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++17",
     "GCC_OPTIMIZATION_LEVEL" => "3", # Maximum optimization
     "SWIFT_OPTIMIZATION_LEVEL" => "-O",

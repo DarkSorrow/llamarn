@@ -255,7 +255,7 @@ CompletionResult run_completion(
         }
 
         // Start generating tokens
-        const int64_t t_start_generation = ggml_time_us();
+        // Note: Timing variables removed as they were not being used
 
         while (state.has_next_token && state.n_remaining > 0) {
             // Sample the next token
@@ -323,9 +323,7 @@ CompletionResult run_completion(
             }
         }
 
-        const int64_t t_end_generation = ggml_time_us();
-        // Note: keeping generation_time_ms for future timing measurements
-        // const double generation_time_ms = (t_end_generation - t_start_generation) / 1000.0;
+        // Note: Timing measurements removed as they were not being used
 
         // Set the result
         result.content = state.generated_text;
@@ -428,27 +426,7 @@ CompletionResult run_chat_completion(
             // Default to grammar_triggers provided by chat_params
             cmpl_options.grammar_triggers = chat_params.grammar_triggers;
 
-            bool original_grammar_lazy = chat_params.grammar_lazy; // Store original for logging
-
-            // Add a debug log to observe final grammar_lazy and grammar_triggers
-            /*
-            if (callback) {
-                std::string tool_choice_str;
-                switch (template_inputs.tool_choice) {
-                    case COMMON_CHAT_TOOL_CHOICE_AUTO: tool_choice_str = "auto"; break;
-                    case COMMON_CHAT_TOOL_CHOICE_NONE: tool_choice_str = "none"; break;
-                    case COMMON_CHAT_TOOL_CHOICE_REQUIRED: tool_choice_str = "required"; break;
-                    default: tool_choice_str = "unknown"; break;
-                }
-                std::string debug_msg = "[DEBUG CHAT_PARAMS] grammar_lazy: " +
-                                      std::string(cmpl_options.grammar_lazy ? "true" : "false") +
-                                      " | grammar_triggers_count: " + std::to_string(cmpl_options.grammar_triggers.size()) + // Log triggers from cmpl_options
-                                      " | For Tool Choice: " + tool_choice_str +
-                                      " | Parallel Tool Calls: " + std::string(template_inputs.parallel_tool_calls ? "true" : "false") +
-                                      " | Original chat_params.grammar_lazy: " + std::string(original_grammar_lazy ? "true" : "false"); // Log original lazy
-                callback(debug_msg, false);
-            }
-            */
+            // Note: Debug logging removed as it was not being used
         }
 
         // Run standard completion with the processed prompt
@@ -534,5 +512,3 @@ CompletionResult run_chat_completion(
 }
 
 } // namespace facebook::react
-
-

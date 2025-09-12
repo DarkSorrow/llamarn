@@ -948,16 +948,8 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
       throw std::runtime_error("Invalid embedding dimension");
     }
 
-    // For OpenAI compatibility, default to mean pooling
-    enum llama_pooling_type pooling_type = LLAMA_POOLING_TYPE_MEAN;
-    if (options.hasProperty(rt, "pooling") && options.getProperty(rt, "pooling").isString()) {
-      std::string pooling = options.getProperty(rt, "pooling").getString(rt).utf8(rt);
-      if (pooling == "last") {
-        pooling_type = LLAMA_POOLING_TYPE_LAST;
-      } else if (pooling == "cls" || pooling == "first") {
-        pooling_type = LLAMA_POOLING_TYPE_CLS;
-      }
-    }
+    // Note: Pooling is handled automatically by llama_get_embeddings()
+    // The function returns the appropriate embedding based on the model's configuration
 
     // Get the embeddings
     std::vector<float> embedding_vec(n_embd);

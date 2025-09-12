@@ -20,10 +20,6 @@
 
 namespace facebook::react {
 
-// Memory fallback constants (clearly defined for future maintenance)
-constexpr int64_t FALLBACK_IOS_MEMORY = 2LL * 1024 * 1024 * 1024;     // 2GB default
-constexpr int64_t FALLBACK_ANDROID_MEMORY = 3LL * 1024 * 1024 * 1024; // 3GB for Android
-constexpr int64_t DEFAULT_FALLBACK_MEMORY = 2LL * 1024 * 1024 * 1024; // 2GB default
 
 int SystemUtils::getOptimalThreadCount() {
     int cpuCores = std::thread::hardware_concurrency();
@@ -85,11 +81,11 @@ int64_t getTotalPhysicalMemory() {
     // Fallback to a conservative estimate if we couldn't get the actual memory
     if (total_memory <= 0) {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
-        total_memory = FALLBACK_IOS_MEMORY;
+        total_memory = 2LL * 1024 * 1024 * 1024;     // 2GB default for iOS
 #elif defined(__ANDROID__)
-        total_memory = FALLBACK_ANDROID_MEMORY;
+        total_memory = 3LL * 1024 * 1024 * 1024;     // 3GB default for Android
 #else
-        total_memory = DEFAULT_FALLBACK_MEMORY;
+        total_memory = 2LL * 1024 * 1024 * 1024;     // 2GB default for other platforms
 #endif
     }
 

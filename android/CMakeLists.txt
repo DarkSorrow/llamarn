@@ -85,12 +85,7 @@ target_compile_options(common PRIVATE )
 if(ReactAndroid_VERSION_MINOR GREATER_EQUAL 80)
     # Add additional warning suppressions for RNLlamaCpp target
     target_compile_reactnative_options(RNLlamaCpp PRIVATE)
-    target_compile_options(RNLlamaCpp PRIVATE 
-        -Wno-unused-function
-        -Wno-unused-variable
-        -Wno-unused-const-variable
-        -Wno-unused-but-set-variable
-    )
+    target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 else()
     target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 endif()
