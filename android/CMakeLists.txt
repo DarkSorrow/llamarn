@@ -118,6 +118,7 @@ target_compile_definitions(common PRIVATE
 target_compile_definitions(RNLlamaCpp PRIVATE 
     -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
     -DGGML_CPU=1         # CPU backend statically built into main libraries
+    -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON  # Support Android 15+ 16KB page sizes
 )
 
 # DISABLE Vulkan on Android - causes crashes during auto-initialization on emulators
