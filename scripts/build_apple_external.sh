@@ -247,8 +247,16 @@ download_ios_framework() {
     fi
   done
 
-  # Update Info.plist to remove references to deleted slices
-  filter_ios_info_plist
+  # Replace Info.plist with the filtered version (iOS only)
+  local info_plist_template="$PROJECT_ROOT/info.plist.change"
+  if [ -f "$info_plist_template" ]; then
+    echo -e "${YELLOW}Replacing Info.plist with iOS-only version...${NC}"
+    cp -f "$info_plist_template" "$PREBUILT_DIR/llama.xcframework/Info.plist"
+    echo -e "${GREEN}Info.plist updated to include only iOS slices${NC}"
+  else
+    echo -e "${YELLOW}Warning: info.plist.change not found at $info_plist_template${NC}"
+    echo -e "${YELLOW}Info.plist will not be filtered (this may cause CocoaPods issues)${NC}"
+  fi
   
   # Verify the framework has the necessary iOS slices
   if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" ]]; then
