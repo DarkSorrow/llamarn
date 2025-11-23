@@ -296,6 +296,14 @@ if [ "$BUILD_OPENCL" = true ]; then
   for ABI in "${ABIS[@]}"; do
     echo -e "${GREEN}Building OpenCL ICD Loader for $ABI (fallback)${NC}"
     
+    # Skip OpenCL ICD loader for unsupported 32-bit ABIs (armeabi-v7a/x86)
+    if [ "$ABI" = "armeabi-v7a" ] || [ "$ABI" = "x86" ]; then
+      echo -e "${YELLOW}Skipping OpenCL ICD loader build for 32-bit ABI $ABI${NC}"
+      mkdir -p "$PREBUILT_GPU_DIR/$ABI"
+      touch "$PREBUILT_GPU_DIR/$ABI/.opencl_skipped"
+      continue
+    fi
+    
     # Set architecture-specific variables
     if [ "$ABI" = "arm64-v8a" ]; then
       ANDROID_ABI="arm64-v8a"

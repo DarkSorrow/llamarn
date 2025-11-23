@@ -221,6 +221,14 @@ build_for_abi() {
     ANDROID_ABI="x86"
   fi
   
+  # Skip GPU backend build for 32-bit ABIs (no reliable OpenCL/Vulkan support)
+  if [ "$ANDROID_ABI" = "armeabi-v7a" ] || [ "$ANDROID_ABI" = "x86" ]; then
+    echo -e "${YELLOW}Skipping GPU backend build for 32-bit ABI $ANDROID_ABI${NC}"
+    mkdir -p "$PREBUILT_GPU_DIR/$ABI"
+    touch "$PREBUILT_GPU_DIR/$ABI/.gpu_skipped"
+    return 0
+  fi
+  
   # Create build directory
   BUILD_DIR="$PREBUILT_BUILD_DIR/gpu-backends-$ABI"
   if [ "$CLEAN_BUILD" = true ]; then
