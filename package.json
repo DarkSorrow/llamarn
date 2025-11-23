@@ -105,7 +105,11 @@
     "preset": "react-native",
     "modulePathIgnorePatterns": [
       "<rootDir>/example/node_modules",
-      "<rootDir>/lib/"
+      "<rootDir>/lib/",
+      "<rootDir>/cpp/llama.cpp/tools/server/webui/"
+    ],
+    "testPathIgnorePatterns": [
+      "<rootDir>/cpp/llama.cpp/tools/server/webui/"
     ]
   },
   "commitlint": {
