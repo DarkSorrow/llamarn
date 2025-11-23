@@ -252,26 +252,29 @@ else
 fi
 
 # Build OpenCL if enabled
+# NOTE: We build the OpenCL ICD loader (libOpenCL.so) as a FALLBACK for devices/emulators that don't have it.
+# The system library is preferred, but our fallback ensures OpenCL works on more devices.
 if [ "$BUILD_OPENCL" = true ]; then
-  echo -e "${GREEN}=== Building OpenCL libraries ===${NC}"
+  echo -e "${GREEN}=== Building OpenCL headers and ICD loader ===${NC}"
   
   # Get OpenCL Headers
   if [ ! -d "$OPENCL_HEADERS_DIR" ]; then
     echo -e "${YELLOW}Cloning OpenCL-Headers...${NC}"
     git clone https://github.com/KhronosGroup/OpenCL-Headers "$OPENCL_HEADERS_DIR"
-    # Copy headers to NDK include directory
-    echo -e "${YELLOW}Installing OpenCL headers to NDK...${NC}"
-    mkdir -p "$HOST_PLATFORM_DIR/sysroot/usr/include/CL"
-    cp -r "$OPENCL_HEADERS_DIR/CL/"* "$HOST_PLATFORM_DIR/sysroot/usr/include/CL/"
   else
     echo -e "${YELLOW}OpenCL-Headers already cloned, using existing copy${NC}"
   fi
   
-  # Install OpenCL headers to our prebuilt dir
+  # Install OpenCL headers to our prebuilt dir for build-time use
   mkdir -p "$OPENCL_INCLUDE_DIR/CL"
   cp -r "$OPENCL_HEADERS_DIR/CL/"* "$OPENCL_INCLUDE_DIR/CL/"
   
-  # Build OpenCL ICD Loader for each ABI
+  # Also copy headers to NDK sysroot for build-time linking
+  echo -e "${YELLOW}Installing OpenCL headers to NDK sysroot...${NC}"
+  mkdir -p "$HOST_PLATFORM_DIR/sysroot/usr/include/CL"
+  cp -r "$OPENCL_HEADERS_DIR/CL/"* "$HOST_PLATFORM_DIR/sysroot/usr/include/CL/"
+  
+  # Build OpenCL ICD Loader for each ABI (as fallback for devices without system libOpenCL.so)
   if [ ! -d "$OPENCL_LOADER_DIR" ]; then
     echo -e "${YELLOW}Cloning OpenCL-ICD-Loader...${NC}"
     git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader "$OPENCL_LOADER_DIR"
@@ -280,7 +283,7 @@ if [ "$BUILD_OPENCL" = true ]; then
   fi
   
   for ABI in "${ABIS[@]}"; do
-    echo -e "${GREEN}Building OpenCL ICD Loader for $ABI${NC}"
+    echo -e "${GREEN}Building OpenCL ICD Loader for $ABI (fallback)${NC}"
     
     # Set architecture-specific variables
     if [ "$ABI" = "arm64-v8a" ]; then
@@ -289,6 +292,15 @@ if [ "$BUILD_OPENCL" = true ]; then
     elif [ "$ABI" = "x86_64" ]; then
       ANDROID_ABI="x86_64"
       ARCH="x86_64"
+    elif [ "$ABI" = "armeabi-v7a" ]; then
+      ANDROID_ABI="armeabi-v7a"
+      ARCH="arm"
+    elif [ "$ABI" = "x86" ]; then
+      ANDROID_ABI="x86"
+      ARCH="i686"
+    else
+      echo -e "${YELLOW}Skipping OpenCL ICD loader build for unsupported ABI: $ABI${NC}"
+      continue
     fi
     
     # Create build directory
@@ -305,28 +317,41 @@ if [ "$BUILD_OPENCL" = true ]; then
       -DANDROID_STL=c++_shared \
       -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
       -DOPENCL_ICD_LOADER_HEADERS_DIR="$HOST_PLATFORM_DIR/sysroot/usr/include" \
-      -DBUILD_SHARED_LIBS=ON
+      -DBUILD_SHARED_LIBS=ON || {
+      echo -e "${RED}CMake configuration failed for OpenCL ICD loader ($ABI)${NC}"
+      popd
+      continue
+    }
     
-    ninja
+    ninja || {
+      echo -e "${RED}Build failed for OpenCL ICD loader ($ABI)${NC}"
+      popd
+      continue
+    }
     
-    # Create destination directory and copy the library
-    DEST_DIR="$OPENCL_LIB_DIR/$ABI"
-    mkdir -p "$DEST_DIR"
-    cp "libOpenCL.so" "$DEST_DIR/"
-    
-    # Copy to the prebuilt/gpu directory for CI
-    cp "libOpenCL.so" "$PREBUILT_GPU_DIR/$ABI/"
-    
-    # Create a flag file to indicate OpenCL is available
-    touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
-    
-    # Install to NDK sysroot for other components to link against
-    cp "libOpenCL.so" "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/"
+    # Install to NDK sysroot for build-time linking only (NOT shipped in APK)
+    # The system will provide libOpenCL.so at runtime
+    if [ -f "libOpenCL.so" ]; then
+      # Install to NDK sysroot for linking during build
+      NDK_LIB_DIR="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android"
+      mkdir -p "$NDK_LIB_DIR"
+      cp "libOpenCL.so" "$NDK_LIB_DIR/"
+      echo -e "${GREEN}Installed OpenCL ICD Loader to NDK sysroot for build-time linking ($ABI)${NC}"
+      
+      # Create flag file to indicate OpenCL is available for building
+      mkdir -p "$PREBUILT_GPU_DIR/$ABI"
+      touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
+      echo -e "${GREEN}OpenCL ICD Loader available for build-time linking (NOT shipped in APK)${NC}"
+    else
+      echo -e "${RED}libOpenCL.so not found in build output for $ABI${NC}"
+    fi
     
     popd
-    
-    echo -e "${GREEN}Successfully built OpenCL ICD Loader for $ABI${NC}"
   done
+  
+  echo -e "${GREEN}OpenCL headers and ICD loader prepared${NC}"
+  echo -e "${YELLOW}Note: libOpenCL.so is installed to NDK sysroot for BUILD-TIME linking only.${NC}"
+  echo -e "${YELLOW}      We do NOT ship it in the APK - the system will provide it at runtime.${NC}"
 fi
 
 # Build Vulkan if enabled
@@ -487,10 +512,14 @@ else
   fi
 fi
 
-echo -e "${GREEN}=== GPU backends build complete ===${NC}"
+echo -e "${GREEN}=== GPU backend preparation complete ===${NC}"
 echo -e "${GREEN}OpenCL headers: $OPENCL_INCLUDE_DIR${NC}"
-echo -e "${GREEN}OpenCL libraries: $OPENCL_LIB_DIR${NC}"
+if [ "$BUILD_OPENCL" = true ]; then
+  echo -e "${GREEN}OpenCL ICD loader (fallback): $OPENCL_LIB_DIR${NC}"
+fi
 echo -e "${GREEN}Vulkan headers: $VULKAN_INCLUDE_DIR${NC}"
+echo -e "${YELLOW}Note: libggml-opencl.so and libggml-vulkan.so${NC}"
+echo -e "${YELLOW}      will be built by build_android_ggml_gpu_backends.sh${NC}"
 
 if [ -n "$GLSLC_PATH" ]; then
   echo -e "${GREEN}Vulkan shader compiler (glslc): $GLSLC_PATH${NC}"
@@ -498,21 +527,33 @@ fi
 
 # Verify the build output for CI usage
 for ABI in "${ABIS[@]}"; do
-  echo -e "${YELLOW}Verifying build artifacts for $ABI...${NC}"
+  echo -e "${YELLOW}Verifying prepared artifacts for $ABI...${NC}"
   
-  # Check OpenCL libraries
-  if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ] && [ -f "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled" ]; then
-    echo -e "${GREEN}✓ OpenCL library for $ABI is available at $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
-    ls -la "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
-  else
-    echo -e "${RED}✗ OpenCL library for $ABI is missing from $PREBUILT_GPU_DIR/$ABI/${NC}"
-    # Try to copy it again if it's in the source location but not in the destination
-    if [ -f "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" ]; then
-      mkdir -p "$PREBUILT_GPU_DIR/$ABI"
-      cp "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" "$PREBUILT_GPU_DIR/$ABI/"
-      touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
-      echo -e "${GREEN}✓ OpenCL library for $ABI was copied to $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
+  # Check OpenCL headers and ICD loader
+  if [ -f "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled" ] && [ -d "$OPENCL_INCLUDE_DIR/CL" ]; then
+    echo -e "${GREEN}✓ OpenCL headers prepared for $ABI${NC}"
+    echo -e "${GREEN}  Headers location: $OPENCL_INCLUDE_DIR/CL${NC}"
+    
+    # Check for ICD loader in NDK sysroot (for build-time linking)
+    NDK_LIB_DIR="$HOST_PLATFORM_DIR/sysroot/usr/lib"
+    if [ "$ABI" = "arm64-v8a" ]; then
+      ARCH="aarch64"
+    elif [ "$ABI" = "x86_64" ]; then
+      ARCH="x86_64"
+    elif [ "$ABI" = "armeabi-v7a" ]; then
+      ARCH="arm"
+    elif [ "$ABI" = "x86" ]; then
+      ARCH="i686"
     fi
+    
+    if [ -f "$NDK_LIB_DIR/$ARCH-linux-android/libOpenCL.so" ]; then
+      echo -e "${GREEN}✓ OpenCL ICD loader installed in NDK sysroot for build-time linking ($ABI)${NC}"
+      echo -e "${YELLOW}  (NOT shipped in APK - system will provide at runtime)${NC}"
+    else
+      echo -e "${YELLOW}⚠ OpenCL ICD loader not in NDK sysroot for $ABI${NC}"
+    fi
+  else
+    echo -e "${YELLOW}⚠ OpenCL not prepared for $ABI (may be disabled)${NC}"
   fi
   
   # Check Vulkan flag file

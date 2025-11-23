@@ -102,11 +102,13 @@ endif()
 
 # Check if OpenCL backend library is available
 set(OPENCL_BACKEND_AVAILABLE FALSE)
-if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so AND EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
+# Check only for libggml-opencl.so - libOpenCL.so is a system library (not shipped)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
     set(OPENCL_BACKEND_AVAILABLE TRUE)
-    message(STATUS "OpenCL backend libraries found for ${ANDROID_ABI}")
+    message(STATUS "OpenCL backend library found for ${ANDROID_ABI}")
+    message(STATUS "Note: libOpenCL.so will be provided by the system at runtime")
 else()
-    message(STATUS "OpenCL backend libraries not found for ${ANDROID_ABI}")
+    message(STATUS "OpenCL backend library not found for ${ANDROID_ABI}")
 endif()
 
 # Hybrid backend approach: CPU static (built into main libraries), GPU dynamic
@@ -241,14 +243,10 @@ if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
     )
 endif()
 
-if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so)
-    add_custom_command(TARGET RNLlamaCpp POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libOpenCL.so
-            $<TARGET_FILE_DIR:RNLlamaCpp>/libOpenCL.so
-        COMMENT "Copying OpenCL loader library to build output directory"
-    )
-endif()
+# NOTE: We do NOT copy libOpenCL.so or libvulkan.so - these are system libraries
+# The ICD loader is built and installed to NDK sysroot for BUILD-TIME linking only.
+# At runtime, the system will provide libOpenCL.so and libvulkan.so if the device supports them.
+# We only ship libggml-opencl.so and libggml-vulkan.so (our GGML backend wrappers).
 
 # Expose our headers to consuming targets (for autolinking)
 target_include_directories(RNLlamaCpp INTERFACE

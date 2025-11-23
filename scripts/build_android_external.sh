@@ -330,23 +330,21 @@ else
   exit 1
 fi
 
-# Check if OpenCL libraries are available from prebuilt
+# Check if OpenCL headers are available (for building libggml-opencl.so)
+# NOTE: We check for headers, not libOpenCL.so (which is a system library)
 OPENCL_AVAILABLE=false
-if [ "$USE_PREBUILT_GPU" = true ]; then
-  # First check the prebuilt/gpu directory (from build_android_gpu_backend.sh)
-  for ABI in "${ABIS[@]}"; do
-    if [ -d "$PREBUILT_GPU_DIR/$ABI" ] && [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
-      OPENCL_AVAILABLE=true
-      echo -e "${GREEN}Found prebuilt OpenCL library for $ABI in $PREBUILT_GPU_DIR/$ABI${NC}"
-    elif [ -d "$OPENCL_LIB_DIR/$ABI" ] && [ -f "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" ]; then
-      OPENCL_AVAILABLE=true
-      echo -e "${GREEN}Found prebuilt OpenCL library for $ABI in $OPENCL_LIB_DIR${NC}"
-    else
-      OPENCL_AVAILABLE=false
-      echo -e "${YELLOW}Prebuilt OpenCL library not found for $ABI${NC}"
-      break
-    fi
-  done
+if [ "$BUILD_OPENCL" = true ]; then
+  # Check if OpenCL headers are available from build_android_gpu_backend.sh
+  if [ -d "$OPENCL_INCLUDE_DIR/CL" ] && [ "$(ls -A $OPENCL_INCLUDE_DIR/CL 2>/dev/null)" ]; then
+    OPENCL_AVAILABLE=true
+    echo -e "${GREEN}OpenCL headers found, libggml-opencl.so can be built${NC}"
+  elif [ -d "$PREBUILT_GPU_DIR" ] && [ -f "$PREBUILT_GPU_DIR/arm64-v8a/.opencl_enabled" ]; then
+    OPENCL_AVAILABLE=true
+    echo -e "${GREEN}OpenCL enabled flag found, libggml-opencl.so can be built${NC}"
+  else
+    OPENCL_AVAILABLE=false
+    echo -e "${YELLOW}OpenCL headers not found, OpenCL backend will be disabled${NC}"
+  fi
 fi
 
 # Check if Vulkan libraries and resources are available
@@ -395,13 +393,13 @@ CMAKE_ARGS=(
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
-  -DGGML_BACKEND_DL=OFF  # Static libraries - CPU backend built into main libraries
-  -DGGML_CPU=ON  # CPU backend statically built into libggml.so and libllama.so
-  -DGGML_METAL=OFF  # Disable Metal (Apple GPU) for Android
-  -DGGML_CUDA=OFF   # Static build - GPU backends added separately later
-  -DGGML_HIP=OFF    # Static build - GPU backends added separately later
-  -DGGML_OPENCL=OFF  # Build as separate dynamic library only
-  -DGGML_VULKAN=OFF  # Build as separate dynamic library only
+  -DGGML_BACKEND_DL=ON   # Enable dynamic loading - GPU backends built as separate .so files
+  -DGGML_CPU=ON          # CPU backend statically built into libggml.so and libllama.so
+  -DGGML_METAL=OFF        # Disable Metal (Apple GPU) for Android
+  -DGGML_CUDA=OFF         # Not applicable to Android
+  -DGGML_HIP=OFF          # Not applicable to Android
+  -DGGML_OPENCL=OFF       # Will be enabled conditionally if BUILD_OPENCL=true
+  -DGGML_VULKAN=OFF       # Will be enabled conditionally if BUILD_VULKAN=true
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -436,13 +434,16 @@ echo -e "${GREEN}llama.cpp repository found and appears valid at: $LLAMA_CPP_DIR
 GPU_CMAKE_FLAGS=()
 
 # Add OpenCL backend if available and enabled
+# NOTE: We only need headers for build-time. libOpenCL.so is provided by the system at runtime.
 if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
   GPU_CMAKE_FLAGS+=(
     -DGGML_OPENCL=ON
     -DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR"
-    -DCL_LIBRARY="$OPENCL_LIB_DIR"
+    # Do NOT specify CL_LIBRARY - we don't link against libOpenCL.so at build time
+    # The system will provide libOpenCL.so at runtime if the device supports OpenCL
   )
-  echo -e "${GREEN}OpenCL backend will be built as separate dynamic library${NC}"
+  echo -e "${GREEN}libggml-opencl.so will be built as separate dynamic library${NC}"
+  echo -e "${YELLOW}Note: libOpenCL.so (ICD loader) is a system library, not built or shipped${NC}"
 else
   echo -e "${YELLOW}OpenCL backend disabled${NC}"
 fi
@@ -754,17 +755,43 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
   fi
   
-  # With GGML_BACKEND_DL, backends are built as separate dynamic libraries
-  # Copy all available backend libraries (they'll be loaded dynamically at runtime)
-  for backend_lib in libggml-cpu.so libggml-opencl.so libggml-vulkan.so; do
-    if [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
+  # With GGML_BACKEND_DL=ON, GPU backends can be built as separate dynamic libraries
+  # However, we prefer to build them separately using build_android_ggml_gpu_backends.sh
+  # and copy them from prebuilt/gpu. But if they were built here, copy them too.
+  for backend_lib in libggml-opencl.so libggml-vulkan.so; do
+    # First check if already in prebuilt/gpu (preferred - from dedicated build script)
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
+      cp "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from prebuilt/gpu for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
+    # Fallback: check build output (if built in this script)
+    elif [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
       cp "$BUILD_DIR/bin/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from build output for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
     elif [ -f "$BUILD_DIR/$backend_lib" ]; then
       cp "$BUILD_DIR/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from build root for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
     fi
   done
+  
+  # NOTE: We do NOT copy libOpenCL.so or libvulkan.so - these are system libraries
   
   # Copy static libraries if they exist (for fallback)
   for lib in libggml.a libllama.a; do
@@ -833,23 +860,10 @@ build_for_abi() {
   if [ "$BUILD_PLATFORM" = "all" ] || [ "$BUILD_PLATFORM" = "android" ]; then
     echo -e "${YELLOW}Copying native libraries for Android...${NC}"
     
-    # Copy OpenCL library if available
-    if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
-      # First check in the prebuilt/gpu directory
-      if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
-        cp "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-        # Create a flag file to indicate OpenCL is enabled
-        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        echo -e "${GREEN}Copied OpenCL library for $ABI from prebuilt/gpu directory${NC}"
-      elif [ -f "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" ]; then
-        cp "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-        # Create a flag file to indicate OpenCL is enabled
-        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        echo -e "${GREEN}Copied OpenCL library for $ABI from libs/external/opencl directory${NC}"
-      else
-        echo -e "${YELLOW}OpenCL library not found for $ABI${NC}"
-      fi
-    fi
+    # NOTE: We do NOT copy libOpenCL.so to jniLibs
+    # The ICD loader is built and installed to NDK sysroot for BUILD-TIME linking only.
+    # At runtime, the system will provide libOpenCL.so if the device supports OpenCL.
+    # This ensures we don't ship unnecessary libraries and let the system handle GPU drivers.
     
     # Create a flag file for Vulkan if enabled
     if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
@@ -929,31 +943,30 @@ if [ "$BUILD_SUCCESS" = true ]; then
   echo -e "${GREEN}Libraries are available in $ANDROID_JNI_DIR${NC}"
   echo -e "${GREEN}Headers are available in $ANDROID_CPP_DIR/include${NC}"
   
-  # Also make sure to copy GPU libraries if they're available
-  echo -e "${YELLOW}Checking for and copying additional GPU libraries...${NC}"
+  # Verify GGML GPU backend libraries were built and copied
+  echo -e "${YELLOW}Verifying GGML GPU backend libraries...${NC}"
   
-  # Check if OpenCL libraries were built in prebuilt/gpu directory
   for ABI in "${ABIS[@]}"; do
-    if [ -d "$PREBUILT_GPU_DIR/$ABI" ] && [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
-      echo -e "${GREEN}Found OpenCL library for $ABI, ensuring it's copied${NC}"
-      cp -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-      touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-    fi
-    
-    # Also check for and copy dynamic backend libraries from prebuilt/gpu directory
-    for backend_lib in libggml-vulkan.so libggml-opencl.so libggml-cpu.so; do
-      if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
-        echo -e "${GREEN}Found $backend_lib for $ABI in prebuilt/gpu, ensuring it's copied${NC}"
-        cp -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-        
-        # Create appropriate flag files
-        if [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
-          touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
-        elif [[ "$backend_lib" == "libggml-opencl.so" ]]; then
-          touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        fi
+    # Check for GGML backend libraries (these are what we build and ship)
+    for backend_lib in libggml-opencl.so libggml-vulkan.so; do
+      if [ -f "$ANDROID_JNI_DIR/$ABI/$backend_lib" ]; then
+        echo -e "${GREEN}✓ $backend_lib found for $ABI${NC}"
+      else
+        echo -e "${YELLOW}⚠ $backend_lib not found for $ABI (may be disabled)${NC}"
       fi
     done
+    
+    # Verify we're NOT shipping libOpenCL.so (system library, not ours)
+    if [ -f "$ANDROID_JNI_DIR/$ABI/libOpenCL.so" ]; then
+      echo -e "${RED}✗ ERROR: libOpenCL.so found in output - should NOT be shipped!${NC}"
+      echo -e "${RED}  libOpenCL.so is a system library, not our build output${NC}"
+      rm -f "$ANDROID_JNI_DIR/$ABI/libOpenCL.so"
+    fi
+    if [ -f "$ANDROID_JNI_DIR/$ABI/libvulkan.so" ]; then
+      echo -e "${RED}✗ ERROR: libvulkan.so found in output - this should NOT be shipped!${NC}"
+      echo -e "${RED}  libvulkan.so is a system library, not our build output${NC}"
+      rm -f "$ANDROID_JNI_DIR/$ABI/libvulkan.so"
+    fi
   done
   
   # Final verification
