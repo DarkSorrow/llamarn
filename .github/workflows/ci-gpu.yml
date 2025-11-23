@@ -111,42 +111,20 @@ jobs:
           path: |
             ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
             prebuilt/gpu
-            prebuilt/libs/external/vulkan
             prebuilt/libs/external/opencl
+            prebuilt/third_party
           key: android-ndk-gpu-${{ runner.os }}-v1
           restore-keys: |
             android-ndk-gpu-
-      
-      - name: Install Vulkan Headers
-        run: |
-          # Install basic Vulkan packages
-          sudo apt-get update
-          sudo apt-get install -y libvulkan-dev vulkan-tools
-          
-          # Get the complete Vulkan headers that the NDK doesn't have
-          VULKAN_VERSION=1.3.292
-          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
-          
-          echo "Installing complete Vulkan headers..."
-          wget -q https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v${VULKAN_VERSION}.zip -O vulkan-headers.zip
-          unzip -q vulkan-headers.zip
-          
-          # Copy the complete headers structure (vulkan + vk_video) to NDK include directory
-          sudo cp -r ./Vulkan-Headers-${VULKAN_VERSION}/include/* ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/
-          
-          # Clean up
-          rm -rf vulkan-headers.zip Vulkan-Headers-${VULKAN_VERSION}
-          
-          echo "Vulkan headers installed successfully!"
-          echo "Checking for vulkan.hpp:"
-          find ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include -name "vulkan.hpp" || echo "vulkan.hpp not found"
-          echo "Checking for vk_video directory:"
-          ls -la ${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/vk_video/ || echo "vk_video directory not found"
       
       - name: Build GPU Libraries
         run: |
           # Get Android NDK path
           NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          
+          mkdir -p prebuilt/gpu
+          mkdir -p prebuilt/libs/external/opencl
+          mkdir -p prebuilt/third_party/Vulkan-Headers
           
           # Skip GPU backend build if we have a cache hit
           if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && [ -d "prebuilt/gpu/arm64-v8a" ] && [ "$(ls -A prebuilt/gpu/arm64-v8a/ 2>/dev/null)" ]; then
@@ -188,11 +166,11 @@ jobs:
           
           # Set up environment for the build process
           export VULKAN_SDK=/usr
-          export VULKAN_INCLUDE_DIR=${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
+          export VULKAN_INCLUDE_DIR="$GITHUB_WORKSPACE/prebuilt/third_party/Vulkan-Headers/include"
           export GGML_VK_DISABLE_COOPMAT=1
           export GGML_VK_DISABLE_COOPMAT2=1
           echo "Using Vulkan SDK at $VULKAN_SDK"
-          echo "Using Vulkan headers from NDK at $VULKAN_INCLUDE_DIR"
+          echo "Using Vulkan headers from $VULKAN_INCLUDE_DIR"
           echo "Disabled cooperative matrix support to avoid shader compilation issues"
           
           # Build the final Android libraries with GPU support
@@ -231,12 +209,13 @@ jobs:
           for ABI in arm64-v8a x86_64; do
             echo "Checking $ABI:"
             
-            # Check for OpenCL
+            # Check for OpenCL loader (should NOT be shipped)
             if [ -f "android/src/main/jniLibs/$ABI/libOpenCL.so" ]; then
-              echo "  ✅ OpenCL library found"
+              echo "  ❌ libOpenCL.so found in output - should NOT be shipped"
               ls -la "android/src/main/jniLibs/$ABI/libOpenCL.so"
+              exit 1
             else
-              echo "  ⚠️ OpenCL library not found"
+              echo "  ✅ libOpenCL.so not bundled (system loader will be used)"
             fi
             
             # Check for dynamic GPU backends

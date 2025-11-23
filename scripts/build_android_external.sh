@@ -132,7 +132,7 @@ OPENCL_LOADER_DIR="$THIRD_PARTY_DIR/OpenCL-ICD-Loader"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
-VULKAN_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/vulkan/include"
+VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
 
 # Clean up Android directory if requested
 if [ "$CLEAN_BUILD" = true ] || [ "$CLEAN_PREBUILT" = true ]; then
@@ -152,7 +152,6 @@ mkdir -p "$PREBUILT_BUILD_DIR"
 mkdir -p "$THIRD_PARTY_DIR"
 mkdir -p "$OPENCL_INCLUDE_DIR"
 mkdir -p "$OPENCL_LIB_DIR"
-mkdir -p "$VULKAN_INCLUDE_DIR"
 mkdir -p "$ANDROID_JNI_DIR/arm64-v8a"
 mkdir -p "$ANDROID_JNI_DIR/x86_64"
 mkdir -p "$ANDROID_JNI_DIR/armeabi-v7a"
@@ -209,44 +208,20 @@ if [ -n "$CUSTOM_NDK_PATH" ]; then
     exit 1
   fi
 else
-  # First try to find any available NDK
-  if [ -d "$ANDROID_HOME/ndk" ]; then
-    # Get list of NDK versions sorted by version number (newest first)
-    NEWEST_NDK_VERSION=$(ls -1 "$ANDROID_HOME/ndk" | sort -rV | head -n 1)
-    
-    if [ -n "$NEWEST_NDK_VERSION" ]; then
-      NDK_PATH="$ANDROID_HOME/ndk/$NEWEST_NDK_VERSION"
-      echo -e "${GREEN}Found NDK version $NEWEST_NDK_VERSION, using this version${NC}"
-    else
-      # If no NDK is found, fall back to the version from used_version.sh
-      NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-      echo -e "${YELLOW}No NDK versions found in $ANDROID_HOME/ndk, trying to use version $NDK_VERSION from used_version.sh${NC}"
-      
-      if [ ! -d "$NDK_PATH" ]; then
-        echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
-        echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-        echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
+  if [ -z "$ANDROID_HOME" ]; then
+    echo -e "${RED}ANDROID_HOME is not set${NC}"
         exit 1
       fi
-    fi
-  # Check for NDK in the old-style location
-  elif [ -d "$ANDROID_HOME/ndk-bundle" ]; then
-    NDK_PATH="$ANDROID_HOME/ndk-bundle"
-    echo -e "${GREEN}Found NDK at ndk-bundle location: $NDK_PATH${NC}"
-  else
-    # Try to find the NDK version specified in used_version.sh as last resort
     NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-    echo -e "${YELLOW}No NDK directory found, trying to use version $NDK_VERSION from used_version.sh${NC}"
-    
     if [ ! -d "$NDK_PATH" ]; then
-      echo -e "${RED}NDK directory not found at $ANDROID_HOME/ndk or $ANDROID_HOME/ndk-bundle${NC}"
-      echo -e "${RED}NDK version $NDK_VERSION from used_version.sh not found either${NC}"
-      echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-      echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
+    echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
+    echo -e "${YELLOW}Install it with:${NC}"
+    echo -e "${YELLOW}  \$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;$NDK_VERSION\"${NC}"
       exit 1
-    fi
   fi
 fi
+
+echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
 # Extract the Android platform version from the NDK path
 if [ -d "$NDK_PATH/platforms" ]; then
@@ -330,23 +305,23 @@ else
   exit 1
 fi
 
-# Check if OpenCL libraries are available from prebuilt
+HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
+
+# Check if OpenCL headers are available (for building libggml-opencl.so)
+# NOTE: We check for headers, not libOpenCL.so (which is a system library)
 OPENCL_AVAILABLE=false
-if [ "$USE_PREBUILT_GPU" = true ]; then
-  # First check the prebuilt/gpu directory (from build_android_gpu_backend.sh)
-  for ABI in "${ABIS[@]}"; do
-    if [ -d "$PREBUILT_GPU_DIR/$ABI" ] && [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+if [ "$BUILD_OPENCL" = true ]; then
+  # Check if OpenCL headers are available from build_android_gpu_backend.sh
+  if [ -d "$OPENCL_INCLUDE_DIR/CL" ] && [ "$(ls -A $OPENCL_INCLUDE_DIR/CL 2>/dev/null)" ]; then
       OPENCL_AVAILABLE=true
-      echo -e "${GREEN}Found prebuilt OpenCL library for $ABI in $PREBUILT_GPU_DIR/$ABI${NC}"
-    elif [ -d "$OPENCL_LIB_DIR/$ABI" ] && [ -f "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" ]; then
+    echo -e "${GREEN}OpenCL headers found, libggml-opencl.so can be built${NC}"
+  elif [ -d "$PREBUILT_GPU_DIR" ] && [ -f "$PREBUILT_GPU_DIR/arm64-v8a/.opencl_enabled" ]; then
       OPENCL_AVAILABLE=true
-      echo -e "${GREEN}Found prebuilt OpenCL library for $ABI in $OPENCL_LIB_DIR${NC}"
+    echo -e "${GREEN}OpenCL enabled flag found, libggml-opencl.so can be built${NC}"
     else
       OPENCL_AVAILABLE=false
-      echo -e "${YELLOW}Prebuilt OpenCL library not found for $ABI${NC}"
-      break
+    echo -e "${YELLOW}OpenCL headers not found, OpenCL backend will be disabled${NC}"
     fi
-  done
 fi
 
 # Check if Vulkan libraries and resources are available
@@ -354,12 +329,15 @@ VULKAN_AVAILABLE=false
 VULKAN_SDK_PATH=""
 GLSLC_PATH="$CUSTOM_GLSLC_PATH"
 
-# Define the host platform dir first (needed for Vulkan detection)
-HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
-
-# Since NDK 23+, Vulkan is included in the NDK, so we can always enable it
+# Verify Vulkan headers exist in the pinned third_party location
+VULKAN_INCLUDE_SYSROOT="$VULKAN_INCLUDE_LOCAL"
+if [ -f "$VULKAN_INCLUDE_SYSROOT/vulkan/vulkan.hpp" ]; then
 VULKAN_AVAILABLE=true
-echo -e "${GREEN}Using NDK built-in Vulkan support (NDK 23+)${NC}"
+  echo -e "${GREEN}Using Vulkan headers from: $VULKAN_INCLUDE_SYSROOT${NC}"
+else
+  echo -e "${RED}Vulkan headers not found in $VULKAN_INCLUDE_SYSROOT${NC}"
+  echo -e "${RED}Run scripts/build_android_gpu_backend.sh first to install Vulkan-Headers $VULKAN_HEADERS_TAG${NC}"
+fi
 
 # Look for glslc in NDK if not specified by user
 if [ -z "$GLSLC_PATH" ]; then
@@ -395,13 +373,13 @@ CMAKE_ARGS=(
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
-  -DGGML_BACKEND_DL=OFF  # Static libraries - CPU backend built into main libraries
-  -DGGML_CPU=ON  # CPU backend statically built into libggml.so and libllama.so
-  -DGGML_METAL=OFF  # Disable Metal (Apple GPU) for Android
-  -DGGML_CUDA=OFF   # Static build - GPU backends added separately later
-  -DGGML_HIP=OFF    # Static build - GPU backends added separately later
-  -DGGML_OPENCL=OFF  # Build as separate dynamic library only
-  -DGGML_VULKAN=OFF  # Build as separate dynamic library only
+  -DGGML_BACKEND_DL=ON   # Enable dynamic loading - GPU backends built as separate .so files
+  -DGGML_CPU=ON          # CPU backend statically built into libggml.so and libllama.so
+  -DGGML_METAL=OFF        # Disable Metal (Apple GPU) for Android
+  -DGGML_CUDA=OFF         # Not applicable to Android
+  -DGGML_HIP=OFF          # Not applicable to Android
+  -DGGML_OPENCL=OFF       # Will be enabled conditionally if BUILD_OPENCL=true
+  -DGGML_VULKAN=OFF       # Will be enabled conditionally if BUILD_VULKAN=true
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -436,20 +414,18 @@ echo -e "${GREEN}llama.cpp repository found and appears valid at: $LLAMA_CPP_DIR
 GPU_CMAKE_FLAGS=()
 
 # Add OpenCL backend if available and enabled
+# NOTE: We only need headers for build-time. libOpenCL.so is provided by the system at runtime.
 if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
-  GPU_CMAKE_FLAGS+=(
-    -DGGML_OPENCL=ON
-    -DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR"
-    -DCL_LIBRARY="$OPENCL_LIB_DIR"
-  )
-  echo -e "${GREEN}OpenCL backend will be built as separate dynamic library${NC}"
+  echo -e "${GREEN}OpenCL headers detected, ABI builds can enable GGML_OPENCL${NC}"
 else
-  echo -e "${YELLOW}OpenCL backend disabled${NC}"
+  echo -e "${YELLOW}OpenCL backend disabled or headers missing${NC}"
 fi
 
-# Add Vulkan backend if available and enabled
+VULKAN_BASE_FLAGS=()
+VULKAN_FALLBACK_INCLUDE=""
+VULKAN_FALLBACK_GLSLC="$GLSLC_PATH"
 if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
-  GPU_CMAKE_FLAGS+=(
+  VULKAN_BASE_FLAGS=(
     -DGGML_VULKAN=ON
     -DGGML_VULKAN_CHECK_RESULTS=OFF
     -DGGML_VULKAN_DEBUG=OFF
@@ -459,10 +435,9 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     -DGGML_VULKAN_VALIDATE=OFF
     -DGGML_VULKAN_RUN_TESTS=OFF
     -DVK_USE_PLATFORM_ANDROID_KHR=ON
-    -DGGML_VULKAN_DISABLE_FLASHATTN=ON  # Disable flash attention for Adreno compatibility
+    -DGGML_VULKAN_DISABLE_FLASHATTN=ON
   )
   
-  # Disable cooperative matrix features if environment variables are set
   if [ -n "$GGML_VK_DISABLE_COOPMAT" ]; then
     export GGML_VK_DISABLE_COOPMAT="$GGML_VK_DISABLE_COOPMAT"
     echo -e "${YELLOW}Cooperative matrix support disabled via environment variable${NC}"
@@ -473,109 +448,9 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     echo -e "${YELLOW}Cooperative matrix 2 support disabled via environment variable${NC}"
   fi
   
-  # Check if we have Vulkan environment info from build_android_gpu_backend.sh
-  VULKAN_ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
-  if [ -f "$VULKAN_ENV_FILE" ]; then
-    echo -e "${GREEN}Loading Vulkan environment from: $VULKAN_ENV_FILE${NC}"
-    source "$VULKAN_ENV_FILE"
-    
-    # Use the environment variables from the file
-    if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
-      echo -e "${GREEN}Using Vulkan library from env: $VULKAN_LIBRARY_PATH${NC}"
-    fi
-    
-    if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ]; then
-      # Check if this include path has vulkan.hpp
-      if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-        echo -e "${GREEN}Using Vulkan include path from env: $VULKAN_INCLUDE_PATH${NC}"
-      else
-        # NDK include path doesn't have vulkan.hpp, check for system headers
-        if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
-          echo -e "${YELLOW}NDK headers missing vulkan.hpp, using system headers for C++${NC}"
-          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
-          # Also add NDK headers as additional include for vulkan.h
-          GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I$VULKAN_INCLUDE_PATH -Wno-deprecated-declarations")
-          echo -e "${GREEN}Using system Vulkan C++ headers: /usr/include${NC}"
-          echo -e "${GREEN}Adding NDK Vulkan C headers: $VULKAN_INCLUDE_PATH${NC}"
-        else
-          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-          echo -e "${YELLOW}Warning: Using NDK headers without vulkan.hpp${NC}"
-        fi
-      fi
-    fi
-    
-    if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_EXECUTABLE")
-      echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
-    fi
-  else
-    # Fallback to the original logic
-    echo -e "${YELLOW}No Vulkan environment file found, using fallback detection${NC}"
-    
-    # Check for system Vulkan headers first (they're more likely to have vulkan.hpp)
-    if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
-      echo -e "${GREEN}Found system Vulkan C++ headers, using them${NC}"
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
-      
-      # Set architecture-specific Vulkan library path from NDK for linking
-      if [ "$ABI" = "arm64-v8a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86_64" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "armeabi-v7a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      fi
-      
-      # Add Vulkan library path if it exists
-      if [ -f "$VULKAN_LIB_PATH" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
-        echo -e "${GREEN}Using NDK Vulkan library for linking: $VULKAN_LIB_PATH${NC}"
-      fi
-    else
-      # Fall back to NDK headers
-      echo -e "${YELLOW}No system Vulkan headers found, trying NDK headers${NC}"
-      
-      # Set architecture-specific Vulkan library path from NDK
-      if [ "$ABI" = "arm64-v8a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86_64" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "armeabi-v7a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      fi
-      
-      # Add Vulkan library path if it exists
-      if [ -f "$VULKAN_LIB_PATH" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
-        echo -e "${GREEN}Using NDK Vulkan library: $VULKAN_LIB_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: NDK Vulkan library not found at $VULKAN_LIB_PATH${NC}"
-      fi
-      
-      # Add Vulkan include directory (NDK headers)
-      VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-    fi
-    
-    # Add glslc path if available
-    if [ -n "$GLSLC_PATH" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
-      
-      # Verify the glslc executable is usable
-      if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
-        echo -e "${GREEN}Using glslc from: $GLSLC_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: glslc at $GLSLC_PATH is not executable or doesn't exist${NC}"
-      fi
-    fi
-  fi
-  echo -e "${GREEN}Vulkan backend will be built as separate dynamic library${NC}"
+  VULKAN_FALLBACK_INCLUDE="$VULKAN_INCLUDE_SYSROOT"
+  VULKAN_FALLBACK_GLSLC="$GLSLC_PATH"
+  echo -e "${GREEN}Vulkan backend enabled (per-ABI configuration will resolve loaders)${NC}"
 else
   echo -e "${YELLOW}Vulkan backend disabled${NC}"
 fi
@@ -595,19 +470,28 @@ build_for_abi() {
   local ABI=$1
   echo -e "${GREEN}Building for $ABI${NC}"
   
+  local ABI_GPU_FLAGS=("${GPU_CMAKE_FLAGS[@]}")
+  local ABI_SUPPORTS_GPU=true
+  if [ "$ABI" = "armeabi-v7a" ] || [ "$ABI" = "x86" ]; then
+    ABI_SUPPORTS_GPU=false
+  fi
+  
   # Set ABI-specific flags
+  local ARCH=""
   if [ "$ABI" = "arm64-v8a" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="arm64-v8a"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
     )
+    ARCH="aarch64"
   elif [ "$ABI" = "x86_64" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="x86_64"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
     )
+    ARCH="x86_64"
   elif [ "$ABI" = "armeabi-v7a" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="armeabi-v7a"
@@ -618,6 +502,7 @@ build_for_abi() {
       -DGGML_LLAMAFILE=OFF
       -DLLAMA_BUILD_TOOLS=OFF
     )
+    ARCH="arm"
   elif [ "$ABI" = "x86" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="x86"
@@ -628,6 +513,115 @@ build_for_abi() {
       -DGGML_LLAMAFILE=OFF
       -DLLAMA_BUILD_TOOLS=OFF
     )
+    ARCH="i686"
+  fi
+  
+  if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
+    local OPENCL_LIB_PATH=""
+    
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+      OPENCL_LIB_PATH="$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
+      echo -e "${GREEN}Using staged libOpenCL.so for $ABI: $OPENCL_LIB_PATH${NC}"
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
+      if [ -f "$TRY_PATH" ]; then
+        OPENCL_LIB_PATH="$TRY_PATH"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so"
+      if [ -f "$TRY_PATH" ]; then
+        OPENCL_LIB_PATH="$TRY_PATH"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local FOUND_LIB
+      FOUND_LIB=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libOpenCL.so" 2>/dev/null | head -1)
+      if [ -n "$FOUND_LIB" ] && [ -f "$FOUND_LIB" ]; then
+        OPENCL_LIB_PATH="$FOUND_LIB"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ]; then
+      echo -e "${RED}ERROR: OpenCL library not found for $ABI${NC}"
+      echo -e "${YELLOW}Searched staged prebuilt/gpu/$ABI/libOpenCL.so and NDK sysroot${NC}"
+      return 1
+    fi
+    
+    ABI_GPU_FLAGS+=(-DGGML_OPENCL=ON)
+    ABI_GPU_FLAGS+=(-DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+    ABI_GPU_FLAGS+=(-DOpenCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+    ABI_GPU_FLAGS+=(-DOpenCL_LIBRARY="$OPENCL_LIB_PATH")
+    ABI_GPU_FLAGS+=(-DCL_LIBRARY="$OPENCL_LIB_PATH")
+    ABI_GPU_FLAGS+=(-DOpenCL_LIBRARY:FILEPATH="$OPENCL_LIB_PATH")
+    echo -e "${GREEN}OpenCL backend configured for $ABI${NC}"
+  fi
+  
+  if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
+    ABI_GPU_FLAGS+=("${VULKAN_BASE_FLAGS[@]}")
+    local ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
+    local VK_INCLUDE_PATH="$VULKAN_FALLBACK_INCLUDE"
+    local VK_LIB_PATH=""
+    local VK_GLSLC="$VULKAN_FALLBACK_GLSLC"
+    
+    if [ -f "$ENV_FILE" ]; then
+      echo -e "${GREEN}Loading Vulkan environment from: $ENV_FILE${NC}"
+      # shellcheck disable=SC1090
+      source "$ENV_FILE"
+      
+      if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ] && [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+        VK_INCLUDE_PATH="$VULKAN_INCLUDE_PATH"
+      fi
+      if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
+        VK_LIB_PATH="$VULKAN_LIBRARY_PATH"
+      fi
+      if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
+        VK_GLSLC="$GLSLC_EXECUTABLE"
+      fi
+    else
+      echo -e "${YELLOW}No Vulkan environment file for $ABI, using NDK loader${NC}"
+    fi
+    
+    if [ -z "$VK_LIB_PATH" ]; then
+      if [ "$ABI" = "arm64-v8a" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86_64" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "armeabi-v7a" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      fi
+    fi
+    
+    if [ ! -f "$VK_LIB_PATH" ]; then
+      echo -e "${RED}Vulkan loader not found for $ABI at $VK_LIB_PATH${NC}"
+      echo -e "${RED}Run scripts/build_android_gpu_backend.sh to regenerate Vulkan environment${NC}"
+      return 1
+    fi
+    
+    if [ -z "$VK_INCLUDE_PATH" ] || [ ! -f "$VK_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+      echo -e "${RED}Vulkan headers missing for $ABI (expected $VK_INCLUDE_PATH)${NC}"
+      return 1
+    fi
+    
+    ABI_GPU_FLAGS+=(-DVulkan_INCLUDE_DIR="$VK_INCLUDE_PATH")
+    ABI_GPU_FLAGS+=(-DVulkan_LIBRARY="$VK_LIB_PATH")
+    
+    if [ -n "$VK_GLSLC" ]; then
+      ABI_GPU_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$VK_GLSLC")
+    fi
+    
+    echo -e "${GREEN}Vulkan backend configured for $ABI${NC}"
+  elif [ "$ABI_SUPPORTS_GPU" = false ]; then
+    echo -e "${YELLOW}Skipping GPU configuration for 32-bit ABI $ABI${NC}"
   fi
   
   # Create build directory
@@ -642,9 +636,9 @@ build_for_abi() {
   
   # Print the exact cmake command for debugging
   echo -e "${YELLOW}Running cmake with options:${NC}"
-  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[*]}"
+  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[*]}"
   
-  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[@]} || {
+  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[@]} || {
     echo -e "${RED}CMake configuration failed for $ABI${NC}"
     popd
     return 1
@@ -754,17 +748,43 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
   fi
   
-  # With GGML_BACKEND_DL, backends are built as separate dynamic libraries
-  # Copy all available backend libraries (they'll be loaded dynamically at runtime)
-  for backend_lib in libggml-cpu.so libggml-opencl.so libggml-vulkan.so; do
-    if [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
+  # With GGML_BACKEND_DL=ON, GPU backends can be built as separate dynamic libraries
+  # However, we prefer to build them separately using build_android_ggml_gpu_backends.sh
+  # and copy them from prebuilt/gpu. But if they were built here, copy them too.
+  for backend_lib in libggml-opencl.so libggml-vulkan.so; do
+    # First check if already in prebuilt/gpu (preferred - from dedicated build script)
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
+      cp "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from prebuilt/gpu for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
+    # Fallback: check build output (if built in this script)
+    elif [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
       cp "$BUILD_DIR/bin/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from build output for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
     elif [ -f "$BUILD_DIR/$backend_lib" ]; then
       cp "$BUILD_DIR/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-      echo -e "${GREEN}Copied dynamic backend $backend_lib for $ABI${NC}"
+      echo -e "${GREEN}Copied GGML backend $backend_lib from build root for $ABI${NC}"
+      # Create flag files for tracking
+      if [[ "$backend_lib" == "libggml-opencl.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      fi
     fi
   done
+  
+  # NOTE: We do NOT copy libOpenCL.so or libvulkan.so - these are system libraries
   
   # Copy static libraries if they exist (for fallback)
   for lib in libggml.a libllama.a; do
@@ -833,35 +853,27 @@ build_for_abi() {
   if [ "$BUILD_PLATFORM" = "all" ] || [ "$BUILD_PLATFORM" = "android" ]; then
     echo -e "${YELLOW}Copying native libraries for Android...${NC}"
     
-    # Copy OpenCL library if available
-    if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
-      # First check in the prebuilt/gpu directory
-      if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
-        cp "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-        # Create a flag file to indicate OpenCL is enabled
-        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        echo -e "${GREEN}Copied OpenCL library for $ABI from prebuilt/gpu directory${NC}"
-      elif [ -f "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" ]; then
-        cp "$OPENCL_LIB_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-        # Create a flag file to indicate OpenCL is enabled
-        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        echo -e "${GREEN}Copied OpenCL library for $ABI from libs/external/opencl directory${NC}"
-      else
-        echo -e "${YELLOW}OpenCL library not found for $ABI${NC}"
-      fi
-    fi
+    # NOTE: We do NOT copy libOpenCL.so to jniLibs
+    # The ICD loader is built and installed to NDK sysroot for BUILD-TIME linking only.
+    # At runtime, the system will provide libOpenCL.so if the device supports OpenCL.
+    # This ensures we don't ship unnecessary libraries and let the system handle GPU drivers.
     
-    # Create a flag file for Vulkan if enabled
-    if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
+    # Create/clean flag files only for GPU-capable ABIs that actually ship the libs
+    if [ "$ABI_SUPPORTS_GPU" = true ]; then
+      if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ] && [ -f "$ANDROID_JNI_DIR/$ABI/libggml-vulkan.so" ]; then
       touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
       echo -e "${GREEN}Created Vulkan enabled flag for $ABI${NC}"
-      
-      # Copy Vulkan header files
-      if [ -d "$VULKAN_INCLUDE_DIR" ]; then
-        mkdir -p "$ANDROID_CPP_DIR/include/vulkan"
-        cp -r "$VULKAN_INCLUDE_DIR/vulkan" "$ANDROID_CPP_DIR/include/"
-        echo -e "${GREEN}Copied Vulkan headers to include directory${NC}"
+      else
+        rm -f "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
       fi
+      if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ] && [ -f "$ANDROID_JNI_DIR/$ABI/libggml-opencl.so" ]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+        echo -e "${GREEN}Created OpenCL enabled flag for $ABI${NC}"
+      else
+        rm -f "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
+      fi
+    else
+      rm -f "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled" "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
     fi
     
     # Copy OpenCL headers if enabled
@@ -929,31 +941,30 @@ if [ "$BUILD_SUCCESS" = true ]; then
   echo -e "${GREEN}Libraries are available in $ANDROID_JNI_DIR${NC}"
   echo -e "${GREEN}Headers are available in $ANDROID_CPP_DIR/include${NC}"
   
-  # Also make sure to copy GPU libraries if they're available
-  echo -e "${YELLOW}Checking for and copying additional GPU libraries...${NC}"
+  # Verify GGML GPU backend libraries were built and copied
+  echo -e "${YELLOW}Verifying GGML GPU backend libraries...${NC}"
   
-  # Check if OpenCL libraries were built in prebuilt/gpu directory
   for ABI in "${ABIS[@]}"; do
-    if [ -d "$PREBUILT_GPU_DIR/$ABI" ] && [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
-      echo -e "${GREEN}Found OpenCL library for $ABI, ensuring it's copied${NC}"
-      cp -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" "$ANDROID_JNI_DIR/$ABI/"
-      touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-    fi
-    
-    # Also check for and copy dynamic backend libraries from prebuilt/gpu directory
-    for backend_lib in libggml-vulkan.so libggml-opencl.so libggml-cpu.so; do
-      if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
-        echo -e "${GREEN}Found $backend_lib for $ABI in prebuilt/gpu, ensuring it's copied${NC}"
-        cp -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
-        
-        # Create appropriate flag files
-        if [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
-          touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
-        elif [[ "$backend_lib" == "libggml-opencl.so" ]]; then
-          touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
-        fi
+    # Check for GGML backend libraries (these are what we build and ship)
+    for backend_lib in libggml-opencl.so libggml-vulkan.so; do
+      if [ -f "$ANDROID_JNI_DIR/$ABI/$backend_lib" ]; then
+        echo -e "${GREEN}✓ $backend_lib found for $ABI${NC}"
+      else
+        echo -e "${YELLOW}⚠ $backend_lib not found for $ABI (may be disabled)${NC}"
       fi
     done
+    
+    # Verify we're NOT shipping libOpenCL.so (system library, not ours)
+    if [ -f "$ANDROID_JNI_DIR/$ABI/libOpenCL.so" ]; then
+      echo -e "${RED}✗ ERROR: libOpenCL.so found in output - should NOT be shipped!${NC}"
+      echo -e "${RED}  libOpenCL.so is a system library, not our build output${NC}"
+      rm -f "$ANDROID_JNI_DIR/$ABI/libOpenCL.so"
+    fi
+    if [ -f "$ANDROID_JNI_DIR/$ABI/libvulkan.so" ]; then
+      echo -e "${RED}✗ ERROR: libvulkan.so found in output - this should NOT be shipped!${NC}"
+      echo -e "${RED}  libvulkan.so is a system library, not our build output${NC}"
+      rm -f "$ANDROID_JNI_DIR/$ABI/libvulkan.so"
+    fi
   done
   
   # Final verification
