@@ -11,9 +11,12 @@ LLAMA_CPP_COMMIT="96ac5a2329029dfc35c9cbbb24c09fd91ae9416b"  # Commit as specifi
 LLAMA_CPP_TAG="b7134"  # Tag format for binary downloads
 
 # Vulkan and OpenCL versions
-VULKAN_SDK_VERSION="1.4.309"
+# Note: Vulkan is provided by Android NDK, we don't need a separate SDK version
+VULKAN_SDK_VERSION="1.4.309"  # Not used for Android (NDK provides Vulkan)
 OPENCL_VERSION="3.0"
-OPENCL_HEADERS_TAG="v2023.12.14"
+# OpenCL Headers: Use latest stable tag (llama.cpp uses latest from git)
+# Check: https://github.com/KhronosGroup/OpenCL-Headers/releases
+OPENCL_HEADERS_TAG="v2025.07.22"  # Updated to match llama.cpp CI (2025.07.22)
 
 # Android SDK/NDK configuration
 NDK_VERSION="27.2.12479018"  # Original CI version

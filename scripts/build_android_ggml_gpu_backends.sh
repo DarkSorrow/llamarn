@@ -14,6 +14,11 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 # Source the version information
 . "$SCRIPT_DIR/used_version.sh"
 
+# Use ANDROID_MIN_SDK from used_version.sh for consistent API level
+if [ -z "$ANDROID_MIN_SDK" ]; then
+  ANDROID_MIN_SDK=33  # Default from used_version.sh
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -129,12 +134,27 @@ fi
 HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
 
 # Extract Android platform version
-if [ -d "$NDK_PATH/platforms" ]; then
-  ANDROID_PLATFORM=$(ls -1 "$NDK_PATH/platforms" | sort -V | tail -n 1)
-  ANDROID_MIN_SDK=${ANDROID_PLATFORM#android-}
-else
+# Use ANDROID_MIN_SDK from used_version.sh (API 33) for consistent builds and better Vulkan support
+# vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+ (API 24+), but higher API levels have better support
+ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
+
+# Verify the platform exists in NDK
+if [ -d "$NDK_PATH/platforms" ] && [ ! -d "$NDK_PATH/platforms/$ANDROID_PLATFORM" ]; then
+  # Fallback to highest available if our target doesn't exist
+  echo -e "${YELLOW}Platform $ANDROID_PLATFORM not found, checking available platforms...${NC}"
+  HIGHEST_PLATFORM=$(ls -1 "$NDK_PATH/platforms" | sort -V | tail -n 1)
+  if [ -n "$HIGHEST_PLATFORM" ]; then
+    ANDROID_PLATFORM="$HIGHEST_PLATFORM"
+    ANDROID_MIN_SDK=${ANDROID_PLATFORM#android-}
+    echo -e "${YELLOW}Using highest available platform: $ANDROID_PLATFORM${NC}"
+  fi
+fi
+
+# Ensure minimum API 24 for Vulkan 1.1+ features
+if [ "$ANDROID_MIN_SDK" -lt 24 ]; then
   ANDROID_MIN_SDK=24
   ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
+  echo -e "${YELLOW}Warning: Minimum API level 24 required for Vulkan, using $ANDROID_PLATFORM${NC}"
 fi
 
 echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
@@ -275,6 +295,24 @@ build_for_abi() {
       GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_DIR")
     elif [ -d "$HOST_PLATFORM_DIR/sysroot/usr/include" ]; then
       GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$HOST_PLATFORM_DIR/sysroot/usr/include")
+    fi
+    
+    # Explicitly set Vulkan library path to use the correct API level
+    # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)
+    VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+    if [ -f "$VULKAN_LIB_PATH" ]; then
+      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+      echo -e "${GREEN}Using Vulkan library from NDK sysroot: $VULKAN_LIB_PATH${NC}"
+    else
+      # Fallback: try to find any libvulkan.so in the sysroot
+      VULKAN_LIB_FALLBACK=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libvulkan.so" 2>/dev/null | sort -V | tail -1)
+      if [ -n "$VULKAN_LIB_FALLBACK" ] && [ -f "$VULKAN_LIB_FALLBACK" ]; then
+        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_FALLBACK")
+        echo -e "${GREEN}Using Vulkan library (fallback): $VULKAN_LIB_FALLBACK${NC}"
+      else
+        echo -e "${YELLOW}Warning: Vulkan library not found, CMake will try to find it${NC}"
+        echo -e "${YELLOW}  Searched: $VULKAN_LIB_PATH${NC}"
+      fi
     fi
     
     # Find glslc

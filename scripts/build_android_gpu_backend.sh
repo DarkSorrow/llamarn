@@ -257,12 +257,23 @@ fi
 if [ "$BUILD_OPENCL" = true ]; then
   echo -e "${GREEN}=== Building OpenCL headers and ICD loader ===${NC}"
   
-  # Get OpenCL Headers
+  # Get OpenCL Headers (use specific version tag for consistency)
   if [ ! -d "$OPENCL_HEADERS_DIR" ]; then
-    echo -e "${YELLOW}Cloning OpenCL-Headers...${NC}"
-    git clone https://github.com/KhronosGroup/OpenCL-Headers "$OPENCL_HEADERS_DIR"
+    echo -e "${YELLOW}Cloning OpenCL-Headers (tag: $OPENCL_HEADERS_TAG)...${NC}"
+    git clone --depth 1 --branch "$OPENCL_HEADERS_TAG" https://github.com/KhronosGroup/OpenCL-Headers "$OPENCL_HEADERS_DIR" || {
+      echo -e "${YELLOW}Tag $OPENCL_HEADERS_TAG not found, cloning latest...${NC}"
+      git clone --depth 1 https://github.com/KhronosGroup/OpenCL-Headers "$OPENCL_HEADERS_DIR"
+    }
   else
-    echo -e "${YELLOW}OpenCL-Headers already cloned, using existing copy${NC}"
+    echo -e "${YELLOW}OpenCL-Headers already cloned, checking version...${NC}"
+    pushd "$OPENCL_HEADERS_DIR"
+    CURRENT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "unknown")
+    if [ "$CURRENT_TAG" != "$OPENCL_HEADERS_TAG" ]; then
+      echo -e "${YELLOW}Updating OpenCL-Headers to tag $OPENCL_HEADERS_TAG...${NC}"
+      git fetch --depth 1 origin tag "$OPENCL_HEADERS_TAG" 2>/dev/null || git fetch --depth 1 origin
+      git checkout "$OPENCL_HEADERS_TAG" 2>/dev/null || echo -e "${YELLOW}Using current version${NC}"
+    fi
+    popd
   fi
   
   # Install OpenCL headers to our prebuilt dir for build-time use
