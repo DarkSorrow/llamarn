@@ -154,7 +154,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/vulkan
             prebuilt/libs/external/opencl
-          key: android-ndk-gpu-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
+          key: android-ndk-gpu-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
           restore-keys: |
             android-ndk-gpu-
       
@@ -265,7 +265,7 @@ jobs:
         with:
           path: |
             ios/libs/llama.xcframework
-          key: ios-framework-${{ hashFiles('scripts/used_version.sh') }}-${{ hashFiles('scripts/build_apple_external.sh') }}
+          key: ios-framework-${{ hashFiles('scripts/build_apple_external.sh') }}
           restore-keys: |
             ios-framework-
       
