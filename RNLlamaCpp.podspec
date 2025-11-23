@@ -12,6 +12,9 @@ Pod::Spec.new do |s|
 
   s.platforms    = { :ios => "13.0" }
   s.source       = { :git => "https://github.com/novastera/llamacpp-rn.git", :tag => "#{s.version}" }
+  
+  # Mark as static framework to resolve CocoaPods error about mixed static/dynamic frameworks
+  s.static_framework = true
 
   # Core React Native module files - keep iOS-specific files separate
   s.source_files = "ios/**/*.{h,m,mm}",  # iOS-specific Obj-C++ files

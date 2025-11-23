@@ -91,6 +91,86 @@ copy_header_files() {
   return 0
 }
 
+filter_ios_info_plist() {
+  local info_plist="$PREBUILT_DIR/llama.xcframework/Info.plist"
+
+  if [ ! -f "$info_plist" ]; then
+    echo -e "${YELLOW}Info.plist not found at $info_plist, skipping filtering${NC}"
+    return 0
+  fi
+
+  # Check if node is available
+  if ! command -v node &> /dev/null; then
+    echo -e "${YELLOW}node not found, skipping Info.plist filtering (not critical)${NC}"
+    echo -e "${YELLOW}Note: Non-iOS slices have already been removed from the xcframework${NC}"
+    return 0
+  fi
+
+  echo -e "${YELLOW}Filtering Info.plist entries to keep only iOS slices...${NC}"
+  INFO_PLIST_PATH="$info_plist" node <<'NODEJS'
+const fs = require('fs');
+const { execSync } = require('child_process');
+
+const infoPath = process.env.INFO_PLIST_PATH;
+const allowedPlatforms = new Set(['ios']);
+let changed = false;
+
+try {
+  // Convert plist to JSON using plutil (macOS built-in tool)
+  let jsonData;
+  try {
+    const jsonStr = execSync(`plutil -convert json -o - "${infoPath}"`, { encoding: 'utf8' });
+    jsonData = JSON.parse(jsonStr);
+  } catch (e) {
+    // If plutil fails, try reading as JSON directly (in case it's already JSON)
+    try {
+      jsonData = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+    } catch (e2) {
+      console.error('Failed to parse plist file. Skipping filtering.');
+      process.exit(0);
+    }
+  }
+
+  const libraries = jsonData.AvailableLibraries || [];
+  const filtered = [];
+
+  for (const entry of libraries) {
+    const platform = entry.SupportedPlatform;
+    const identifier = entry.LibraryIdentifier;
+    if (allowedPlatforms.has(platform)) {
+      filtered.push(entry);
+    } else {
+      changed = true;
+      console.log(` - Removing ${identifier} (${platform}) from Info.plist`);
+    }
+  }
+
+  jsonData.AvailableLibraries = filtered;
+
+  // Convert JSON back to plist using plutil
+  try {
+    const tempJson = require('os').tmpdir() + '/info_plist_temp.json';
+    fs.writeFileSync(tempJson, JSON.stringify(jsonData, null, 2));
+    execSync(`plutil -convert xml1 -o "${infoPath}" "${tempJson}"`);
+    fs.unlinkSync(tempJson);
+  } catch (e) {
+    // If plutil conversion fails, write as JSON (should still work)
+    fs.writeFileSync(infoPath, JSON.stringify(jsonData, null, 2));
+  }
+
+  if (changed) {
+    console.log('Info.plist updated to include only iOS slices.');
+  } else {
+    console.log('Info.plist already limited to iOS slices.');
+  }
+} catch (error) {
+  console.error('Error filtering Info.plist:', error.message);
+  console.log('Continuing anyway - this is not critical.');
+  process.exit(0);
+}
+NODEJS
+}
+
 # Download and setup iOS framework
 download_ios_framework() {
   echo -e "${YELLOW}Downloading iOS framework (version: $LLAMA_CPP_TAG)...${NC}"
@@ -166,6 +246,9 @@ download_ios_framework() {
       rm -rf "$slice"
     fi
   done
+
+  # Update Info.plist to remove references to deleted slices
+  filter_ios_info_plist
   
   # Verify the framework has the necessary iOS slices
   if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" ]]; then
