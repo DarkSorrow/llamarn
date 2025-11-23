@@ -428,7 +428,7 @@ else
   echo -e "${YELLOW}OpenCL backend disabled${NC}"
 fi
 
-# Add Vulkan backend if available and enabled
+# Add Vulkan backend if available and enabled (per-ABI configuration happens later)
 if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
   GPU_CMAKE_FLAGS+=(
     -DGGML_VULKAN=ON
@@ -443,7 +443,6 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     -DGGML_VULKAN_DISABLE_FLASHATTN=ON  # Disable flash attention for Adreno compatibility
   )
   
-  # Disable cooperative matrix features if environment variables are set
   if [ -n "$GGML_VK_DISABLE_COOPMAT" ]; then
     export GGML_VK_DISABLE_COOPMAT="$GGML_VK_DISABLE_COOPMAT"
     echo -e "${YELLOW}Cooperative matrix support disabled via environment variable${NC}"
@@ -454,70 +453,9 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     echo -e "${YELLOW}Cooperative matrix 2 support disabled via environment variable${NC}"
   fi
   
-  # Check if we have Vulkan environment info from build_android_gpu_backend.sh
-  VULKAN_ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
-  if [ -f "$VULKAN_ENV_FILE" ]; then
-    echo -e "${GREEN}Loading Vulkan environment from: $VULKAN_ENV_FILE${NC}"
-    source "$VULKAN_ENV_FILE"
-    
-    if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
-      echo -e "${GREEN}Using Vulkan library from env: $VULKAN_LIBRARY_PATH${NC}"
-    fi
-    
-    if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ]; then
-      if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-        echo -e "${GREEN}Using Vulkan include path from env: $VULKAN_INCLUDE_PATH${NC}"
-      else
-        echo -e "${RED}vulkan.hpp missing in $VULKAN_INCLUDE_PATH${NC}"
-        exit 1
-      fi
-    fi
-    
-    if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_EXECUTABLE")
-      echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
-    fi
-  else
-    echo -e "${YELLOW}No Vulkan environment file found, using pinned local headers${NC}"
-    VULKAN_INCLUDE_PATH="$VULKAN_INCLUDE_SYSROOT"
-    if [ ! -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
-      echo -e "${RED}Vulkan headers missing in $VULKAN_INCLUDE_PATH${NC}"
-      echo -e "${RED}Run scripts/build_android_gpu_backend.sh first${NC}"
-      exit 1
-    fi
-    GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-
-    if [ "$ABI" = "arm64-v8a" ]; then
-      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-    elif [ "$ABI" = "x86_64" ]; then
-      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-    elif [ "$ABI" = "armeabi-v7a" ]; then
-      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
-    elif [ "$ABI" = "x86" ]; then
-      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-    fi
-
-    if [ -f "$VULKAN_LIB_PATH" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
-      echo -e "${GREEN}Using Vulkan loader from NDK: $VULKAN_LIB_PATH${NC}"
-    else
-      echo -e "${RED}Vulkan loader not found at $VULKAN_LIB_PATH${NC}"
-      exit 1
-    fi
-
-    if [ -n "$GLSLC_PATH" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
-      
-      if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
-        echo -e "${GREEN}Using glslc from: $GLSLC_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: glslc at $GLSLC_PATH is not executable or doesn't exist${NC}"
-      fi
-    fi
-  fi
-  echo -e "${GREEN}Vulkan backend will be built as separate dynamic library${NC}"
+  VULKAN_FALLBACK_INCLUDE="$VULKAN_INCLUDE_SYSROOT"
+  VULKAN_FALLBACK_GLSLC="$GLSLC_PATH"
+  echo -e "${GREEN}Vulkan backend enabled (per-ABI configuration will resolve loaders)${NC}"
 else
   echo -e "${YELLOW}Vulkan backend disabled${NC}"
 fi
@@ -536,6 +474,8 @@ fi
 build_for_abi() {
   local ABI=$1
   echo -e "${GREEN}Building for $ABI${NC}"
+  
+  local ABI_GPU_FLAGS=("${GPU_CMAKE_FLAGS[@]}")
   
   # Set ABI-specific flags
   if [ "$ABI" = "arm64-v8a" ]; then
@@ -572,6 +512,63 @@ build_for_abi() {
     )
   fi
   
+  if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
+    local ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
+    local VK_INCLUDE_PATH="$VULKAN_FALLBACK_INCLUDE"
+    local VK_LIB_PATH=""
+    local VK_GLSLC="$VULKAN_FALLBACK_GLSLC"
+    
+    if [ -f "$ENV_FILE" ]; then
+      echo -e "${GREEN}Loading Vulkan environment from: $ENV_FILE${NC}"
+      # shellcheck disable=SC1090
+      source "$ENV_FILE"
+      
+      if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ] && [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+        VK_INCLUDE_PATH="$VULKAN_INCLUDE_PATH"
+      fi
+      if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
+        VK_LIB_PATH="$VULKAN_LIBRARY_PATH"
+      fi
+      if [ -n "$GLSLC_EXECUTABLE" ] && [ -f "$GLSLC_EXECUTABLE" ] && [ -x "$GLSLC_EXECUTABLE" ]; then
+        VK_GLSLC="$GLSLC_EXECUTABLE"
+      fi
+    else
+      echo -e "${YELLOW}No Vulkan environment file for $ABI, using NDK loader${NC}"
+    fi
+    
+    if [ -z "$VK_LIB_PATH" ]; then
+      if [ "$ABI" = "arm64-v8a" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86_64" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "armeabi-v7a" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
+      elif [ "$ABI" = "x86" ]; then
+        VK_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+      fi
+    fi
+    
+    if [ ! -f "$VK_LIB_PATH" ]; then
+      echo -e "${RED}Vulkan loader not found for $ABI at $VK_LIB_PATH${NC}"
+      echo -e "${RED}Run scripts/build_android_gpu_backend.sh to regenerate Vulkan environment${NC}"
+      return 1
+    fi
+    
+    if [ -z "$VK_INCLUDE_PATH" ] || [ ! -f "$VK_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+      echo -e "${RED}Vulkan headers missing for $ABI (expected $VK_INCLUDE_PATH)${NC}"
+      return 1
+    fi
+    
+    ABI_GPU_FLAGS+=(-DVulkan_INCLUDE_DIR="$VK_INCLUDE_PATH")
+    ABI_GPU_FLAGS+=(-DVulkan_LIBRARY="$VK_LIB_PATH")
+    
+    if [ -n "$VK_GLSLC" ]; then
+      ABI_GPU_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$VK_GLSLC")
+    fi
+    
+    echo -e "${GREEN}Vulkan backend configured for $ABI${NC}"
+  fi
+  
   # Create build directory
   local BUILD_DIR="$PREBUILT_BUILD_DIR/$ABI"
   mkdir -p "$BUILD_DIR"
@@ -584,9 +581,9 @@ build_for_abi() {
   
   # Print the exact cmake command for debugging
   echo -e "${YELLOW}Running cmake with options:${NC}"
-  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[*]}"
+  echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[*]}"
   
-  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${GPU_CMAKE_FLAGS[@]} || {
+  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[@]} || {
     echo -e "${RED}CMake configuration failed for $ABI${NC}"
     popd
     return 1
