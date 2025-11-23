@@ -251,6 +251,10 @@ build_for_abi() {
     -DGGML_HIP=OFF
     -DGGML_OPENCL=OFF             # Will be enabled conditionally
     -DGGML_VULKAN=OFF              # Will be enabled conditionally
+    # Help CMake find libraries in NDK sysroot
+    -DCMAKE_FIND_ROOT_PATH="$HOST_PLATFORM_DIR/sysroot"
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH
   )
   
   # Add OpenCL if available and enabled
@@ -271,12 +275,57 @@ build_for_abi() {
       ARCH="i686"
     fi
     
-    OPENCL_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
-    if [ -f "$OPENCL_LIB_PATH" ]; then
+    # Try multiple possible locations for libOpenCL.so
+    OPENCL_LIB_PATH=""
+    
+    # First try: Direct in arch directory (older NDK structure)
+    TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
+    if [ -f "$TRY_PATH" ]; then
+      OPENCL_LIB_PATH="$TRY_PATH"
+      echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+    fi
+    
+    # Second try: API level subdirectory (newer NDK structure)
+    if [ -z "$OPENCL_LIB_PATH" ]; then
+      TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so"
+      if [ -f "$TRY_PATH" ]; then
+        OPENCL_LIB_PATH="$TRY_PATH"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    # Third try: Search for any libOpenCL.so in the arch directory
+    if [ -z "$OPENCL_LIB_PATH" ]; then
+      FOUND_LIB=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libOpenCL.so" 2>/dev/null | head -1)
+      if [ -n "$FOUND_LIB" ] && [ -f "$FOUND_LIB" ]; then
+        OPENCL_LIB_PATH="$FOUND_LIB"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -n "$OPENCL_LIB_PATH" ] && [ -f "$OPENCL_LIB_PATH" ]; then
+      # Set all possible CMake variables that FindOpenCL might look for
+      # FindOpenCL.cmake looks for OpenCL_LIBRARY specifically
+      GPU_CMAKE_FLAGS+=(-DOpenCL_LIBRARY="$OPENCL_LIB_PATH")
       GPU_CMAKE_FLAGS+=(-DCL_LIBRARY="$OPENCL_LIB_PATH")
-      echo -e "${GREEN}Using OpenCL library from NDK sysroot: $OPENCL_LIB_PATH${NC}"
+      GPU_CMAKE_FLAGS+=(-DOpenCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+      GPU_CMAKE_FLAGS+=(-DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+      # Also set as cache variable to help FindOpenCL
+      GPU_CMAKE_FLAGS+=(-DOpenCL_LIBRARY:FILEPATH="$OPENCL_LIB_PATH")
+      echo -e "${GREEN}Configured OpenCL library: $OPENCL_LIB_PATH${NC}"
+      echo -e "${GREEN}Configured OpenCL headers: $OPENCL_INCLUDE_DIR${NC}"
     else
-      echo -e "${YELLOW}Warning: OpenCL library not found in NDK sysroot, CMake will try to find it${NC}"
+      echo -e "${RED}ERROR: OpenCL library not found${NC}"
+      echo -e "${YELLOW}Make sure build_android_gpu_backend.sh was run first to build the ICD loader${NC}"
+      echo -e "${YELLOW}Searched locations:${NC}"
+      echo -e "${YELLOW}  1. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so${NC}"
+      echo -e "${YELLOW}  2. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so${NC}"
+      # List what's actually in the directory
+      if [ -d "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" ]; then
+        echo -e "${YELLOW}Files in arch directory:${NC}"
+        ls -la "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/" | head -10
+      fi
+      return 1
     fi
     
     echo -e "${GREEN}OpenCL backend enabled for $ABI${NC}"

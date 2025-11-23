@@ -344,15 +344,27 @@ if [ "$BUILD_OPENCL" = true ]; then
     # The system will provide libOpenCL.so at runtime
     if [ -f "libOpenCL.so" ]; then
       # Install to NDK sysroot for linking during build
+      # Install to both locations to support different NDK versions:
+      # 1. Direct in arch directory (older NDK structure)
+      # 2. API-level subdirectory (newer NDK structure, matches Vulkan library location)
       NDK_LIB_DIR="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android"
       mkdir -p "$NDK_LIB_DIR"
       cp "libOpenCL.so" "$NDK_LIB_DIR/"
-      echo -e "${GREEN}Installed OpenCL ICD Loader to NDK sysroot for build-time linking ($ABI)${NC}"
+      echo -e "${GREEN}Installed to: $NDK_LIB_DIR/libOpenCL.so${NC}"
+      
+      # Also install to API-level subdirectory (matches where Vulkan libraries are)
+      # This is the structure used by NDK 27+ for API-specific libraries
+      NDK_LIB_API_DIR="$NDK_LIB_DIR/$ANDROID_MIN_SDK"
+      mkdir -p "$NDK_LIB_API_DIR"
+      cp "libOpenCL.so" "$NDK_LIB_API_DIR/"
+      echo -e "${GREEN}Also installed to: $NDK_LIB_API_DIR/libOpenCL.so${NC}"
+      
+      echo -e "${GREEN}OpenCL ICD Loader installed to NDK sysroot for build-time linking ($ABI)${NC}"
+      echo -e "${YELLOW}Note: NOT shipped in APK - system will provide libOpenCL.so at runtime${NC}"
       
       # Create flag file to indicate OpenCL is available for building
       mkdir -p "$PREBUILT_GPU_DIR/$ABI"
       touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
-      echo -e "${GREEN}OpenCL ICD Loader available for build-time linking (NOT shipped in APK)${NC}"
     else
       echo -e "${RED}libOpenCL.so not found in build output for $ABI${NC}"
     fi
