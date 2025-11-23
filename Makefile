@@ -18,28 +18,28 @@ help:
 # Clean target - runs all clean scripts from package.json
 clean:
 	@echo "🧹 Cleaning build artifacts..."
-	npm run clean
+	yarn run clean
 	@echo "🧹 Cleaning Android build files..."
-	npm run clean-android
+	yarn run clean-android
 	@echo "🧹 Cleaning prebuilt files..."
-	npm run clean-prebuilt
+	yarn run clean-prebuilt
 	@echo "✅ Clean completed"
 
 # Clean all target - includes llama.cpp cleanup
 clean-all: clean
 	@echo "🧹 Cleaning llama.cpp setup..."
-	npm run clean-llama
+	yarn run clean-llama
 	@echo "✅ Clean all completed"
 
 # Update target - setup llama.cpp and build Android for macOS
 update:
 	@echo "🔄 Setting up llama.cpp..."
-	npm run setup-llama-cpp
+	yarn run setup-llama-cpp
 	@echo "🔨 Building Android for macOS..."
-	npm run build-android-macos
+	yarn run build-android-macos
 	@echo "✅ Update completed"
 	@echo "📦 Preparing library build..."
-	npm run prepare
+	yarn run prepare
 	@echo "✅ Prepare completed"
 
 # Full workflow target - clean, update, and prepare

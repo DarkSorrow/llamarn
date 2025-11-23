@@ -31,6 +31,7 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/sampling.{h,cpp}",
                    "cpp/llama.cpp/common/chat.{h,cpp}",
                    "cpp/llama.cpp/common/chat-parser.{h,cpp}",
+                   "cpp/llama.cpp/common/chat-parser-xml-toolcall.{h,cpp}",
                    "cpp/llama.cpp/common/regex-partial.{h,cpp}",
                    "cpp/llama.cpp/common/console.{h,cpp}",
                    "cpp/llama.cpp/common/json-partial.{h,cpp}",

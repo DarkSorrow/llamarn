@@ -58,6 +58,7 @@ add_library(
     ${CPP_DIR}/llama.cpp/common/sampling.cpp
     ${CPP_DIR}/llama.cpp/common/chat.cpp
     ${CPP_DIR}/llama.cpp/common/chat-parser.cpp
+    ${CPP_DIR}/llama.cpp/common/chat-parser-xml-toolcall.cpp
     ${CPP_DIR}/llama.cpp/common/regex-partial.cpp
     ${CPP_DIR}/llama.cpp/common/arg.cpp
     ${CPP_DIR}/llama.cpp/common/console.cpp
