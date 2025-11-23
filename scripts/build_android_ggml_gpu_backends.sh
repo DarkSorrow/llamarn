@@ -86,6 +86,8 @@ PREBUILT_BUILD_DIR="$PREBUILT_DIR/build"
 PREBUILT_GPU_DIR="$PREBUILT_DIR/gpu"
 PREBUILT_EXTERNAL_DIR="$PREBUILT_DIR/libs/external"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
+THIRD_PARTY_DIR="$PREBUILT_DIR/third_party"
+VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
 
 # Try to use the user-provided NDK path first
 if [ -n "$CUSTOM_NDK_PATH" ]; then
@@ -169,13 +171,13 @@ fi
 
 # Check for Vulkan headers
 VULKAN_AVAILABLE=false
-VULKAN_SYSROOT_INCLUDE="$HOST_PLATFORM_DIR/sysroot/usr/include"
+VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
 if [ "$BUILD_VULKAN" = true ]; then
-  if [ -f "$VULKAN_SYSROOT_INCLUDE/vulkan/vulkan.hpp" ]; then
+  if [ -f "$VULKAN_INCLUDE_LOCAL/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
-    echo -e "${GREEN}Vulkan headers found in NDK sysroot${NC}"
+    echo -e "${GREEN}Vulkan headers found at $VULKAN_INCLUDE_LOCAL${NC}"
   else
-    echo -e "${YELLOW}Vulkan headers not found at $VULKAN_SYSROOT_INCLUDE${NC}"
+    echo -e "${YELLOW}Vulkan headers not found at $VULKAN_INCLUDE_LOCAL${NC}"
     echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
   fi
 fi
@@ -268,32 +270,39 @@ build_for_abi() {
       ARCH="i686"
     fi
     
-    # Try multiple possible locations for libOpenCL.so
-    OPENCL_LIB_PATH=""
+    # Prefer the staged ICD loader in prebuilt/gpu
+    OPENCL_LIB_PATH="$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
     
-    # First try: Direct in arch directory (older NDK structure)
-    TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
-    if [ -f "$TRY_PATH" ]; then
-      OPENCL_LIB_PATH="$TRY_PATH"
-      echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
-    fi
-    
-    # Second try: API level subdirectory (newer NDK structure)
-    if [ -z "$OPENCL_LIB_PATH" ]; then
-      TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so"
+    if [ ! -f "$OPENCL_LIB_PATH" ]; then
+      echo -e "${YELLOW}Staged libOpenCL.so missing, falling back to NDK sysroot lookup${NC}"
+      OPENCL_LIB_PATH=""
+      
+      # First try: Direct in arch directory (older NDK structure)
+      TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
       if [ -f "$TRY_PATH" ]; then
         OPENCL_LIB_PATH="$TRY_PATH"
         echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
       fi
-    fi
-    
-    # Third try: Search for any libOpenCL.so in the arch directory
-    if [ -z "$OPENCL_LIB_PATH" ]; then
-      FOUND_LIB=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libOpenCL.so" 2>/dev/null | head -1)
-      if [ -n "$FOUND_LIB" ] && [ -f "$FOUND_LIB" ]; then
-        OPENCL_LIB_PATH="$FOUND_LIB"
-        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      
+      # Second try: API level subdirectory (newer NDK structure)
+      if [ -z "$OPENCL_LIB_PATH" ]; then
+        TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so"
+        if [ -f "$TRY_PATH" ]; then
+          OPENCL_LIB_PATH="$TRY_PATH"
+          echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+        fi
       fi
+      
+      # Third try: Search for any libOpenCL.so in the arch directory
+      if [ -z "$OPENCL_LIB_PATH" ]; then
+        FOUND_LIB=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libOpenCL.so" 2>/dev/null | head -1)
+        if [ -n "$FOUND_LIB" ] && [ -f "$FOUND_LIB" ]; then
+          OPENCL_LIB_PATH="$FOUND_LIB"
+          echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+        fi
+      fi
+    else
+      echo -e "${GREEN}Using staged libOpenCL.so for $ABI: $OPENCL_LIB_PATH${NC}"
     fi
     
     if [ -n "$OPENCL_LIB_PATH" ] && [ -f "$OPENCL_LIB_PATH" ]; then
@@ -311,8 +320,9 @@ build_for_abi() {
       echo -e "${RED}ERROR: OpenCL library not found${NC}"
       echo -e "${YELLOW}Make sure build_android_gpu_backend.sh was run first to build the ICD loader${NC}"
       echo -e "${YELLOW}Searched locations:${NC}"
-      echo -e "${YELLOW}  1. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so${NC}"
-      echo -e "${YELLOW}  2. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so${NC}"
+      echo -e "${YELLOW}  1. $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
+      echo -e "${YELLOW}  2. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so${NC}"
+      echo -e "${YELLOW}  3. $HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so${NC}"
       # List what's actually in the directory
       if [ -d "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" ]; then
         echo -e "${YELLOW}Files in arch directory:${NC}"
@@ -332,8 +342,8 @@ build_for_abi() {
     CMAKE_ARGS+=(-DVK_USE_PLATFORM_ANDROID_KHR=ON)
     CMAKE_ARGS+=(-DGGML_VULKAN_DISABLE_FLASHATTN=ON)
     
-    # Use the headers installed into the NDK sysroot
-    GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_SYSROOT_INCLUDE")
+    # Use the headers prepared by build_android_gpu_backend.sh
+    GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_LOCAL")
     
     # Explicitly set Vulkan library path to use the correct API level
     # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)

@@ -86,8 +86,8 @@ OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
 
 ensure_vulkan_headers_installed() {
-  local target_include="$HOST_PLATFORM_DIR/sysroot/usr/include"
-  local target_header="$target_include/vulkan/vulkan.hpp"
+  local local_header_dir="$VULKAN_HEADERS_DIR/include"
+  local local_header="$local_header_dir/vulkan/vulkan.hpp"
 
   # Clone or update Vulkan-Headers at the pinned tag
   if [ ! -d "$VULKAN_HEADERS_DIR" ]; then
@@ -106,16 +106,12 @@ ensure_vulkan_headers_installed() {
     popd >/dev/null
   fi
 
-  # Copy headers into the NDK sysroot so find_package(Vulkan) sees vulkan.hpp
-  mkdir -p "$target_include"
-  cp -R "$VULKAN_HEADERS_DIR/include/." "$target_include/"
-
-  if [ ! -f "$target_header" ]; then
-    echo -e "${RED}Failed to install Vulkan headers into $target_include${NC}"
+  if [ ! -f "$local_header" ]; then
+    echo -e "${RED}Failed to prepare Vulkan headers under $local_header_dir${NC}"
     exit 1
   fi
 
-  echo -e "${GREEN}Vulkan headers installed to: $target_include${NC}"
+  echo -e "${GREEN}Vulkan headers ready at: $local_header_dir${NC}"
 }
 
 # Clean up if requested
@@ -292,11 +288,6 @@ if [ "$BUILD_OPENCL" = true ]; then
   mkdir -p "$OPENCL_INCLUDE_DIR/CL"
   cp -r "$OPENCL_HEADERS_DIR/CL/"* "$OPENCL_INCLUDE_DIR/CL/"
   
-  # Also copy headers to NDK sysroot for build-time linking
-  echo -e "${YELLOW}Installing OpenCL headers to NDK sysroot...${NC}"
-  mkdir -p "$HOST_PLATFORM_DIR/sysroot/usr/include/CL"
-  cp -r "$OPENCL_HEADERS_DIR/CL/"* "$HOST_PLATFORM_DIR/sysroot/usr/include/CL/"
-  
   # Build OpenCL ICD Loader for each ABI (as fallback for devices without system libOpenCL.so)
   if [ ! -d "$OPENCL_LOADER_DIR" ]; then
     echo -e "${YELLOW}Cloning OpenCL-ICD-Loader...${NC}"
@@ -347,7 +338,7 @@ if [ "$BUILD_OPENCL" = true ]; then
       -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
       -DANDROID_STL=c++_shared \
       -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-      -DOPENCL_ICD_LOADER_HEADERS_DIR="$HOST_PLATFORM_DIR/sysroot/usr/include" \
+      -DOPENCL_ICD_LOADER_HEADERS_DIR="$OPENCL_INCLUDE_DIR" \
       -DBUILD_SHARED_LIBS=ON || {
       echo -e "${RED}CMake configuration failed for OpenCL ICD loader ($ABI)${NC}"
       popd
@@ -360,30 +351,14 @@ if [ "$BUILD_OPENCL" = true ]; then
       continue
     }
     
-    # Install to NDK sysroot for build-time linking only (NOT shipped in APK)
-    # The system will provide libOpenCL.so at runtime
+    # Stage the ICD loader next to other prebuilt GPU libs (NOT shipped in APK)
+    # The system will provide libOpenCL.so at runtime; we only need it for linking libggml-opencl.so
     if [ -f "libOpenCL.so" ]; then
-      # Install to NDK sysroot for linking during build
-      # Install to both locations to support different NDK versions:
-      # 1. Direct in arch directory (older NDK structure)
-      # 2. API-level subdirectory (newer NDK structure, matches Vulkan library location)
-      NDK_LIB_DIR="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android"
-      mkdir -p "$NDK_LIB_DIR"
-      cp "libOpenCL.so" "$NDK_LIB_DIR/"
-      echo -e "${GREEN}Installed to: $NDK_LIB_DIR/libOpenCL.so${NC}"
-      
-      # Also install to API-level subdirectory (matches where Vulkan libraries are)
-      # This is the structure used by NDK 27+ for API-specific libraries
-      NDK_LIB_API_DIR="$NDK_LIB_DIR/$ANDROID_MIN_SDK"
-      mkdir -p "$NDK_LIB_API_DIR"
-      cp "libOpenCL.so" "$NDK_LIB_API_DIR/"
-      echo -e "${GREEN}Also installed to: $NDK_LIB_API_DIR/libOpenCL.so${NC}"
-      
-      echo -e "${GREEN}OpenCL ICD Loader installed to NDK sysroot for build-time linking ($ABI)${NC}"
-      echo -e "${YELLOW}Note: NOT shipped in APK - system will provide libOpenCL.so at runtime${NC}"
+      mkdir -p "$PREBUILT_GPU_DIR/$ABI"
+      cp "libOpenCL.so" "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
+      echo -e "${GREEN}Staged libOpenCL.so at $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
       
       # Create flag file to indicate OpenCL is available for building
-      mkdir -p "$PREBUILT_GPU_DIR/$ABI"
       touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
     else
       echo -e "${RED}libOpenCL.so not found in build output for $ABI${NC}"
@@ -393,7 +368,7 @@ if [ "$BUILD_OPENCL" = true ]; then
   done
   
   echo -e "${GREEN}OpenCL headers and ICD loader prepared${NC}"
-  echo -e "${YELLOW}Note: libOpenCL.so is installed to NDK sysroot for BUILD-TIME linking only.${NC}"
+  echo -e "${YELLOW}Note: libOpenCL.so is staged under prebuilt/gpu for BUILD-TIME linking only.${NC}"
   echo -e "${YELLOW}      We do NOT ship it in the APK - the system will provide it at runtime.${NC}"
 fi
 
@@ -402,7 +377,7 @@ if [ "$BUILD_VULKAN" = true ]; then
   echo -e "${GREEN}=== Preparing Vulkan headers and environment ===${NC}"
   
   ensure_vulkan_headers_installed
-  VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
+  VULKAN_INCLUDE_PATH="$VULKAN_HEADERS_DIR/include"
   
   # Install glslc compiler to our PATH if it's available
   GLSLC_PATH=""
@@ -495,7 +470,7 @@ echo -e "${GREEN}OpenCL headers: $OPENCL_INCLUDE_DIR${NC}"
 if [ "$BUILD_OPENCL" = true ]; then
   echo -e "${GREEN}OpenCL ICD loader (fallback): $OPENCL_LIB_DIR${NC}"
 fi
-echo -e "${GREEN}Vulkan headers installed into: $HOST_PLATFORM_DIR/sysroot/usr/include${NC}"
+echo -e "${GREEN}Vulkan headers: $VULKAN_HEADERS_DIR/include${NC}"
 echo -e "${YELLOW}Note: libggml-opencl.so and libggml-vulkan.so${NC}"
 echo -e "${YELLOW}      will be built by build_android_ggml_gpu_backends.sh${NC}"
 
@@ -512,23 +487,10 @@ for ABI in "${ABIS[@]}"; do
     echo -e "${GREEN}✓ OpenCL headers prepared for $ABI${NC}"
     echo -e "${GREEN}  Headers location: $OPENCL_INCLUDE_DIR/CL${NC}"
     
-    # Check for ICD loader in NDK sysroot (for build-time linking)
-    NDK_LIB_DIR="$HOST_PLATFORM_DIR/sysroot/usr/lib"
-    if [ "$ABI" = "arm64-v8a" ]; then
-      ARCH="aarch64"
-    elif [ "$ABI" = "x86_64" ]; then
-      ARCH="x86_64"
-    elif [ "$ABI" = "armeabi-v7a" ]; then
-      ARCH="arm"
-    elif [ "$ABI" = "x86" ]; then
-      ARCH="i686"
-    fi
-    
-    if [ -f "$NDK_LIB_DIR/$ARCH-linux-android/libOpenCL.so" ]; then
-      echo -e "${GREEN}✓ OpenCL ICD loader installed in NDK sysroot for build-time linking ($ABI)${NC}"
-      echo -e "${YELLOW}  (NOT shipped in APK - system will provide at runtime)${NC}"
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+      echo -e "${GREEN}✓ OpenCL ICD loader staged at $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
     else
-      echo -e "${YELLOW}⚠ OpenCL ICD loader not in NDK sysroot for $ABI${NC}"
+      echo -e "${YELLOW}⚠ libOpenCL.so missing under $PREBUILT_GPU_DIR/$ABI${NC}"
     fi
   else
     echo -e "${YELLOW}⚠ OpenCL not prepared for $ABI (may be disabled)${NC}"
@@ -548,7 +510,7 @@ for ABI in "${ABIS[@]}"; do
 done
 
 echo -e "${GREEN}Add the following to your build_android_external.sh command:${NC}"
-echo -e "${YELLOW}-DVulkan_INCLUDE_DIR=$HOST_PLATFORM_DIR/sysroot/usr/include${NC}"
+echo -e "${YELLOW}-DVulkan_INCLUDE_DIR=$VULKAN_HEADERS_DIR/include${NC}"
 
 if [ -n "$GLSLC_PATH" ]; then
   echo -e "${YELLOW}-DVulkan_GLSLC_EXECUTABLE=$GLSLC_PATH${NC}"

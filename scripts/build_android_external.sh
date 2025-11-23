@@ -131,6 +131,8 @@ OPENCL_HEADERS_DIR="$THIRD_PARTY_DIR/OpenCL-Headers"
 OPENCL_LOADER_DIR="$THIRD_PARTY_DIR/OpenCL-ICD-Loader"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
+VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
+VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
 
 # Clean up Android directory if requested
 if [ "$CLEAN_BUILD" = true ] || [ "$CLEAN_PREBUILT" = true ]; then
@@ -327,11 +329,11 @@ VULKAN_AVAILABLE=false
 VULKAN_SDK_PATH=""
 GLSLC_PATH="$CUSTOM_GLSLC_PATH"
 
-# Verify Vulkan headers exist in the pinned NDK sysroot
-VULKAN_INCLUDE_SYSROOT="$HOST_PLATFORM_DIR/sysroot/usr/include"
+# Verify Vulkan headers exist in the pinned third_party location
+VULKAN_INCLUDE_SYSROOT="$VULKAN_INCLUDE_LOCAL"
 if [ -f "$VULKAN_INCLUDE_SYSROOT/vulkan/vulkan.hpp" ]; then
   VULKAN_AVAILABLE=true
-  echo -e "${GREEN}Using Vulkan headers from NDK sysroot: $VULKAN_INCLUDE_SYSROOT${NC}"
+  echo -e "${GREEN}Using Vulkan headers from: $VULKAN_INCLUDE_SYSROOT${NC}"
 else
   echo -e "${RED}Vulkan headers not found in $VULKAN_INCLUDE_SYSROOT${NC}"
   echo -e "${RED}Run scripts/build_android_gpu_backend.sh first to install Vulkan-Headers $VULKAN_HEADERS_TAG${NC}"
@@ -478,7 +480,7 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
     fi
   else
-    echo -e "${YELLOW}No Vulkan environment file found, using pinned NDK sysroot${NC}"
+    echo -e "${YELLOW}No Vulkan environment file found, using pinned local headers${NC}"
     VULKAN_INCLUDE_PATH="$VULKAN_INCLUDE_SYSROOT"
     if [ ! -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
       echo -e "${RED}Vulkan headers missing in $VULKAN_INCLUDE_PATH${NC}"
