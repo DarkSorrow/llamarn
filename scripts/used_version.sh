@@ -11,8 +11,9 @@ LLAMA_CPP_COMMIT="96ac5a2329029dfc35c9cbbb24c09fd91ae9416b"  # Commit as specifi
 LLAMA_CPP_TAG="b7134"  # Tag format for binary downloads
 
 # Vulkan and OpenCL versions
-# Note: Vulkan is provided by Android NDK, we don't need a separate SDK version
-VULKAN_SDK_VERSION="1.4.309"  # Not used for Android (NDK provides Vulkan)
+# Note: Vulkan loader ships with the NDK, but ggml-vulkan needs the C++ headers (vulkan.hpp)
+VULKAN_SDK_VERSION="1.4.309"  # Reference only (Android uses NDK loader)
+VULKAN_HEADERS_TAG="v1.3.292"  # Same version CI installs inside the NDK sysroot
 OPENCL_VERSION="3.0"
 # OpenCL Headers: Use stable tag compatible with OpenCL 3.0
 # v2025.07.22 aligns with OpenCL 3.0.19 spec (includes CL_ENABLE_BETA_EXTENSIONS)
@@ -28,6 +29,7 @@ ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
 
 # Export all variables
 export VULKAN_SDK_VERSION
+export VULKAN_HEADERS_TAG
 export OPENCL_VERSION
 export OPENCL_HEADERS_TAG
 export NDK_VERSION

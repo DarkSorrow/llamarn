@@ -131,8 +131,6 @@ OPENCL_HEADERS_DIR="$THIRD_PARTY_DIR/OpenCL-Headers"
 OPENCL_LOADER_DIR="$THIRD_PARTY_DIR/OpenCL-ICD-Loader"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
-VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
-VULKAN_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/vulkan/include"
 
 # Clean up Android directory if requested
 if [ "$CLEAN_BUILD" = true ] || [ "$CLEAN_PREBUILT" = true ]; then
@@ -152,7 +150,6 @@ mkdir -p "$PREBUILT_BUILD_DIR"
 mkdir -p "$THIRD_PARTY_DIR"
 mkdir -p "$OPENCL_INCLUDE_DIR"
 mkdir -p "$OPENCL_LIB_DIR"
-mkdir -p "$VULKAN_INCLUDE_DIR"
 mkdir -p "$ANDROID_JNI_DIR/arm64-v8a"
 mkdir -p "$ANDROID_JNI_DIR/x86_64"
 mkdir -p "$ANDROID_JNI_DIR/armeabi-v7a"
@@ -209,44 +206,20 @@ if [ -n "$CUSTOM_NDK_PATH" ]; then
     exit 1
   fi
 else
-  # First try to find any available NDK
-  if [ -d "$ANDROID_HOME/ndk" ]; then
-    # Get list of NDK versions sorted by version number (newest first)
-    NEWEST_NDK_VERSION=$(ls -1 "$ANDROID_HOME/ndk" | sort -rV | head -n 1)
-    
-    if [ -n "$NEWEST_NDK_VERSION" ]; then
-      NDK_PATH="$ANDROID_HOME/ndk/$NEWEST_NDK_VERSION"
-      echo -e "${GREEN}Found NDK version $NEWEST_NDK_VERSION, using this version${NC}"
-    else
-      # If no NDK is found, fall back to the version from used_version.sh
-      NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-      echo -e "${YELLOW}No NDK versions found in $ANDROID_HOME/ndk, trying to use version $NDK_VERSION from used_version.sh${NC}"
-      
-      if [ ! -d "$NDK_PATH" ]; then
-        echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
-        echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-        echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
-        exit 1
-      fi
-    fi
-  # Check for NDK in the old-style location
-  elif [ -d "$ANDROID_HOME/ndk-bundle" ]; then
-    NDK_PATH="$ANDROID_HOME/ndk-bundle"
-    echo -e "${GREEN}Found NDK at ndk-bundle location: $NDK_PATH${NC}"
-  else
-    # Try to find the NDK version specified in used_version.sh as last resort
-    NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-    echo -e "${YELLOW}No NDK directory found, trying to use version $NDK_VERSION from used_version.sh${NC}"
-    
-    if [ ! -d "$NDK_PATH" ]; then
-      echo -e "${RED}NDK directory not found at $ANDROID_HOME/ndk or $ANDROID_HOME/ndk-bundle${NC}"
-      echo -e "${RED}NDK version $NDK_VERSION from used_version.sh not found either${NC}"
-      echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-      echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
-      exit 1
-    fi
+  if [ -z "$ANDROID_HOME" ]; then
+    echo -e "${RED}ANDROID_HOME is not set${NC}"
+    exit 1
+  fi
+  NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
+  if [ ! -d "$NDK_PATH" ]; then
+    echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
+    echo -e "${YELLOW}Install it with:${NC}"
+    echo -e "${YELLOW}  \$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;$NDK_VERSION\"${NC}"
+    exit 1
   fi
 fi
+
+echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
 # Extract the Android platform version from the NDK path
 if [ -d "$NDK_PATH/platforms" ]; then
@@ -330,6 +303,8 @@ else
   exit 1
 fi
 
+HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
+
 # Check if OpenCL headers are available (for building libggml-opencl.so)
 # NOTE: We check for headers, not libOpenCL.so (which is a system library)
 OPENCL_AVAILABLE=false
@@ -352,12 +327,15 @@ VULKAN_AVAILABLE=false
 VULKAN_SDK_PATH=""
 GLSLC_PATH="$CUSTOM_GLSLC_PATH"
 
-# Define the host platform dir first (needed for Vulkan detection)
-HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
-
-# Since NDK 23+, Vulkan is included in the NDK, so we can always enable it
-VULKAN_AVAILABLE=true
-echo -e "${GREEN}Using NDK built-in Vulkan support (NDK 23+)${NC}"
+# Verify Vulkan headers exist in the pinned NDK sysroot
+VULKAN_INCLUDE_SYSROOT="$HOST_PLATFORM_DIR/sysroot/usr/include"
+if [ -f "$VULKAN_INCLUDE_SYSROOT/vulkan/vulkan.hpp" ]; then
+  VULKAN_AVAILABLE=true
+  echo -e "${GREEN}Using Vulkan headers from NDK sysroot: $VULKAN_INCLUDE_SYSROOT${NC}"
+else
+  echo -e "${RED}Vulkan headers not found in $VULKAN_INCLUDE_SYSROOT${NC}"
+  echo -e "${RED}Run scripts/build_android_gpu_backend.sh first to install Vulkan-Headers $VULKAN_HEADERS_TAG${NC}"
+fi
 
 # Look for glslc in NDK if not specified by user
 if [ -z "$GLSLC_PATH" ]; then
@@ -480,30 +458,18 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     echo -e "${GREEN}Loading Vulkan environment from: $VULKAN_ENV_FILE${NC}"
     source "$VULKAN_ENV_FILE"
     
-    # Use the environment variables from the file
     if [ -n "$VULKAN_LIBRARY_PATH" ] && [ -f "$VULKAN_LIBRARY_PATH" ]; then
       GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIBRARY_PATH")
       echo -e "${GREEN}Using Vulkan library from env: $VULKAN_LIBRARY_PATH${NC}"
     fi
     
     if [ -n "$VULKAN_INCLUDE_PATH" ] && [ -d "$VULKAN_INCLUDE_PATH" ]; then
-      # Check if this include path has vulkan.hpp
       if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
         GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
         echo -e "${GREEN}Using Vulkan include path from env: $VULKAN_INCLUDE_PATH${NC}"
       else
-        # NDK include path doesn't have vulkan.hpp, check for system headers
-        if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
-          echo -e "${YELLOW}NDK headers missing vulkan.hpp, using system headers for C++${NC}"
-          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
-          # Also add NDK headers as additional include for vulkan.h
-          GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I$VULKAN_INCLUDE_PATH -Wno-deprecated-declarations")
-          echo -e "${GREEN}Using system Vulkan C++ headers: /usr/include${NC}"
-          echo -e "${GREEN}Adding NDK Vulkan C headers: $VULKAN_INCLUDE_PATH${NC}"
-        else
-          GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
-          echo -e "${YELLOW}Warning: Using NDK headers without vulkan.hpp${NC}"
-        fi
+        echo -e "${RED}vulkan.hpp missing in $VULKAN_INCLUDE_PATH${NC}"
+        exit 1
       fi
     fi
     
@@ -512,63 +478,36 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       echo -e "${GREEN}Using glslc from env: $GLSLC_EXECUTABLE${NC}"
     fi
   else
-    # Fallback to the original logic
-    echo -e "${YELLOW}No Vulkan environment file found, using fallback detection${NC}"
-    
-    # Check for system Vulkan headers first (they're more likely to have vulkan.hpp)
-    if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
-      echo -e "${GREEN}Found system Vulkan C++ headers, using them${NC}"
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="/usr/include")
-      
-      # Set architecture-specific Vulkan library path from NDK for linking
-      if [ "$ABI" = "arm64-v8a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86_64" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "armeabi-v7a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      fi
-      
-      # Add Vulkan library path if it exists
-      if [ -f "$VULKAN_LIB_PATH" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
-        echo -e "${GREEN}Using NDK Vulkan library for linking: $VULKAN_LIB_PATH${NC}"
-      fi
-    else
-      # Fall back to NDK headers
-      echo -e "${YELLOW}No system Vulkan headers found, trying NDK headers${NC}"
-      
-      # Set architecture-specific Vulkan library path from NDK
-      if [ "$ABI" = "arm64-v8a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86_64" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "armeabi-v7a" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
-      elif [ "$ABI" = "x86" ]; then
-        VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
-      fi
-      
-      # Add Vulkan library path if it exists
-      if [ -f "$VULKAN_LIB_PATH" ]; then
-        GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
-        echo -e "${GREEN}Using NDK Vulkan library: $VULKAN_LIB_PATH${NC}"
-      else
-        echo -e "${YELLOW}Warning: NDK Vulkan library not found at $VULKAN_LIB_PATH${NC}"
-      fi
-      
-      # Add Vulkan include directory (NDK headers)
-      VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+    echo -e "${YELLOW}No Vulkan environment file found, using pinned NDK sysroot${NC}"
+    VULKAN_INCLUDE_PATH="$VULKAN_INCLUDE_SYSROOT"
+    if [ ! -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
+      echo -e "${RED}Vulkan headers missing in $VULKAN_INCLUDE_PATH${NC}"
+      echo -e "${RED}Run scripts/build_android_gpu_backend.sh first${NC}"
+      exit 1
     fi
-    
-    # Add glslc path if available
+    GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_PATH")
+
+    if [ "$ABI" = "arm64-v8a" ]; then
+      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+    elif [ "$ABI" = "x86_64" ]; then
+      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/x86_64-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+    elif [ "$ABI" = "armeabi-v7a" ]; then
+      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/arm-linux-androideabi/$ANDROID_MIN_SDK/libvulkan.so"
+    elif [ "$ABI" = "x86" ]; then
+      VULKAN_LIB_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/i686-linux-android/$ANDROID_MIN_SDK/libvulkan.so"
+    fi
+
+    if [ -f "$VULKAN_LIB_PATH" ]; then
+      GPU_CMAKE_FLAGS+=(-DVulkan_LIBRARY="$VULKAN_LIB_PATH")
+      echo -e "${GREEN}Using Vulkan loader from NDK: $VULKAN_LIB_PATH${NC}"
+    else
+      echo -e "${RED}Vulkan loader not found at $VULKAN_LIB_PATH${NC}"
+      exit 1
+    fi
+
     if [ -n "$GLSLC_PATH" ]; then
       GPU_CMAKE_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$GLSLC_PATH")
       
-      # Verify the glslc executable is usable
       if [ -f "$GLSLC_PATH" ] && [ -x "$GLSLC_PATH" ]; then
         echo -e "${GREEN}Using glslc from: $GLSLC_PATH${NC}"
       else
@@ -869,13 +808,6 @@ build_for_abi() {
     if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
       touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
       echo -e "${GREEN}Created Vulkan enabled flag for $ABI${NC}"
-      
-      # Copy Vulkan header files
-      if [ -d "$VULKAN_INCLUDE_DIR" ]; then
-        mkdir -p "$ANDROID_CPP_DIR/include/vulkan"
-        cp -r "$VULKAN_INCLUDE_DIR/vulkan" "$ANDROID_CPP_DIR/include/"
-        echo -e "${GREEN}Copied Vulkan headers to include directory${NC}"
-      fi
     fi
     
     # Copy OpenCL headers if enabled

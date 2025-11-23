@@ -86,7 +86,6 @@ PREBUILT_BUILD_DIR="$PREBUILT_DIR/build"
 PREBUILT_GPU_DIR="$PREBUILT_DIR/gpu"
 PREBUILT_EXTERNAL_DIR="$PREBUILT_DIR/libs/external"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
-VULKAN_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/vulkan/include"
 
 # Try to use the user-provided NDK path first
 if [ -n "$CUSTOM_NDK_PATH" ]; then
@@ -98,29 +97,20 @@ if [ -n "$CUSTOM_NDK_PATH" ]; then
     exit 1
   fi
 else
-  # Try to find NDK from ANDROID_HOME
   if [ -z "$ANDROID_HOME" ]; then
     echo -e "${RED}ANDROID_HOME is not set${NC}"
     exit 1
   fi
-  
-  if [ -d "$ANDROID_HOME/ndk" ]; then
-    NEWEST_NDK_VERSION=$(ls -1 "$ANDROID_HOME/ndk" | sort -rV | head -n 1)
-    if [ -n "$NEWEST_NDK_VERSION" ]; then
-      NDK_PATH="$ANDROID_HOME/ndk/$NEWEST_NDK_VERSION"
-      echo -e "${GREEN}Found NDK version $NEWEST_NDK_VERSION${NC}"
-    else
-      NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-    fi
-  else
-    NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-  fi
-  
+  NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
   if [ ! -d "$NDK_PATH" ]; then
-    echo -e "${RED}NDK not found at $NDK_PATH${NC}"
+    echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
+    echo -e "${YELLOW}Install it with:${NC}"
+    echo -e "${YELLOW}  \$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;$NDK_VERSION\"${NC}"
     exit 1
   fi
 fi
+
+echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
 # Detect host platform
 HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -179,19 +169,14 @@ fi
 
 # Check for Vulkan headers
 VULKAN_AVAILABLE=false
+VULKAN_SYSROOT_INCLUDE="$HOST_PLATFORM_DIR/sysroot/usr/include"
 if [ "$BUILD_VULKAN" = true ]; then
-  if [ -d "$VULKAN_INCLUDE_DIR/vulkan" ] && [ "$(ls -A $VULKAN_INCLUDE_DIR/vulkan 2>/dev/null)" ]; then
+  if [ -f "$VULKAN_SYSROOT_INCLUDE/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
-    echo -e "${GREEN}Vulkan headers found${NC}"
+    echo -e "${GREEN}Vulkan headers found in NDK sysroot${NC}"
   else
-    # Check NDK sysroot for Vulkan headers
-    if [ -d "$HOST_PLATFORM_DIR/sysroot/usr/include/vulkan" ]; then
-      VULKAN_AVAILABLE=true
-      echo -e "${GREEN}Vulkan headers found in NDK sysroot${NC}"
-    else
-      echo -e "${YELLOW}Vulkan headers not found${NC}"
-      echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
-    fi
+    echo -e "${YELLOW}Vulkan headers not found at $VULKAN_SYSROOT_INCLUDE${NC}"
+    echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
   fi
 fi
 
@@ -347,12 +332,8 @@ build_for_abi() {
     CMAKE_ARGS+=(-DVK_USE_PLATFORM_ANDROID_KHR=ON)
     CMAKE_ARGS+=(-DGGML_VULKAN_DISABLE_FLASHATTN=ON)
     
-    # Use Vulkan headers from prebuilt or NDK
-    if [ -d "$VULKAN_INCLUDE_DIR/vulkan" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_DIR")
-    elif [ -d "$HOST_PLATFORM_DIR/sysroot/usr/include" ]; then
-      GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$HOST_PLATFORM_DIR/sysroot/usr/include")
-    fi
+    # Use the headers installed into the NDK sysroot
+    GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_SYSROOT_INCLUDE")
     
     # Explicitly set Vulkan library path to use the correct API level
     # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)

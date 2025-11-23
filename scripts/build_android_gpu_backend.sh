@@ -84,7 +84,39 @@ OPENCL_LOADER_DIR="$THIRD_PARTY_DIR/OpenCL-ICD-Loader"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
-VULKAN_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/vulkan/include"
+
+ensure_vulkan_headers_installed() {
+  local target_include="$HOST_PLATFORM_DIR/sysroot/usr/include"
+  local target_header="$target_include/vulkan/vulkan.hpp"
+
+  # Clone or update Vulkan-Headers at the pinned tag
+  if [ ! -d "$VULKAN_HEADERS_DIR" ]; then
+    echo -e "${YELLOW}Cloning Vulkan-Headers (tag: $VULKAN_HEADERS_TAG)...${NC}"
+    git clone --depth 1 --branch "$VULKAN_HEADERS_TAG" https://github.com/KhronosGroup/Vulkan-Headers "$VULKAN_HEADERS_DIR" || {
+      echo -e "${RED}Failed to clone Vulkan-Headers tag $VULKAN_HEADERS_TAG${NC}"
+      exit 1
+    }
+  else
+    echo -e "${YELLOW}Updating Vulkan-Headers repository...${NC}"
+    pushd "$VULKAN_HEADERS_DIR" >/dev/null
+    git fetch --depth 1 origin tag "$VULKAN_HEADERS_TAG" >/dev/null 2>&1 || git fetch --depth 1 origin >/dev/null 2>&1
+    git checkout "$VULKAN_HEADERS_TAG" >/dev/null 2>&1 || {
+      echo -e "${YELLOW}Tag $VULKAN_HEADERS_TAG not found, staying on current revision${NC}"
+    }
+    popd >/dev/null
+  fi
+
+  # Copy headers into the NDK sysroot so find_package(Vulkan) sees vulkan.hpp
+  mkdir -p "$target_include"
+  cp -R "$VULKAN_HEADERS_DIR/include/." "$target_include/"
+
+  if [ ! -f "$target_header" ]; then
+    echo -e "${RED}Failed to install Vulkan headers into $target_include${NC}"
+    exit 1
+  fi
+
+  echo -e "${GREEN}Vulkan headers installed to: $target_include${NC}"
+}
 
 # Clean up if requested
 if [ "$CLEAN_BUILD" = true ]; then
@@ -95,7 +127,6 @@ if [ "$CLEAN_BUILD" = true ]; then
     rm -rf "$VULKAN_HEADERS_DIR"
     rm -rf "$OPENCL_INCLUDE_DIR"
     rm -rf "$OPENCL_LIB_DIR"
-    rm -rf "$VULKAN_INCLUDE_DIR"
 fi
 
 # Create necessary directories
@@ -108,7 +139,6 @@ mkdir -p "$PREBUILT_EXTERNAL_DIR"
 mkdir -p "$THIRD_PARTY_DIR"
 mkdir -p "$OPENCL_INCLUDE_DIR"
 mkdir -p "$OPENCL_LIB_DIR"
-mkdir -p "$VULKAN_INCLUDE_DIR"
 
 # Determine platform and setup environment
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -154,42 +184,24 @@ if [ -n "$CUSTOM_NDK_PATH" ]; then
     exit 1
   fi
 else
-  # First try to find any available NDK
-  if [ -d "$ANDROID_HOME/ndk" ]; then
-    # Get list of NDK versions sorted by version number (newest first)
-    NEWEST_NDK_VERSION=$(ls -1 "$ANDROID_HOME/ndk" | sort -rV | head -n 1)
-    
-    if [ -n "$NEWEST_NDK_VERSION" ]; then
-      NDK_PATH="$ANDROID_HOME/ndk/$NEWEST_NDK_VERSION"
-      echo -e "${GREEN}Found NDK version $NEWEST_NDK_VERSION, using this version${NC}"
+  # Always use the pinned NDK version from used_version.sh
+  NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
+  if [ ! -d "$NDK_PATH" ]; then
+    # Some setups keep a single ndk-bundle rather than versioned directories
+    if [ -d "$ANDROID_HOME/ndk-bundle" ]; then
+      echo -e "${YELLOW}ndk-bundle detected but version $NDK_VERSION is required${NC}"
+      echo -e "${YELLOW}Please install the exact NDK version with:${NC}"
+      echo -e "${YELLOW}  \$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;$NDK_VERSION\"${NC}"
     else
-      NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-      echo -e "${YELLOW}No NDK versions found in $ANDROID_HOME/ndk, trying to use version $NDK_VERSION from used_version.sh${NC}"
-      
-      if [ ! -d "$NDK_PATH" ]; then
-        echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
-        echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-        echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
-        exit 1
-      fi
+      echo -e "${RED}NDK version $NDK_VERSION not found at $NDK_PATH${NC}"
+      echo -e "${YELLOW}Install it with:${NC}"
+      echo -e "${YELLOW}  \$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;$NDK_VERSION\"${NC}"
     fi
-  # Check for NDK in the old-style location
-  elif [ -d "$ANDROID_HOME/ndk-bundle" ]; then
-    NDK_PATH="$ANDROID_HOME/ndk-bundle"
-    echo -e "${GREEN}Found NDK at ndk-bundle location: $NDK_PATH${NC}"
-  else
-    NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
-    echo -e "${YELLOW}No NDK directory found, trying to use version $NDK_VERSION from used_version.sh${NC}"
-    
-    if [ ! -d "$NDK_PATH" ]; then
-      echo -e "${RED}NDK directory not found at $ANDROID_HOME/ndk or $ANDROID_HOME/ndk-bundle${NC}"
-      echo -e "${RED}NDK version $NDK_VERSION from used_version.sh not found either${NC}"
-      echo -e "${YELLOW}Please install Android NDK using Android SDK Manager:${NC}"
-      echo -e "${YELLOW}\$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \"ndk;latest\"${NC}"
-      exit 1
-    fi
+    exit 1
   fi
 fi
+
+echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
 # Extract the Android platform version from the NDK path
 if [ -d "$NDK_PATH/platforms" ]; then
@@ -387,75 +399,10 @@ fi
 
 # Build Vulkan if enabled
 if [ "$BUILD_VULKAN" = true ]; then
-  echo -e "${GREEN}=== Building Vulkan libraries ===${NC}"
+  echo -e "${GREEN}=== Preparing Vulkan headers and environment ===${NC}"
   
-  # Check for Vulkan headers in NDK first
-  VULKAN_INCLUDE_PATH=""
-  
-  # NDK 23+ includes Vulkan headers in the sysroot
-  NDK_VULKAN_INCLUDE="$HOST_PLATFORM_DIR/sysroot/usr/include"
-  if [ -f "$NDK_VULKAN_INCLUDE/vulkan/vulkan.h" ]; then
-    VULKAN_INCLUDE_PATH="$NDK_VULKAN_INCLUDE"
-    echo -e "${GREEN}Found Vulkan headers in NDK sysroot: $VULKAN_INCLUDE_PATH${NC}"
-  else
-    # Try alternative NDK locations
-    ALT_VULKAN_INCLUDE="$NDK_PATH/sources/third_party/vulkan/src/include"
-    if [ -f "$ALT_VULKAN_INCLUDE/vulkan/vulkan.h" ]; then
-      VULKAN_INCLUDE_PATH="$ALT_VULKAN_INCLUDE"
-      echo -e "${GREEN}Found Vulkan headers in NDK third_party: $VULKAN_INCLUDE_PATH${NC}"
-    else
-      echo -e "${YELLOW}Warning: Vulkan headers not found in expected NDK locations${NC}"
-      echo -e "${YELLOW}Checked: $NDK_VULKAN_INCLUDE/vulkan/vulkan.h${NC}"
-      echo -e "${YELLOW}Checked: $ALT_VULKAN_INCLUDE/vulkan/vulkan.h${NC}"
-      
-      # List what's actually available
-      echo -e "${YELLOW}Available include directories in NDK:${NC}"
-      find "$NDK_PATH" -name "vulkan.h" 2>/dev/null | head -5
-      find "$HOST_PLATFORM_DIR/sysroot/usr/include" -name "vulkan*" -type d 2>/dev/null | head -5
-    fi
-  fi
-  
-  # Check for vulkan.hpp (C++ headers)
-  if [ -n "$VULKAN_INCLUDE_PATH" ]; then
-    if [ -f "$VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp" ]; then
-      echo -e "${GREEN}Found Vulkan C++ headers: $VULKAN_INCLUDE_PATH/vulkan/vulkan.hpp${NC}"
-    else
-      echo -e "${YELLOW}Warning: Vulkan C++ headers (vulkan.hpp) not found in NDK${NC}"
-      echo -e "${YELLOW}This may cause build issues with ggml-vulkan.cpp${NC}"
-      
-      # Check if we can find vulkan.hpp anywhere in the NDK
-      VULKAN_HPP_LOCATION=$(find "$NDK_PATH" -name "vulkan.hpp" 2>/dev/null | head -1)
-      if [ -n "$VULKAN_HPP_LOCATION" ]; then
-        VULKAN_HPP_DIR=$(dirname "$VULKAN_HPP_LOCATION")
-        VULKAN_INCLUDE_PATH=$(dirname "$VULKAN_HPP_DIR")
-        echo -e "${GREEN}Found vulkan.hpp at: $VULKAN_HPP_LOCATION${NC}"
-        echo -e "${GREEN}Updated Vulkan include path to: $VULKAN_INCLUDE_PATH${NC}"
-      else
-        # Check for system Vulkan headers (from Vulkan SDK)
-        if [ -f "/usr/include/vulkan/vulkan.hpp" ]; then
-          echo -e "${GREEN}Found system Vulkan C++ headers: /usr/include/vulkan/vulkan.hpp${NC}"
-          echo -e "${GREEN}Will use system headers for C++ compilation${NC}"
-          VULKAN_INCLUDE_PATH="/usr/include"
-        else
-          echo -e "${RED}Error: vulkan.hpp not found in NDK or system${NC}"
-          echo -e "${RED}Please install Vulkan SDK or ensure NDK has C++ headers${NC}"
-          VULKAN_AVAILABLE=false
-        fi
-      fi
-    fi
-  fi
-  
-  # Get Vulkan Headers
-  if [ ! -d "$VULKAN_HEADERS_DIR" ]; then
-    echo -e "${YELLOW}Cloning Vulkan-Headers...${NC}"
-    git clone https://github.com/KhronosGroup/Vulkan-Headers "$VULKAN_HEADERS_DIR"
-  else
-    echo -e "${YELLOW}Vulkan-Headers already cloned, using existing copy${NC}"
-  fi
-  
-  # Install Vulkan headers to our prebuilt dir
-  mkdir -p "$VULKAN_INCLUDE_DIR"
-  cp -r "$VULKAN_HEADERS_DIR/include/"* "$VULKAN_INCLUDE_DIR/"
+  ensure_vulkan_headers_installed
+  VULKAN_INCLUDE_PATH="$HOST_PLATFORM_DIR/sysroot/usr/include"
   
   # Install glslc compiler to our PATH if it's available
   GLSLC_PATH=""
@@ -548,7 +495,7 @@ echo -e "${GREEN}OpenCL headers: $OPENCL_INCLUDE_DIR${NC}"
 if [ "$BUILD_OPENCL" = true ]; then
   echo -e "${GREEN}OpenCL ICD loader (fallback): $OPENCL_LIB_DIR${NC}"
 fi
-echo -e "${GREEN}Vulkan headers: $VULKAN_INCLUDE_DIR${NC}"
+echo -e "${GREEN}Vulkan headers installed into: $HOST_PLATFORM_DIR/sysroot/usr/include${NC}"
 echo -e "${YELLOW}Note: libggml-opencl.so and libggml-vulkan.so${NC}"
 echo -e "${YELLOW}      will be built by build_android_ggml_gpu_backends.sh${NC}"
 
@@ -591,8 +538,7 @@ for ABI in "${ABIS[@]}"; do
   if [ -f "$PREBUILT_GPU_DIR/$ABI/.vulkan_enabled" ]; then
     echo -e "${GREEN}✓ Vulkan support for $ABI is enabled${NC}"
   else
-    # Create it if we have the headers
-    if [ -d "$VULKAN_INCLUDE_DIR" ] && [ -n "$GLSLC_PATH" ]; then
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/.vulkan_env" ]; then
       touch "$PREBUILT_GPU_DIR/$ABI/.vulkan_enabled"
       echo -e "${GREEN}✓ Vulkan support flag for $ABI was created${NC}"
     else
@@ -602,7 +548,7 @@ for ABI in "${ABIS[@]}"; do
 done
 
 echo -e "${GREEN}Add the following to your build_android_external.sh command:${NC}"
-echo -e "${YELLOW}-DVulkan_INCLUDE_DIR=$VULKAN_INCLUDE_DIR${NC}"
+echo -e "${YELLOW}-DVulkan_INCLUDE_DIR=$HOST_PLATFORM_DIR/sysroot/usr/include${NC}"
 
 if [ -n "$GLSLC_PATH" ]; then
   echo -e "${YELLOW}-DVulkan_GLSLC_EXECUTABLE=$GLSLC_PATH${NC}"
