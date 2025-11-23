@@ -43,7 +43,9 @@
     "!cpp/llama.cpp/ci",
     "!cpp/llama.cpp/docs",
     "!cpp/llama.cpp/scripts",
-    "!cpp/llama.cpp/tests"
+    "!cpp/llama.cpp/tests",
+    "!cpp/llama.cpp/models",
+    "!cpp/llama.cpp/benches"
   ],
   "scripts": {
     "example": "yarn workspace pure-cpp-turbo-module-library-example",

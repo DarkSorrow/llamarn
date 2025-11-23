@@ -49,6 +49,8 @@ Pod::Spec.new do |s|
                      "cpp/**/*"
   
   # Use the prebuilt framework
+  # Note: If framework is not present, it should be downloaded via setup script
+  # The framework URL: https://github.com/ggerganov/llama.cpp/releases/download/{TAG}/llama-{TAG}-xcframework.zip
   s.vendored_frameworks = "ios/libs/llama.xcframework"
 
   # Compiler settings

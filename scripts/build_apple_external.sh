@@ -155,14 +155,31 @@ download_ios_framework() {
   echo -e "${YELLOW}Moving framework to: $PREBUILT_DIR/llama.xcframework${NC}"
   mv "$xcframework_path" "$PREBUILT_DIR/llama.xcframework"
   
-  # Verify the framework has the necessary slices
-  if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" && 
-        ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework" ]]; then
-    echo -e "${RED}Error: iOS framework slices not found in downloaded archive${NC}"
+  # Remove unnecessary slices to reduce size (keep only iOS device and simulator slices)
+  echo -e "${YELLOW}Removing unnecessary framework slices (keeping only iOS device and simulator)...${NC}"
+  cd "$PREBUILT_DIR/llama.xcframework"
+  
+  # Remove all slices except iOS device and simulator
+  for slice in macos-arm64_x86_64 tvos-arm64 tvos-arm64_x86_64-simulator xros-arm64 xros-arm64_x86_64-simulator; do
+    if [ -d "$slice" ]; then
+      echo -e "${YELLOW}Removing $slice slice...${NC}"
+      rm -rf "$slice"
+    fi
+  done
+  
+  # Verify the framework has the necessary iOS slices
+  if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" ]]; then
+    echo -e "${RED}Error: iOS device framework slice (ios-arm64) not found in downloaded archive${NC}"
     find "$PREBUILT_DIR/llama.xcframework" -type d | sort
     rm -f "$temp_zip"
     return 1
   fi
+  
+  if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework" ]]; then
+    echo -e "${YELLOW}Warning: iOS simulator framework slice not found, simulator builds may not work${NC}"
+  fi
+  
+  echo -e "${GREEN}Kept iOS device and simulator slices (removed macOS, tvOS, and visionOS)${NC}"
   
   # Copy header files
   copy_header_files
