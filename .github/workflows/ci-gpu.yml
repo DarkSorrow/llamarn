@@ -113,7 +113,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/vulkan
             prebuilt/libs/external/opencl
-          key: android-ndk-gpu-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
+          key: android-ndk-gpu-${{ runner.os }}-v1
           restore-keys: |
             android-ndk-gpu-
       

@@ -146,7 +146,7 @@ jobs:
       
       # Cache NDK and prebuilt GPU libraries
       - name: Cache NDK and GPU Libraries
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         id: cache-android-libs
         with:
           path: |
@@ -154,7 +154,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/vulkan
             prebuilt/libs/external/opencl
-          key: android-ndk-gpu-${{ hashFiles('scripts/build_android_gpu_backend.sh') }}
+          key: android-ndk-gpu-${{ runner.os }}-v1
           restore-keys: |
             android-ndk-gpu-
       
@@ -260,12 +260,12 @@ jobs:
       
       # Cache iOS framework to speed up builds
       - name: Cache iOS Framework
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         id: cache-ios-framework
         with:
           path: |
             ios/libs/llama.xcframework
-          key: ios-framework-${{ hashFiles('scripts/build_apple_external.sh') }}
+          key: ios-framework-${{ runner.os }}-v1
           restore-keys: |
             ios-framework-
       
