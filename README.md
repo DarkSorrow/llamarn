@@ -13,7 +13,8 @@
 
 * Basic model loading and inference
 * Metal support on iOS
-* OpenCL/Vulkan support on Android (in progress)
+* OpenCL/Vulkan GPU acceleration on Android
+* Snapdragon Hexagon NPU support on Android (arm64-v8a)
 * Automatic CPU/GPU detection
 * Chat completion with templates (including Jinja template support)
 * Embeddings generation
@@ -26,15 +27,17 @@
 
 We welcome contributions, especially in these areas:
 
-1. **Android GPU Testing and Detection**:
-   * Development of reliable GPU detection mechanism in React Native
+1. **Android GPU and NPU Testing**:
+   * **OpenCL/Vulkan GPU Libraries**: GPU acceleration libraries (OpenCL and Vulkan) have been built and integrated, but we need help testing them on various Android devices to ensure proper functionality and performance.
+   * **Snapdragon Hexagon NPU Support**: Hexagon NPU support has been added for Snapdragon devices (arm64-v8a), but we need community testing on actual Snapdragon devices to verify it works correctly.
+   * Development of reliable GPU/NPU detection mechanism in React Native
    * Implementation of proper backend initialization verification
-   * Creation of robust testing framework for GPU availability
-   * Integration of OpenCL and Vulkan acceleration once detection is stable
-   * Performance benchmarking and optimization for mobile GPUs
+   * Creation of robust testing framework for GPU/NPU availability
+   * Performance benchmarking and optimization for mobile GPUs and NPUs
+   * Real-world device testing across different manufacturers and chipset generations
 
 2. **CI Improvements**:
-   * Adding automated Android GPU tests to CI pipeline
+   * Adding automated Android GPU/NPU tests to CI pipeline
    * Implementing device-specific testing strategies
    * Adding performance benchmarks to CI
 

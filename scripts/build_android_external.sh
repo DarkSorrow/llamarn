@@ -889,7 +889,7 @@ build_for_abi() {
   # They must be in the same directory as libggml-hexagon.so for the backend to find them at runtime
   if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
     HTP_LIBS_COPIED=0
-    for htp_lib in libggml-htp-v68.so libggml-htp-v69.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+    for htp_lib in libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
       # Check multiple possible locations (order matters - check most likely first)
       if [ -f "$BUILD_DIR/ggml/src/ggml-hexagon/$htp_lib" ]; then
         # Most likely location - ExternalProject installs here during build
