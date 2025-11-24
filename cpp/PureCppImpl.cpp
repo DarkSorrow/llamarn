@@ -97,25 +97,14 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           
           // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
           // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
-          // CPU backend is in libggml-cpu.so, GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
+          // When GGML_CPU_ALL_VARIANTS is enabled, CPU backend variants are:
+          //   libggml-cpu-android_armv8.0_1.so (baseline - emulator compatible)
+          //   libggml-cpu-android_armv8.2_1.so (DOTPROD)
+          //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
+          //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
+          // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
           // On Android, dlopen() can load libraries by name even from inside APKs
           #ifdef __ANDROID__
-          // Load CPU backend directly - Android's linker will find it in the same directory
-          // Check if already registered to avoid duplicate registration
-          if (!ggml_backend_reg_by_name("CPU")) {
-            void* cpu_handle = dlopen("libggml-cpu.so", RTLD_LAZY | RTLD_LOCAL);
-            if (cpu_handle) {
-              typedef ggml_backend_reg_t (*backend_init_fn_t)();
-              backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
-              if (backend_init) {
-                ggml_backend_reg_t cpu_backend = backend_init();
-                if (cpu_backend) {
-                  ggml_backend_register(cpu_backend);
-                }
-              }
-            }
-          }
-          
           // Load Hexagon backend (Snapdragon DSP) - more performant than Vulkan on Snapdragon devices
           // Load before other GPU backends to give it priority
           // Check if already registered to avoid duplicate registration
@@ -133,8 +122,10 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
             }
           }
           
-          // Load other GPU backends (OpenCL, Vulkan) if present - they will be found by name
-          // ggml_backend_load_all() will skip backends that are already loaded
+          // Load all backends including CPU - ggml_backend_load_all() will:
+          // 1. Call ggml_backend_load_best("cpu") which finds and loads the best CPU variant
+          // 2. Load other GPU backends (OpenCL, Vulkan) if present
+          // The runtime loader automatically selects the best CPU variant based on device capabilities
           ggml_backend_load_all();
           #else
           ggml_backend_load_all();
@@ -389,26 +380,17 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           
           // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
           // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
-          // CPU backend is in libggml-cpu.so, GPU backends are in libggml-opencl.so, libggml-vulkan.so
-          #ifdef __ANDROID__
-          // Load CPU backend directly - Android's linker will find it in the same directory
-          void* cpu_handle = dlopen("libggml-cpu.so", RTLD_LAZY | RTLD_LOCAL);
-          if (cpu_handle) {
-            typedef ggml_backend_reg_t (*backend_init_fn_t)();
-            backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
-            if (backend_init) {
-              ggml_backend_reg_t cpu_backend = backend_init();
-              if (cpu_backend) {
-                ggml_backend_register(cpu_backend);
-              }
-            }
-          }
-          
-          // Load GPU backends (OpenCL, Vulkan) if present - they will be found by name
+          // When GGML_CPU_ALL_VARIANTS is enabled, CPU backend variants are:
+          //   libggml-cpu-android_armv8.0_1.so (baseline - emulator compatible)
+          //   libggml-cpu-android_armv8.2_1.so (DOTPROD)
+          //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
+          //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
+          // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
+          // Load all backends including CPU - ggml_backend_load_all() will:
+          // 1. Call ggml_backend_load_best("cpu") which finds and loads the best CPU variant
+          // 2. Load other GPU backends (OpenCL, Vulkan) if present
+          // The runtime loader automatically selects the best CPU variant based on device capabilities
           ggml_backend_load_all();
-          #else
-          ggml_backend_load_all();
-          #endif
           
           // Verify at least CPU backend was loaded
           if (ggml_backend_reg_count() == 0) {
