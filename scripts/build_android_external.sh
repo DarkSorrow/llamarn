@@ -416,16 +416,9 @@ GPU_CMAKE_FLAGS=()
 # Add OpenCL backend if available and enabled
 # NOTE: We only need headers for build-time. libOpenCL.so is provided by the system at runtime.
 if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
-  GPU_CMAKE_FLAGS+=(
-    -DGGML_OPENCL=ON
-    -DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR"
-    # Do NOT specify CL_LIBRARY - we don't link against libOpenCL.so at build time
-    # The system will provide libOpenCL.so at runtime if the device supports OpenCL
-  )
-  echo -e "${GREEN}libggml-opencl.so will be built as separate dynamic library${NC}"
-  echo -e "${YELLOW}Note: libOpenCL.so (ICD loader) is a system library, not built or shipped${NC}"
+  echo -e "${GREEN}OpenCL headers detected, ABI builds can enable GGML_OPENCL${NC}"
 else
-  echo -e "${YELLOW}OpenCL backend disabled${NC}"
+  echo -e "${YELLOW}OpenCL backend disabled or headers missing${NC}"
 fi
 
 # Add Vulkan backend if available and enabled (per-ABI configuration happens later)
@@ -478,18 +471,21 @@ build_for_abi() {
   local ABI_GPU_FLAGS=("${GPU_CMAKE_FLAGS[@]}")
   
   # Set ABI-specific flags
+  local ARCH=""
   if [ "$ABI" = "arm64-v8a" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="arm64-v8a"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
     )
+    ARCH="aarch64"
   elif [ "$ABI" = "x86_64" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="x86_64"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
     )
+    ARCH="x86_64"
   elif [ "$ABI" = "armeabi-v7a" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="armeabi-v7a"
@@ -500,6 +496,7 @@ build_for_abi() {
       -DGGML_LLAMAFILE=OFF
       -DLLAMA_BUILD_TOOLS=OFF
     )
+    ARCH="arm"
   elif [ "$ABI" = "x86" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="x86"
@@ -510,6 +507,55 @@ build_for_abi() {
       -DGGML_LLAMAFILE=OFF
       -DLLAMA_BUILD_TOOLS=OFF
     )
+    ARCH="i686"
+  fi
+  
+  if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
+    local OPENCL_LIB_PATH=""
+    
+    if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+      OPENCL_LIB_PATH="$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
+      echo -e "${GREEN}Using staged libOpenCL.so for $ABI: $OPENCL_LIB_PATH${NC}"
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/libOpenCL.so"
+      if [ -f "$TRY_PATH" ]; then
+        OPENCL_LIB_PATH="$TRY_PATH"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local TRY_PATH="$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android/$ANDROID_MIN_SDK/libOpenCL.so"
+      if [ -f "$TRY_PATH" ]; then
+        OPENCL_LIB_PATH="$TRY_PATH"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ] && [ -n "$ARCH" ]; then
+      local FOUND_LIB
+      FOUND_LIB=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/$ARCH-linux-android" -name "libOpenCL.so" 2>/dev/null | head -1)
+      if [ -n "$FOUND_LIB" ] && [ -f "$FOUND_LIB" ]; then
+        OPENCL_LIB_PATH="$FOUND_LIB"
+        echo -e "${GREEN}Found OpenCL library at: $OPENCL_LIB_PATH${NC}"
+      fi
+    fi
+    
+    if [ -z "$OPENCL_LIB_PATH" ]; then
+      echo -e "${RED}ERROR: OpenCL library not found for $ABI${NC}"
+      echo -e "${YELLOW}Searched staged prebuilt/gpu/$ABI/libOpenCL.so and NDK sysroot${NC}"
+      return 1
+    fi
+    
+    ABI_GPU_FLAGS+=(-DGGML_OPENCL=ON)
+    ABI_GPU_FLAGS+=(-DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+    ABI_GPU_FLAGS+=(-DOpenCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
+    ABI_GPU_FLAGS+=(-DOpenCL_LIBRARY="$OPENCL_LIB_PATH")
+    ABI_GPU_FLAGS+=(-DCL_LIBRARY="$OPENCL_LIB_PATH")
+    ABI_GPU_FLAGS+=(-DOpenCL_LIBRARY:FILEPATH="$OPENCL_LIB_PATH")
+    echo -e "${GREEN}OpenCL backend configured for $ABI${NC}"
   fi
   
   if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
