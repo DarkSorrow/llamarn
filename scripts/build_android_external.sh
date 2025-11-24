@@ -518,12 +518,17 @@ build_for_abi() {
   
   # Set ABI-specific flags
   local ARCH=""
+  # Baseline CPU architecture flags for emulator compatibility (no advanced features like +dotprod, +i8mm)
+  local CPU_ARCH_FLAGS=""
   if [ "$ABI" = "arm64-v8a" ]; then
     local ARCH_FLAGS=(
       -DANDROID_ABI="arm64-v8a"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
     )
+    # Use baseline armv8-a for CPU backend (emulator compatible)
+    # Hexagon will override this with armv8.7a+fp16 later if enabled
+    CPU_ARCH_FLAGS="-march=armv8-a"
     ARCH="aarch64"
   elif [ "$ABI" = "x86_64" ]; then
     local ARCH_FLAGS=(
@@ -542,6 +547,8 @@ build_for_abi() {
       -DGGML_LLAMAFILE=OFF
       -DLLAMA_BUILD_TOOLS=OFF
     )
+    # Use baseline armv7-a for CPU backend (emulator compatible)
+    CPU_ARCH_FLAGS="-march=armv7-a"
     ARCH="arm"
   elif [ "$ABI" = "x86" ]; then
     local ARCH_FLAGS=(
@@ -554,6 +561,15 @@ build_for_abi() {
       -DLLAMA_BUILD_TOOLS=OFF
     )
     ARCH="i686"
+  fi
+  
+  # Add baseline CPU architecture flags for ARM builds (unless Hexagon will override)
+  # This ensures emulator compatibility by avoiding advanced CPU features like +dotprod, +i8mm
+  if [ -n "$CPU_ARCH_FLAGS" ] && ! ([ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]); then
+    # Set baseline architecture flags (will be overridden by Hexagon if enabled)
+    ARCH_FLAGS+=(-DCMAKE_C_FLAGS="${CPU_ARCH_FLAGS}")
+    ARCH_FLAGS+=(-DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations ${CPU_ARCH_FLAGS}")
+    echo -e "${YELLOW}Using baseline CPU architecture ${CPU_ARCH_FLAGS} for emulator compatibility${NC}"
   fi
   
   if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
@@ -671,7 +687,7 @@ build_for_abi() {
     # Note: We append to existing CMAKE_CXX_FLAGS rather than replacing it
     # The flags are passed as a single quoted string to prevent CMake from parsing them as separate arguments
     HEXAGON_C_FLAGS='-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
-    HEXAGON_CXX_FLAGS='-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
+    HEXAGON_CXX_FLAGS='-Wno-deprecated-declarations -march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
     ABI_GPU_FLAGS+=(
       -DCMAKE_C_FLAGS="${HEXAGON_C_FLAGS}"
       -DCMAKE_CXX_FLAGS="${HEXAGON_CXX_FLAGS}"
