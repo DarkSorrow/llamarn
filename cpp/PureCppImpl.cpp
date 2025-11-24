@@ -19,19 +19,20 @@
 #include "chat.h"
 
 #if defined(__ANDROID__) || defined(__linux__)
-#include <unistd.h>
 #include <dlfcn.h>
-#include <android/log.h>
-#define LOG_TAG "RNLlamaCpp"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+// #include <android/log.h>
+// #ifndef LOG_TAG
+// #define LOG_TAG "RNLlamaCpp"
+// #endif
+// #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+// #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+// #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+// #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #else
-#define LOGI(...) fprintf(stderr, __VA_ARGS__)
-#define LOGE(...) fprintf(stderr, __VA_ARGS__)
-#define LOGW(...) fprintf(stderr, __VA_ARGS__)
-#define LOGD(...) fprintf(stderr, __VA_ARGS__)
+// #define LOGI(...) fprintf(stderr, __VA_ARGS__)
+// #define LOGE(...) fprintf(stderr, __VA_ARGS__)
+// #define LOGW(...) fprintf(stderr, __VA_ARGS__)
+// #define LOGD(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
 // Include the llama.cpp headers directly
@@ -88,11 +89,11 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
       std::thread([selfPtr, path, resolve, reject, runtimePtr, invoker]() {
         try {
           // Set up logging callback to capture llama.cpp error messages
-          llama_log_set([](enum ggml_log_level level, const char * text, void * /* user_data */) {
-            if (level >= GGML_LOG_LEVEL_ERROR) {
-              LOGE("llama.cpp: %s", text);
-            }
-          }, nullptr);
+          // llama_log_set([](enum ggml_log_level level, const char * text, void * /* user_data */) {
+          //   if (level >= GGML_LOG_LEVEL_ERROR) {
+          //     LOGE("llama.cpp: %s", text);
+          //   }
+          // }, nullptr);
           
           // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
           // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
