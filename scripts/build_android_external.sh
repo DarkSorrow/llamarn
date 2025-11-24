@@ -32,6 +32,7 @@ print_usage() {
   echo "  --no-opencl            Disable OpenCL GPU acceleration"
   echo "  --no-vulkan            Disable Vulkan GPU acceleration"
   echo "  --vulkan               Enable Vulkan GPU acceleration (default)"
+  echo "  --hexagon              Enable Hexagon (Snapdragon DSP) acceleration (requires HEXAGON_SDK_ROOT)"
   echo "  --debug                Build in debug mode"
   echo "  --clean                Clean previous builds before building"
   echo "  --clean-prebuilt       Clean entire prebuilt directory for a fresh start"
@@ -47,6 +48,7 @@ print_usage() {
 BUILD_ABI="all"
 BUILD_OPENCL=true
 BUILD_VULKAN=true  # Enable Vulkan by default - packaging controlled by Android CMakeLists.txt
+BUILD_HEXAGON=false  # Hexagon requires HEXAGON_SDK_ROOT, disabled by default
 BUILD_TYPE="Release"
 CLEAN_BUILD=false
 CLEAN_PREBUILT=false
@@ -75,6 +77,9 @@ for arg in "$@"; do
       ;;
     --vulkan)
       BUILD_VULKAN=true
+      ;;
+    --hexagon)
+      BUILD_HEXAGON=true
       ;;
     --debug)
       BUILD_TYPE="Debug"
@@ -357,6 +362,20 @@ if [ -z "$GLSLC_PATH" ]; then
   fi
 fi
 
+# Check if Hexagon SDK is available (for building libggml-hexagon.so)
+HEXAGON_AVAILABLE=false
+if [ "$BUILD_HEXAGON" = true ]; then
+  if [ -n "$HEXAGON_SDK_ROOT" ] && [ -d "$HEXAGON_SDK_ROOT" ]; then
+    HEXAGON_AVAILABLE=true
+    echo -e "${GREEN}Hexagon SDK found at: $HEXAGON_SDK_ROOT${NC}"
+    export HEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"
+  else
+    HEXAGON_AVAILABLE=false
+    echo -e "${YELLOW}Hexagon SDK not found (HEXAGON_SDK_ROOT not set or invalid), Hexagon backend will be disabled${NC}"
+    echo -e "${YELLOW}Set HEXAGON_SDK_ROOT environment variable to enable Hexagon backend${NC}"
+  fi
+fi
+
 # Gather common CMake arguments
 CMAKE_ARGS=(
   -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake"
@@ -383,6 +402,7 @@ CMAKE_ARGS=(
   -DGGML_HIP=OFF          # Not applicable to Android
   -DGGML_OPENCL=OFF       # Will be enabled conditionally if BUILD_OPENCL=true
   -DGGML_VULKAN=OFF       # Will be enabled conditionally if BUILD_VULKAN=true
+  -DGGML_HEXAGON=OFF       # Will be enabled conditionally if BUILD_HEXAGON=true and HEXAGON_SDK_ROOT is set
 )
 
 # Check if llama.cpp repository exists and is properly set up
@@ -456,6 +476,22 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
   echo -e "${GREEN}Vulkan backend enabled (per-ABI configuration will resolve loaders)${NC}"
 else
   echo -e "${YELLOW}Vulkan backend disabled${NC}"
+fi
+
+HEXAGON_BASE_FLAGS=()
+if [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
+  HEXAGON_BASE_FLAGS=(
+    -DGGML_HEXAGON=ON
+    -DHEXAGON_SDK_ROOT="$HEXAGON_SDK_ROOT"
+  )
+  # Check for HEXAGON_TOOLS_ROOT (optional but recommended)
+  if [ -n "$HEXAGON_TOOLS_ROOT" ] && [ -d "$HEXAGON_TOOLS_ROOT" ]; then
+    HEXAGON_BASE_FLAGS+=(-DHEXAGON_TOOLS_ROOT="$HEXAGON_TOOLS_ROOT")
+    echo -e "${GREEN}Hexagon Tools found at: $HEXAGON_TOOLS_ROOT${NC}"
+  fi
+  echo -e "${GREEN}Hexagon backend enabled${NC}"
+else
+  echo -e "${YELLOW}Hexagon backend disabled${NC}"
 fi
 
 # Define ABIs to build (both 32-bit and 64-bit architectures)
@@ -627,6 +663,18 @@ build_for_abi() {
     echo -e "${YELLOW}Skipping GPU configuration for 32-bit ABI $ABI${NC}"
   fi
   
+  # Hexagon is only available for arm64-v8a (Snapdragon devices)
+  if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
+    ABI_GPU_FLAGS+=("${HEXAGON_BASE_FLAGS[@]}")
+    # Add Hexagon-specific compiler flags for better performance (from llama.cpp presets)
+    ABI_GPU_FLAGS+=(
+      -DCMAKE_C_FLAGS="-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE"
+      -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE"
+      -DPREBUILT_LIB_DIR="android_aarch64"
+    )
+    echo -e "${GREEN}Hexagon backend configured for $ABI${NC}"
+  fi
+  
   # Create build directory
   local BUILD_DIR="$PREBUILT_BUILD_DIR/$ABI"
   mkdir -p "$BUILD_DIR"
@@ -768,7 +816,7 @@ build_for_abi() {
   # With GGML_BACKEND_DL=ON, GPU backends can be built as separate dynamic libraries
   # However, we prefer to build them separately using build_android_ggml_gpu_backends.sh
   # and copy them from prebuilt/gpu. But if they were built here, copy them too.
-  for backend_lib in libggml-opencl.so libggml-vulkan.so; do
+  for backend_lib in libggml-opencl.so libggml-vulkan.so libggml-hexagon.so; do
     # First check if already in prebuilt/gpu (preferred - from dedicated build script)
     if [ -f "$PREBUILT_GPU_DIR/$ABI/$backend_lib" ]; then
       cp "$PREBUILT_GPU_DIR/$ABI/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
@@ -778,6 +826,8 @@ build_for_abi() {
         touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
       elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
         touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      elif [[ "$backend_lib" == "libggml-hexagon.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.hexagon_enabled"
       fi
     # Fallback: check build output (if built in this script)
     elif [ -f "$BUILD_DIR/bin/$backend_lib" ]; then
@@ -788,6 +838,8 @@ build_for_abi() {
         touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
       elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
         touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      elif [[ "$backend_lib" == "libggml-hexagon.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.hexagon_enabled"
       fi
     elif [ -f "$BUILD_DIR/$backend_lib" ]; then
       cp "$BUILD_DIR/$backend_lib" "$ANDROID_JNI_DIR/$ABI/"
@@ -797,9 +849,50 @@ build_for_abi() {
         touch "$ANDROID_JNI_DIR/$ABI/.opencl_enabled"
       elif [[ "$backend_lib" == "libggml-vulkan.so" ]]; then
         touch "$ANDROID_JNI_DIR/$ABI/.vulkan_enabled"
+      elif [[ "$backend_lib" == "libggml-hexagon.so" ]]; then
+        touch "$ANDROID_JNI_DIR/$ABI/.hexagon_enabled"
       fi
     fi
   done
+  
+  # Copy Hexagon HTP libraries (required for Hexagon backend on Snapdragon devices)
+  # These are the NPU-side libraries for different Hexagon versions (v68, v69, v73, v75, v79, v81)
+  # The HTP libraries are built as ExternalProjects and installed to ggml-hexagon binary directory
+  # They must be in the same directory as libggml-hexagon.so for the backend to find them at runtime
+  if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
+    HTP_LIBS_COPIED=0
+    for htp_lib in libggml-htp-v68.so libggml-htp-v69.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+      # Check multiple possible locations (order matters - check most likely first)
+      if [ -f "$BUILD_DIR/ggml/src/ggml-hexagon/$htp_lib" ]; then
+        # Most likely location - ExternalProject installs here during build
+        cp "$BUILD_DIR/ggml/src/ggml-hexagon/$htp_lib" "$ANDROID_JNI_DIR/$ABI/"
+        echo -e "${GREEN}✓ Copied Hexagon HTP library $htp_lib for $ABI${NC}"
+        HTP_LIBS_COPIED=$((HTP_LIBS_COPIED + 1))
+      elif [ -f "$BUILD_DIR/bin/$htp_lib" ]; then
+        # Alternative location if installed to bin directory
+        cp "$BUILD_DIR/bin/$htp_lib" "$ANDROID_JNI_DIR/$ABI/"
+        echo -e "${GREEN}✓ Copied Hexagon HTP library $htp_lib for $ABI${NC}"
+        HTP_LIBS_COPIED=$((HTP_LIBS_COPIED + 1))
+      elif [ -f "$BUILD_DIR/lib/$htp_lib" ]; then
+        # Alternative location if installed to lib directory
+        cp "$BUILD_DIR/lib/$htp_lib" "$ANDROID_JNI_DIR/$ABI/"
+        echo -e "${GREEN}✓ Copied Hexagon HTP library $htp_lib for $ABI${NC}"
+        HTP_LIBS_COPIED=$((HTP_LIBS_COPIED + 1))
+      elif [ -f "$BUILD_DIR/$htp_lib" ]; then
+        # Fallback to build root
+        cp "$BUILD_DIR/$htp_lib" "$ANDROID_JNI_DIR/$ABI/"
+        echo -e "${GREEN}✓ Copied Hexagon HTP library $htp_lib for $ABI${NC}"
+        HTP_LIBS_COPIED=$((HTP_LIBS_COPIED + 1))
+      fi
+    done
+    if [ $HTP_LIBS_COPIED -gt 0 ]; then
+      echo -e "${GREEN}✓ Copied $HTP_LIBS_COPIED Hexagon HTP libraries for $ABI${NC}"
+      echo -e "${YELLOW}  Note: Hexagon backend will automatically select the correct HTP version based on device hardware${NC}"
+    else
+      echo -e "${YELLOW}⚠ Warning: No Hexagon HTP libraries found for $ABI - Hexagon backend may not work correctly${NC}"
+      echo -e "${YELLOW}  Expected location: $BUILD_DIR/ggml/src/ggml-hexagon/libggml-htp-v*.so${NC}"
+    fi
+  fi
   
   # NOTE: We do NOT copy libOpenCL.so or libvulkan.so - these are system libraries
   

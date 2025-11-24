@@ -8,6 +8,9 @@
     <uses-native-library
         android:name="libggml-vulkan.so"
         android:required="false" />
+    <uses-native-library
+        android:name="libggml-hexagon.so"
+        android:required="false" />
 
     <!-- System loaders (only mapped if present on device) -->
     <uses-native-library

@@ -269,6 +269,27 @@ if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
     )
 endif()
 
+# Copy Hexagon backend library if it exists (Snapdragon devices only - arm64-v8a)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-hexagon.so)
+    add_custom_command(TARGET RNLlamaCpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-hexagon.so
+            $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-hexagon.so
+        COMMENT "Copying Hexagon backend library to build output directory"
+    )
+    # Also copy all HTP libraries (required for Hexagon backend)
+    file(GLOB HTP_LIBS "${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-htp-*.so")
+    foreach(HTP_LIB ${HTP_LIBS})
+        get_filename_component(HTP_LIB_NAME ${HTP_LIB} NAME)
+        add_custom_command(TARGET RNLlamaCpp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${HTP_LIB}
+                $<TARGET_FILE_DIR:RNLlamaCpp>/${HTP_LIB_NAME}
+            COMMENT "Copying Hexagon HTP library ${HTP_LIB_NAME} to build output directory"
+        )
+    endforeach()
+endif()
+
 # NOTE: We do NOT copy libOpenCL.so or libvulkan.so - these are system libraries
 # The ICD loader is built and installed to NDK sysroot for BUILD-TIME linking only.
 # At runtime, the system will provide libOpenCL.so and libvulkan.so if the device supports them.

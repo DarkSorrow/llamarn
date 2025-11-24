@@ -141,7 +141,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;28.0.12674087 cmake;3.22.1'
           accept-android-sdk-licenses: true
       
       # Cache NDK and prebuilt GPU libraries
@@ -150,7 +150,7 @@ jobs:
         id: cache-android-libs
         with:
           path: |
-            ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+            ${{ env.ANDROID_HOME }}/ndk/28.0.12674087
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
@@ -161,7 +161,7 @@ jobs:
       - name: Prepare GPU Backend Headers
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
           
           # Create required directories to avoid cache errors
           mkdir -p prebuilt/gpu
@@ -209,7 +209,7 @@ jobs:
       - name: Build GGML GPU Backend Libraries
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
           
           # Build GGML GPU backend libraries (libggml-opencl.so and libggml-vulkan.so)
           # These are separate from the main llama.cpp libraries and will be loaded dynamically
@@ -236,13 +236,55 @@ jobs:
             fi
           done
 
+      - name: Setup Hexagon SDK (for Snapdragon devices)
+        id: setup-hexagon
+        continue-on-error: true
+        run: |
+          # Download Hexagon SDK from GitHub releases (same approach as llama.cpp CI)
+          HEXSDK_VER=6.4.0.2
+          HEXTLS_VER=19.0.04
+          
+          echo "Downloading Hexagon SDK v${HEXSDK_VER}..."
+          curl -L -o hex-sdk.tar.xz https://github.com/snapdragon-toolchain/hexagon-sdk/releases/download/v${HEXSDK_VER}/hexagon-sdk-v${HEXSDK_VER}-amd64-lnx.tar.xz || {
+            echo "⚠️  Hexagon SDK download failed - Hexagon backend will not be built"
+            echo "hexagon_available=false" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          
+          mkdir -p hex-sdk
+          tar -xaf hex-sdk.tar.xz -C hex-sdk || {
+            echo "⚠️  Hexagon SDK extraction failed"
+            echo "hexagon_available=false" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          
+          # Move to /opt/hexagon (requires sudo in CI)
+          sudo mkdir -p /opt/hexagon
+          sudo mv hex-sdk/* /opt/hexagon/${HEXSDK_VER} || {
+            echo "⚠️  Failed to install Hexagon SDK to /opt"
+            echo "hexagon_available=false" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          
+          # Set environment variables
+          echo "HEXAGON_SDK_ROOT=/opt/hexagon/${HEXSDK_VER}" >> $GITHUB_ENV
+          echo "HEXAGON_TOOLS_ROOT=/opt/hexagon/${HEXSDK_VER}/tools/HEXAGON_Tools/${HEXTLS_VER}" >> $GITHUB_ENV
+          echo "DEFAULT_HLOS_ARCH=64" >> $GITHUB_ENV
+          echo "DEFAULT_TOOLS_VARIANT=toolv19" >> $GITHUB_ENV
+          echo "DEFAULT_NO_QURT_INC=0" >> $GITHUB_ENV
+          echo "DEFAULT_DSP_ARCH=v73" >> $GITHUB_ENV
+          
+          echo "✅ Hexagon SDK installed successfully"
+          echo "hexagon_available=true" >> $GITHUB_OUTPUT
+          ls -la /opt/hexagon/${HEXSDK_VER} | head -10
+
       - name: Build Final Android Libraries
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/27.2.12479018
+          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
           
           # Get glslc path
-          GLSLC_PATH="$ANDROID_HOME/ndk/27.2.12479018/shader-tools/linux-x86_64/glslc"
+          GLSLC_PATH="$ANDROID_HOME/ndk/28.0.12674087/shader-tools/linux-x86_64/glslc"
           
           # Build the final Android libraries (main llama.cpp libraries)
           # The GGML GPU backend libraries (libggml-opencl.so, libggml-vulkan.so) 
@@ -251,7 +293,20 @@ jobs:
           chmod +x scripts/build_android_external.sh
           export GGML_VK_DISABLE_COOPMAT=1
           export GGML_VK_DISABLE_COOPMAT2=1
-          scripts/build_android_external.sh --abi=all --clean
+          
+          # Build with Hexagon if SDK is available
+          if [ "${{ steps.setup-hexagon.outputs.hexagon_available }}" = "true" ]; then
+            echo "Building with Hexagon support for arm64-v8a..."
+            scripts/build_android_external.sh --abi=arm64-v8a --hexagon --clean
+            # Build other ABIs without Hexagon
+            for ABI in x86_64 armeabi-v7a x86; do
+              echo "Building for $ABI (without Hexagon)..."
+              scripts/build_android_external.sh --abi=$ABI --clean || true
+            done
+          else
+            echo "Building without Hexagon support..."
+            scripts/build_android_external.sh --abi=all --clean
+          fi
           
           # Copy GGML GPU backend libraries from prebuilt/gpu to jniLibs
           echo "Copying GGML GPU backend libraries to jniLibs..."
@@ -266,6 +321,33 @@ jobs:
               done
             fi
           done
+          
+          # Copy Hexagon backend libraries if built (Snapdragon devices - arm64-v8a only)
+          # Hexagon libraries are built by build_android_external.sh and placed in jniLibs
+          # but we also check the build directory as fallback
+          if [ -f "android/src/main/jniLibs/arm64-v8a/libggml-hexagon.so" ]; then
+            echo "✅ Hexagon backend library already in jniLibs/arm64-v8a/"
+          else
+            # Check if Hexagon was built in the external build directory
+            HEXAGON_BUILD_DIR="prebuilt/libs/external/android/arm64-v8a"
+            if [ -f "$HEXAGON_BUILD_DIR/libggml-hexagon.so" ]; then
+              mkdir -p android/src/main/jniLibs/arm64-v8a
+              cp "$HEXAGON_BUILD_DIR/libggml-hexagon.so" "android/src/main/jniLibs/arm64-v8a/"
+              echo "✅ Copied libggml-hexagon.so to jniLibs/arm64-v8a/"
+              
+              # Also copy HTP libraries if they exist
+              for htp_lib in libggml-htp-v68.so libggml-htp-v69.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+                if [ -f "$HEXAGON_BUILD_DIR/$htp_lib" ]; then
+                  cp "$HEXAGON_BUILD_DIR/$htp_lib" "android/src/main/jniLibs/arm64-v8a/"
+                  echo "✅ Copied $htp_lib to jniLibs/arm64-v8a/"
+                fi
+              done
+            elif [ "${{ steps.setup-hexagon.outputs.hexagon_available }}" = "true" ]; then
+              echo "⚠️  Hexagon SDK was available but libraries not found - build may have failed"
+            else
+              echo "ℹ️  Hexagon backend not built (SDK not available in CI)"
+            fi
+          fi
           
           # Verify final jniLibs contents
           echo "Verifying final jniLibs contents..."
@@ -287,6 +369,22 @@ jobs:
             fi
             if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
               echo "✅ libggml-vulkan.so present"
+            fi
+            
+            # Verify Hexagon backend (arm64-v8a only)
+            if [ "$ABI" = "arm64-v8a" ]; then
+              if [ -f "android/src/main/jniLibs/$ABI/libggml-hexagon.so" ]; then
+                echo "✅ libggml-hexagon.so present"
+                # Check for HTP libraries
+                HTP_COUNT=$(ls -1 android/src/main/jniLibs/$ABI/libggml-htp-*.so 2>/dev/null | wc -l)
+                if [ "$HTP_COUNT" -gt 0 ]; then
+                  echo "✅ $HTP_COUNT Hexagon HTP libraries present"
+                else
+                  echo "⚠️  Hexagon HTP libraries not found (Hexagon backend may not work)"
+                fi
+              else
+                echo "ℹ️  libggml-hexagon.so not present (optional - requires HEXAGON_SDK_ROOT to build)"
+              fi
             fi
             
             # Verify we're NOT shipping libOpenCL.so (system library, not ours)
