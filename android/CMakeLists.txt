@@ -235,14 +235,36 @@ add_custom_command(TARGET RNLlamaCpp POST_BUILD
     COMMENT "Copying dependency libraries to build output directory"
 )
 
-# libggml-cpu.so is REQUIRED when GGML_BACKEND_DL=ON (CPU backend is dynamically loaded)
-# Copy it so it gets packaged into the APK
-add_custom_command(TARGET RNLlamaCpp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
-        $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-cpu.so
-    COMMENT "Copying libggml-cpu.so (REQUIRED for CPU backend when GGML_BACKEND_DL=ON)"
-)
+# CPU backend libraries: With GGML_CPU_ALL_VARIANTS, multiple variant libraries are built
+# (e.g., libggml-cpu-android_armv8.0_1.so, libggml-cpu-android_armv8.2_1.so, etc.)
+# The runtime loader will select the best variant based on CPU capabilities
+# If variants don't exist, fall back to single libggml-cpu.so (backward compatibility)
+file(GLOB CPU_VARIANT_LIBS "${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu-*.so")
+if(CPU_VARIANT_LIBS)
+    # Copy all CPU variant libraries (GGML_CPU_ALL_VARIANTS enabled)
+    foreach(CPU_VARIANT_LIB ${CPU_VARIANT_LIBS})
+        get_filename_component(CPU_VARIANT_LIB_NAME ${CPU_VARIANT_LIB} NAME)
+        add_custom_command(TARGET RNLlamaCpp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CPU_VARIANT_LIB}
+                $<TARGET_FILE_DIR:RNLlamaCpp>/${CPU_VARIANT_LIB_NAME}
+            COMMENT "Copying CPU variant library ${CPU_VARIANT_LIB_NAME} to build output directory"
+        )
+    endforeach()
+    list(LENGTH CPU_VARIANT_LIBS CPU_VARIANT_COUNT)
+    message(STATUS "Found ${CPU_VARIANT_COUNT} CPU variant libraries (GGML_CPU_ALL_VARIANTS enabled)")
+elseif(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so)
+    # Fallback: Copy single libggml-cpu.so (backward compatibility)
+    add_custom_command(TARGET RNLlamaCpp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
+            $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-cpu.so
+        COMMENT "Copying libggml-cpu.so (single CPU backend - backward compatibility)"
+    )
+    message(STATUS "Found single libggml-cpu.so (backward compatibility mode)")
+else()
+    message(WARNING "No CPU backend libraries found in ${JNI_LIBS_DIR}/${ANDROID_ABI}/ - CPU backend will not work!")
+endif()
 
 # Also copy any optional GPU libraries if they exist
 if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)

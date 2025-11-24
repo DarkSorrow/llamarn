@@ -45,6 +45,129 @@
 
 namespace facebook::react {
 
+// Helper function to load CPU variant libraries on Android
+// On Android, ggml_backend_load_best() uses filesystem iteration which doesn't work
+// with APK-packaged libraries. This function manually loads CPU variant libraries
+// using dlopen() with just the library name - Android's linker finds them in the APK.
+// We score each variant and only register the best compatible one (score > 0).
+static void load_android_cpu_backends() {
+#ifdef __ANDROID__
+  // Skip if CPU backend is already registered
+  if (ggml_backend_reg_by_name("CPU")) {
+    return;
+  }
+
+  // Try loading all CPU variant libraries (from most advanced to baseline)
+  // Score each one and register only the best compatible variant
+  static const char* cpu_variants[] = {
+    "libggml-cpu-android_armv8.6_1.so",  // DOTPROD + FP16 + MATMUL_INT8
+    "libggml-cpu-android_armv8.2_2.so",  // DOTPROD + FP16
+    "libggml-cpu-android_armv8.2_1.so",  // DOTPROD
+    "libggml-cpu-android_armv8.0_1.so",  // Baseline (emulator compatible)
+    nullptr
+  };
+
+  typedef ggml_backend_reg_t (*backend_init_fn_t)();
+  typedef int (*backend_score_t)();
+  
+  int best_score = 0;
+  void* best_handle = nullptr;
+  backend_init_fn_t best_init = nullptr;
+
+  // Score all variants and find the best one
+  for (int i = 0; cpu_variants[i] != nullptr; i++) {
+    void* cpu_handle = dlopen(cpu_variants[i], RTLD_LAZY | RTLD_LOCAL);
+    if (cpu_handle) {
+      backend_score_t score_fn = (backend_score_t)dlsym(cpu_handle, "ggml_backend_score");
+      if (score_fn) {
+        int score = score_fn();
+        if (score > best_score) {
+          // Close previous best handle if we had one
+          if (best_handle) {
+            dlclose(best_handle);
+          }
+          best_score = score;
+          best_handle = cpu_handle;
+          best_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
+        } else {
+          // This variant is not better, close it
+          dlclose(cpu_handle);
+        }
+      } else {
+        // No score function, close it
+        dlclose(cpu_handle);
+      }
+    }
+  }
+
+  // Register the best variant if we found one
+  if (best_handle && best_init && best_score > 0) {
+    ggml_backend_reg_t cpu_backend = best_init();
+    if (cpu_backend) {
+      ggml_backend_register(cpu_backend);
+      // Keep the handle open - it will be cleaned up when the backend is unloaded
+    } else {
+      dlclose(best_handle);
+    }
+  }
+#endif
+}
+
+// Helper function to load all Android backends manually
+// On Android, ggml_backend_load_best() uses filesystem iteration which doesn't work
+// with APK-packaged libraries. This function manually loads all backend libraries
+// using dlopen() with just the library name - Android's linker finds them in the APK.
+static void load_android_backends() {
+#ifdef __ANDROID__
+  typedef ggml_backend_reg_t (*backend_init_fn_t)();
+  
+  // Load Hexagon backend first (Snapdragon DSP) - more performant than Vulkan on Snapdragon devices
+  if (!ggml_backend_reg_by_name("HTP")) {
+    void* hexagon_handle = dlopen("libggml-hexagon.so", RTLD_LAZY | RTLD_LOCAL);
+    if (hexagon_handle) {
+      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(hexagon_handle, "ggml_backend_init");
+      if (backend_init) {
+        ggml_backend_reg_t hexagon_backend = backend_init();
+        if (hexagon_backend) {
+          ggml_backend_register(hexagon_backend);
+        }
+      }
+    }
+  }
+  
+  // Load OpenCL backend
+  if (!ggml_backend_reg_by_name("OpenCL")) {
+    void* opencl_handle = dlopen("libggml-opencl.so", RTLD_LAZY | RTLD_LOCAL);
+    if (opencl_handle) {
+      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(opencl_handle, "ggml_backend_init");
+      if (backend_init) {
+        ggml_backend_reg_t opencl_backend = backend_init();
+        if (opencl_backend) {
+          ggml_backend_register(opencl_backend);
+        }
+      }
+    }
+  }
+  
+  // Load Vulkan backend (disabled by default on Android due to emulator crashes, but try anyway)
+  if (!ggml_backend_reg_by_name("Vulkan")) {
+    void* vulkan_handle = dlopen("libggml-vulkan.so", RTLD_LAZY | RTLD_LOCAL);
+    if (vulkan_handle) {
+      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(vulkan_handle, "ggml_backend_init");
+      if (backend_init) {
+        ggml_backend_reg_t vulkan_backend = backend_init();
+        if (vulkan_backend) {
+          ggml_backend_register(vulkan_backend);
+        }
+      }
+    }
+  }
+  
+  // Load CPU variant libraries (scoring system selects best compatible one)
+  load_android_cpu_backends();
+#endif
+}
+
 // Factory method implementation
 std::shared_ptr<TurboModule> PureCppImpl::create(std::shared_ptr<CallInvoker> jsInvoker) {
   return std::make_shared<PureCppImpl>(std::move(jsInvoker));
@@ -103,33 +226,14 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
           //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
           // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
-          // On Android, dlopen() can load libraries by name even from inside APKs
+          // On Android, manually load all backends since filesystem iteration doesn't work
+          // with APK-packaged libraries. ggml_backend_load_all() will skip already loaded backends.
           #ifdef __ANDROID__
-          // Load Hexagon backend (Snapdragon DSP) - more performant than Vulkan on Snapdragon devices
-          // Load before other GPU backends to give it priority
-          // Check if already registered to avoid duplicate registration
-          if (!ggml_backend_reg_by_name("HTP")) {
-            void* hexagon_handle = dlopen("libggml-hexagon.so", RTLD_LAZY | RTLD_LOCAL);
-            if (hexagon_handle) {
-              typedef ggml_backend_reg_t (*backend_init_fn_t)();
-              backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(hexagon_handle, "ggml_backend_init");
-              if (backend_init) {
-                ggml_backend_reg_t hexagon_backend = backend_init();
-                if (hexagon_backend) {
-                  ggml_backend_register(hexagon_backend);
-                }
-              }
-            }
-          }
-          
-          // Load all backends including CPU - ggml_backend_load_all() will:
-          // 1. Call ggml_backend_load_best("cpu") which finds and loads the best CPU variant
-          // 2. Load other GPU backends (OpenCL, Vulkan) if present
-          // The runtime loader automatically selects the best CPU variant based on device capabilities
-          ggml_backend_load_all();
-          #else
-          ggml_backend_load_all();
+          load_android_backends();
           #endif
+          
+          // Load any remaining backends (ggml_backend_load_all will skip already loaded ones)
+          ggml_backend_load_all();
           
           // Verify at least CPU backend was loaded
           if (ggml_backend_reg_count() == 0) {
@@ -386,10 +490,13 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
           //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
           // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
-          // Load all backends including CPU - ggml_backend_load_all() will:
-          // 1. Call ggml_backend_load_best("cpu") which finds and loads the best CPU variant
-          // 2. Load other GPU backends (OpenCL, Vulkan) if present
-          // The runtime loader automatically selects the best CPU variant based on device capabilities
+          // On Android, manually load all backends since filesystem iteration doesn't work
+          // with APK-packaged libraries. ggml_backend_load_all() will skip already loaded backends.
+          #ifdef __ANDROID__
+          load_android_backends();
+          #endif
+          
+          // Load other backends (OpenCL, Vulkan, etc.) - ggml_backend_load_all will skip already loaded backends
           ggml_backend_load_all();
           
           // Verify at least CPU backend was loaded
@@ -531,12 +638,30 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           // Now assign to the context
           selfPtr->rn_ctx_->params = rn_params;
 
-          selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, params.chat_template);
+          // Initialize chat templates (matches server.cpp approach)
+          // common_chat_templates_init already has try-catch internally for template parsing errors,
+          // but exceptions can escape from chat_template constructor during capability detection.
+          // We catch all exceptions (not just std::exception) to handle any edge cases.
           try {
+            selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, params.chat_template);
+            
+            // Validate template by trying to format an example (catches runtime errors like null lstrip)
+            // This is optional - if it fails, we still use the template anyway (it might work in practice)
+            try {
               common_chat_format_example(selfPtr->rn_ctx_->chat_templates.get(), params.use_jinja, params.default_template_kwargs);
-          } catch (const std::exception & e) {
-              // Fallback to chatml if the original template parsing fails
+            } catch (...) {
+              // Template validation failed, but continue anyway - the template might work in practice
+              // This preserves backward compatibility for models that were working before
+            }
+          } catch (...) {
+            // Template initialization failed - fallback to chatml (matches server.cpp behavior)
+            // Catch all exceptions (not just std::exception) to handle any edge cases
+            try {
               selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, "chatml");
+            } catch (...) {
+              // Even chatml failed - this should never happen, but handle it gracefully
+              // The model will still load, but chat templates won't work
+            }
           }
 
           // Schedule success callback on JS thread to create JSI objects

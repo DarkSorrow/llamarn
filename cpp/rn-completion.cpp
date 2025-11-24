@@ -379,17 +379,44 @@ CompletionResult run_chat_completion(
             chat_msgs = common_chat_msgs_parse_oaicompat(data["messages"]);
         }
 
-        // Apply template
+        // Apply template (matches server.cpp oaicompat_chat_params_parse approach)
         common_chat_templates_inputs template_inputs;
         template_inputs.messages = chat_msgs;
         template_inputs.add_generation_prompt = true;
         template_inputs.use_jinja = rn_ctx->params.use_jinja;
-        // Note: extract_reasoning field doesn't exist in current llama.cpp version
-        // template_inputs.extract_reasoning = true; // Default to true to extract reasoning content if available
+        template_inputs.reasoning_format = rn_ctx->params.reasoning_format;
+        
+        // Set chat_template_kwargs from params (matches server.cpp line 712)
+        template_inputs.chat_template_kwargs = rn_ctx->params.default_template_kwargs;
+        
+        // Merge any chat_template_kwargs from request body (if present in future)
+        // For now, we use the defaults from params
+        
+        // Parse enable_thinking from chat_template_kwargs (matches server.cpp lines 718-725)
+        auto enable_thinking_kwarg = template_inputs.chat_template_kwargs.find("enable_thinking");
+        if (enable_thinking_kwarg != template_inputs.chat_template_kwargs.end()) {
+            const std::string& value = enable_thinking_kwarg->second;
+            if (value == "true") {
+                template_inputs.enable_thinking = true;
+            } else if (value == "false") {
+                template_inputs.enable_thinking = false;
+            }
+            // else: use default (true)
+        }
 
         // Add grammar if present in options
         if (!options.grammar.empty()) {
             template_inputs.grammar = options.grammar;
+        }
+
+        // Parse json_schema if present (matches server.cpp line 696)
+        if (data.contains("json_schema") && !data["json_schema"].is_null()) {
+            template_inputs.json_schema = data["json_schema"].dump();
+        }
+        
+        // Check for conflicting grammar and json_schema (matches server.cpp lines 570-572)
+        if (!template_inputs.json_schema.empty() && !template_inputs.grammar.empty()) {
+            throw std::runtime_error("Cannot use both json_schema and grammar");
         }
 
         // Parse tools if present
@@ -407,8 +434,20 @@ CompletionResult run_chat_completion(
                 ? data["tool_choice"].get<std::string>()
                 : data["tool_choice"].dump());
         }
+        
+        // Parse parallel_tool_calls if present (matches server.cpp line 699)
+        if (data.contains("parallel_tool_calls")) {
+            template_inputs.parallel_tool_calls = data["parallel_tool_calls"].get<bool>();
+        }
+        
+        // Check for conflicting tools and grammar (matches server.cpp lines 703-706)
+        if (!template_inputs.tools.empty() && template_inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE) {
+            if (!template_inputs.grammar.empty()) {
+                throw std::runtime_error("Cannot use custom grammar constraints with tools.");
+            }
+        }
 
-        // Apply template
+        // Apply template (matches server.cpp approach - no try-catch, exceptions propagate to outer handler)
         const auto& chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
 
         CompletionOptions cmpl_options = options;
