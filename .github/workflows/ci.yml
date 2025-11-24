@@ -132,7 +132,7 @@ jobs:
           find android -name "gradlew" -exec chmod +x {} \; || true
       
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -141,7 +141,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 ndk;28.0.12674087 cmake;3.22.1'
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;28.2.13676358 cmake;3.22.1'
           accept-android-sdk-licenses: true
       
       # Cache NDK and prebuilt GPU libraries
@@ -150,7 +150,7 @@ jobs:
         id: cache-android-libs
         with:
           path: |
-            ${{ env.ANDROID_HOME }}/ndk/28.0.12674087
+            ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
@@ -161,7 +161,7 @@ jobs:
       - name: Prepare GPU Backend Headers
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
+          NDK_PATH=$ANDROID_HOME/ndk/28.2.13676358
           
           # Create required directories to avoid cache errors
           mkdir -p prebuilt/gpu
@@ -209,7 +209,7 @@ jobs:
       - name: Build GGML GPU Backend Libraries
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
+          NDK_PATH=$ANDROID_HOME/ndk/28.2.13676358
           
           # Build GGML GPU backend libraries (libggml-opencl.so and libggml-vulkan.so)
           # These are separate from the main llama.cpp libraries and will be loaded dynamically
@@ -281,10 +281,10 @@ jobs:
       - name: Build Final Android Libraries
         run: |
           # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/28.0.12674087
+          NDK_PATH=$ANDROID_HOME/ndk/28.2.13676358
           
           # Get glslc path
-          GLSLC_PATH="$ANDROID_HOME/ndk/28.0.12674087/shader-tools/linux-x86_64/glslc"
+          GLSLC_PATH="$ANDROID_HOME/ndk/28.2.13676358/shader-tools/linux-x86_64/glslc"
           
           # Build the final Android libraries (main llama.cpp libraries)
           # The GGML GPU backend libraries (libggml-opencl.so, libggml-vulkan.so) 
@@ -504,7 +504,7 @@ jobs:
           find android -name "gradlew" -exec chmod +x {} \; || true
       
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version: '17'

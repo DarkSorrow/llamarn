@@ -667,9 +667,13 @@ build_for_abi() {
   if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
     ABI_GPU_FLAGS+=("${HEXAGON_BASE_FLAGS[@]}")
     # Add Hexagon-specific compiler flags for better performance (from llama.cpp presets)
+    # Note: We append to existing CMAKE_CXX_FLAGS rather than replacing it
+    # The flags are passed as a single quoted string to prevent CMake from parsing them as separate arguments
+    HEXAGON_C_FLAGS='-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
+    HEXAGON_CXX_FLAGS='-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
     ABI_GPU_FLAGS+=(
-      -DCMAKE_C_FLAGS="-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE"
-      -DCMAKE_CXX_FLAGS="-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE"
+      -DCMAKE_C_FLAGS="${HEXAGON_C_FLAGS}"
+      -DCMAKE_CXX_FLAGS="${HEXAGON_CXX_FLAGS}"
       -DPREBUILT_LIB_DIR="android_aarch64"
     )
     echo -e "${GREEN}Hexagon backend configured for $ABI${NC}"
@@ -689,7 +693,7 @@ build_for_abi() {
   echo -e "${YELLOW}Running cmake with options:${NC}"
   echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[*]}"
   
-  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[@]} || {
+  cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} "${ABI_GPU_FLAGS[@]}" || {
     echo -e "${RED}CMake configuration failed for $ABI${NC}"
     popd
     return 1

@@ -22,8 +22,9 @@ OPENCL_VERSION="3.0"
 OPENCL_HEADERS_TAG="v2025.07.22"  # Matches llama.cpp CI, supports OpenCL 3.0.19
 
 # Android SDK/NDK configuration
-# Using NDK r28 to match llama.cpp Hexagon backend requirements
-NDK_VERSION="28.0.12674087"  # NDK r28 (matches llama.cpp snapdragon-toolchain)
+# Using NDK r28c (stable) to match llama.cpp Hexagon backend requirements
+# r28c is the stable release of r28, ensuring compatibility with Hexagon SDK
+NDK_VERSION="28.2.13676358"  # NDK r28c (stable release, compatible with Hexagon)
 ANDROID_MIN_SDK="33"
 ANDROID_TARGET_SDK="35"
 ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
