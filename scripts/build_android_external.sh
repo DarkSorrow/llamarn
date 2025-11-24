@@ -762,6 +762,24 @@ build_for_abi() {
     return 1
   }
   
+  # Verify CPU variant libraries were built (if GGML_CPU_ALL_VARIANTS is enabled)
+  if [ "$ENABLE_CPU_VARIANTS" = true ] && ! ([ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]); then
+    echo -e "${YELLOW}Verifying CPU variant libraries were built...${NC}"
+    local VARIANT_COUNT=0
+    for variant_lib in "$BUILD_DIR/lib"/libggml-cpu-android_armv8*.so "$BUILD_DIR/bin"/libggml-cpu-android_armv8*.so; do
+      if [ -f "$variant_lib" ]; then
+        VARIANT_COUNT=$((VARIANT_COUNT + 1))
+        echo -e "${GREEN}  Found: $(basename "$variant_lib")${NC}"
+      fi
+    done
+    if [ $VARIANT_COUNT -gt 0 ]; then
+      echo -e "${GREEN}✓ Built $VARIANT_COUNT CPU variant libraries for $ABI${NC}"
+    else
+      echo -e "${YELLOW}⚠ No CPU variant libraries found - GGML_CPU_ALL_VARIANTS may not have worked${NC}"
+      echo -e "${YELLOW}  This might indicate a build configuration issue${NC}"
+    fi
+  fi
+  
   # Restore CFLAGS after successful build if we unset it
   if [ -n "$OLD_CFLAGS" ]; then
     export CFLAGS="$OLD_CFLAGS"
@@ -855,18 +873,49 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
   fi
   
-  # Copy libggml-cpu.so (REQUIRED when GGML_BACKEND_DL=ON - CPU backend is dynamically loaded)
-  if [ -f "$BUILD_DIR/bin/libggml-cpu.so" ]; then
-    cp "$BUILD_DIR/bin/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
-  elif [ -f "$BUILD_DIR/libggml-cpu.so" ]; then
-    cp "$BUILD_DIR/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
-  else
-    echo -e "${RED}✗ ERROR: libggml-cpu.so not found for $ABI - CPU backend will NOT work!${NC}"
-    echo -e "${RED}  Searched: $BUILD_DIR/bin/libggml-cpu.so and $BUILD_DIR/libggml-cpu.so${NC}"
+  # Copy CPU backend libraries (REQUIRED when GGML_BACKEND_DL=ON - CPU backend is dynamically loaded)
+  # With GGML_CPU_ALL_VARIANTS, multiple variant libraries are built (e.g., libggml-cpu-android_armv8.0_1.so)
+  # The runtime loader will select the best variant based on CPU capabilities
+  local CPU_LIBS_COPIED=0
+  # Check all possible locations for CPU variant libraries
+  # CMAKE_LIBRARY_OUTPUT_DIRECTORY is set to $PREBUILT_BUILD_DIR/$ABI/lib, which is $BUILD_DIR/lib
+  for search_dir in "$BUILD_DIR/lib" "$BUILD_DIR/bin" "$BUILD_DIR"; do
+    if [ -d "$search_dir" ]; then
+      # Copy all CPU variant libraries (libggml-cpu-*.so)
+      for cpu_lib in "$search_dir"/libggml-cpu*.so; do
+        if [ -f "$cpu_lib" ]; then
+          cp "$cpu_lib" "$ANDROID_JNI_DIR/$ABI/"
+          CPU_LIBS_COPIED=$((CPU_LIBS_COPIED + 1))
+          echo -e "${GREEN}✓ Copied $(basename "$cpu_lib") for $ABI from $(basename "$search_dir")${NC}"
+        fi
+      done
+    fi
+  done
+  
+  # Fallback: if no variant libraries found, try the standard libggml-cpu.so
+  if [ $CPU_LIBS_COPIED -eq 0 ]; then
+    if [ -f "$BUILD_DIR/lib/libggml-cpu.so" ]; then
+      cp "$BUILD_DIR/lib/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
+      CPU_LIBS_COPIED=1
+    elif [ -f "$BUILD_DIR/bin/libggml-cpu.so" ]; then
+      cp "$BUILD_DIR/bin/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
+      CPU_LIBS_COPIED=1
+    elif [ -f "$BUILD_DIR/libggml-cpu.so" ]; then
+      cp "$BUILD_DIR/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
+      echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
+      CPU_LIBS_COPIED=1
+    fi
+  fi
+  
+  if [ $CPU_LIBS_COPIED -eq 0 ]; then
+    echo -e "${RED}✗ ERROR: No CPU backend libraries found for $ABI - CPU backend will NOT work!${NC}"
+    echo -e "${RED}  Searched: $BUILD_DIR/lib/libggml-cpu*.so, $BUILD_DIR/bin/libggml-cpu*.so, $BUILD_DIR/libggml-cpu*.so${NC}"
     echo -e "${YELLOW}  This is a critical error - CPU backend is required for all devices${NC}"
     # Don't fail the build, but warn loudly
+  else
+    echo -e "${GREEN}✓ Copied $CPU_LIBS_COPIED CPU backend library/libraries for $ABI${NC}"
   fi
   
   # With GGML_BACKEND_DL=ON, GPU backends can be built as separate dynamic libraries
