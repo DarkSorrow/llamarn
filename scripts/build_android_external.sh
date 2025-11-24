@@ -469,6 +469,10 @@ build_for_abi() {
   echo -e "${GREEN}Building for $ABI${NC}"
   
   local ABI_GPU_FLAGS=("${GPU_CMAKE_FLAGS[@]}")
+  local ABI_SUPPORTS_GPU=true
+  if [ "$ABI" = "armeabi-v7a" ] || [ "$ABI" = "x86" ]; then
+    ABI_SUPPORTS_GPU=false
+  fi
   
   # Set ABI-specific flags
   local ARCH=""
@@ -510,7 +514,7 @@ build_for_abi() {
     ARCH="i686"
   fi
   
-  if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
+  if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
     local OPENCL_LIB_PATH=""
     
     if [ -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
@@ -558,7 +562,7 @@ build_for_abi() {
     echo -e "${GREEN}OpenCL backend configured for $ABI${NC}"
   fi
   
-  if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
+  if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     local ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
     local VK_INCLUDE_PATH="$VULKAN_FALLBACK_INCLUDE"
     local VK_LIB_PATH=""
@@ -613,6 +617,8 @@ build_for_abi() {
     fi
     
     echo -e "${GREEN}Vulkan backend configured for $ABI${NC}"
+  elif [ "$ABI_SUPPORTS_GPU" = false ]; then
+    echo -e "${YELLOW}Skipping GPU configuration for 32-bit ABI $ABI${NC}"
   fi
   
   # Create build directory
