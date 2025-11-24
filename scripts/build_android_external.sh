@@ -2,6 +2,7 @@
 set -e
 
 # Suppress getenv warnings on newer Linux distributions
+# Note: This flag is not supported by Hexagon compiler, so we'll set it conditionally
 export CFLAGS="-Wno-gnu-get-env"
 
 # Get the absolute path of the script
@@ -689,11 +690,24 @@ build_for_abi() {
   # Configure with CMake
   echo -e "${YELLOW}Configuring CMake for $ABI...${NC}"
   
+  # Unset CFLAGS for Hexagon builds - Hexagon compiler doesn't support -Wno-gnu-get-env
+  # The HTP libraries (ExternalProjects) inherit environment variables, so we need to clear CFLAGS
+  local OLD_CFLAGS=""
+  if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
+    OLD_CFLAGS="$CFLAGS"
+    unset CFLAGS
+    echo -e "${YELLOW}Unset CFLAGS for Hexagon build (Hexagon compiler doesn't support -Wno-gnu-get-env)${NC}"
+  fi
+  
   # Print the exact cmake command for debugging
   echo -e "${YELLOW}Running cmake with options:${NC}"
   echo -e "cmake \"$LLAMA_CPP_DIR\" ${CMAKE_ARGS[*]} ${ARCH_FLAGS[*]} ${CUSTOM_CMAKE_FLAGS} ${ABI_GPU_FLAGS[*]}"
   
   cmake "$LLAMA_CPP_DIR" "${CMAKE_ARGS[@]}" "${ARCH_FLAGS[@]}" ${CUSTOM_CMAKE_FLAGS} "${ABI_GPU_FLAGS[@]}" || {
+    # Restore CFLAGS if we unset it
+    if [ -n "$OLD_CFLAGS" ]; then
+      export CFLAGS="$OLD_CFLAGS"
+    fi
     echo -e "${RED}CMake configuration failed for $ABI${NC}"
     popd
     return 1
@@ -711,10 +725,20 @@ build_for_abi() {
   # Build
   echo -e "${YELLOW}Building for $ABI with $N_CORES cores...${NC}"
   cmake --build . --config "$BUILD_TYPE" -- -j$N_CORES || {
+    # Restore CFLAGS if we unset it
+    if [ -n "$OLD_CFLAGS" ]; then
+      export CFLAGS="$OLD_CFLAGS"
+    fi
     echo -e "${RED}Build failed for $ABI${NC}"
     popd
     return 1
   }
+  
+  # Restore CFLAGS after successful build if we unset it
+  if [ -n "$OLD_CFLAGS" ]; then
+    export CFLAGS="$OLD_CFLAGS"
+    echo -e "${GREEN}Restored CFLAGS after Hexagon build${NC}"
+  fi
   
   # Copy libraries to jniLibs directory
   echo -e "${YELLOW}Copying libraries to jniLibs directory...${NC}"
