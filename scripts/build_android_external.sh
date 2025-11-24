@@ -421,9 +421,11 @@ else
   echo -e "${YELLOW}OpenCL backend disabled or headers missing${NC}"
 fi
 
-# Add Vulkan backend if available and enabled (per-ABI configuration happens later)
+VULKAN_BASE_FLAGS=()
+VULKAN_FALLBACK_INCLUDE=""
+VULKAN_FALLBACK_GLSLC="$GLSLC_PATH"
 if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
-  GPU_CMAKE_FLAGS+=(
+  VULKAN_BASE_FLAGS=(
     -DGGML_VULKAN=ON
     -DGGML_VULKAN_CHECK_RESULTS=OFF
     -DGGML_VULKAN_DEBUG=OFF
@@ -433,7 +435,7 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     -DGGML_VULKAN_VALIDATE=OFF
     -DGGML_VULKAN_RUN_TESTS=OFF
     -DVK_USE_PLATFORM_ANDROID_KHR=ON
-    -DGGML_VULKAN_DISABLE_FLASHATTN=ON  # Disable flash attention for Adreno compatibility
+    -DGGML_VULKAN_DISABLE_FLASHATTN=ON
   )
   
   if [ -n "$GGML_VK_DISABLE_COOPMAT" ]; then
@@ -563,6 +565,7 @@ build_for_abi() {
   fi
   
   if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
+    ABI_GPU_FLAGS+=("${VULKAN_BASE_FLAGS[@]}")
     local ENV_FILE="$PREBUILT_GPU_DIR/$ABI/.vulkan_env"
     local VK_INCLUDE_PATH="$VULKAN_FALLBACK_INCLUDE"
     local VK_LIB_PATH=""
