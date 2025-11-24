@@ -230,11 +230,20 @@ fi
 echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
 # Extract the Android platform version from the NDK path
+# Use minSdkVersion (28) to ensure compatibility with all supported devices
+# This allows the library to work with apps using different NDK versions
+ANDROID_MIN_SDK=28
 if [ -d "$NDK_PATH/platforms" ]; then
-  # Get the highest API level available in the NDK
-  ANDROID_PLATFORM=$(ls -1 "$NDK_PATH/platforms" | sort -V | tail -n 1)
-  ANDROID_MIN_SDK=${ANDROID_PLATFORM#android-}
-  echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
+  # Check if android-28 is available, otherwise use the highest available
+  if [ -d "$NDK_PATH/platforms/android-28" ]; then
+    ANDROID_PLATFORM="android-28"
+    echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK) for maximum compatibility${NC}"
+  else
+    # Fallback to highest available if android-28 not found
+    ANDROID_PLATFORM=$(ls -1 "$NDK_PATH/platforms" | sort -V | tail -n 1)
+    ANDROID_MIN_SDK=${ANDROID_PLATFORM#android-}
+    echo -e "${YELLOW}android-28 not found, using highest available: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
+  fi
 elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt" ]; then
   # Try to detect from the LLVM toolchain - more reliable method
   HOST_TAG_DIR=$(ls -1 "$NDK_PATH/toolchains/llvm/prebuilt/")
@@ -253,8 +262,8 @@ elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt" ]; then
         ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
         echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
       else
-        # Default to API level 24 (Android 7.0) if we can't detect specific level
-        ANDROID_MIN_SDK=24
+        # Default to API level 28 (Android 9.0) to match minSdkVersion for compatibility
+        ANDROID_MIN_SDK=28
         ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
         echo -e "${YELLOW}Could not detect specific API level, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
       fi
@@ -269,14 +278,14 @@ elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt" ]; then
           ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
           echo -e "${GREEN}Using Android platform from compiler: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
         else
-          # Hardcoded fallback to a safe API level
-          ANDROID_MIN_SDK=24
+          # Hardcoded fallback to API level 28 to match minSdkVersion
+          ANDROID_MIN_SDK=28
           ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
           echo -e "${YELLOW}Could not detect API level from compiler, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
         fi
       else
-        # Hardcoded fallback to a safe API level
-        ANDROID_MIN_SDK=24
+        # Hardcoded fallback to API level 28 to match minSdkVersion
+        ANDROID_MIN_SDK=28
         ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
         echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
       fi
@@ -288,8 +297,8 @@ elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt" ]; then
     echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
   fi
 else
-  # Hardcoded fallback to a safe API level
-  ANDROID_MIN_SDK=24
+  # Hardcoded fallback to API level 28 to match minSdkVersion
+  ANDROID_MIN_SDK=28
   ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
   echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
 fi
@@ -382,6 +391,7 @@ CMAKE_ARGS=(
   -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake"
   -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
   -DANDROID_PLATFORM="$ANDROID_PLATFORM"
+  -DANDROID_STL=c++_shared  # Use shared C++ library for better NDK version compatibility
   -DBUILD_SHARED_LIBS=ON  # Build shared libraries
   -DLLAMA_BUILD_SERVER=OFF
   -DLLAMA_BUILD_TESTS=OFF
