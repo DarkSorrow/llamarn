@@ -42,10 +42,17 @@ set_target_properties(ggml PROPERTIES
     IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so
     IMPORTED_NO_SONAME TRUE)
 
-add_library(ggml-cpu SHARED IMPORTED)
-set_target_properties(ggml-cpu PROPERTIES 
-    IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
-    IMPORTED_NO_SONAME TRUE)
+# ggml-cpu is optional - CPU backend is statically linked into libggml.so with GGML_USE_CPU=1
+# Only import it if it exists (for backward compatibility)
+if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so)
+    add_library(ggml-cpu SHARED IMPORTED)
+    set_target_properties(ggml-cpu PROPERTIES 
+        IMPORTED_LOCATION ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
+        IMPORTED_NO_SONAME TRUE)
+    message(STATUS "libggml-cpu.so found (optional - CPU is statically linked)")
+else()
+    message(STATUS "libggml-cpu.so not found (expected - CPU is statically linked into libggml.so)")
+endif()
 
 # Create a minimal common library with only essential files that don't require missing GGML symbols
 add_library(
@@ -91,36 +98,49 @@ else()
     target_compile_options(RNLlamaCpp PRIVATE -Wno-unused-function)
 endif()
 
-# Check if Vulkan backend library is available
+# Check if GPU backend libraries are present in jniLibs (compile-time check only)
+# NOTE: This is NOT a runtime availability check - it only determines if we should
+#       compile OpenCL/Vulkan support into the code. Runtime availability is checked
+#       when ggml_backend_load_all() tries to load the backend libraries.
+#       Even if libggml-opencl.so exists, it will only work if the device has
+#       libOpenCL.so (system library) available at runtime.
+
+# Check if Vulkan backend library is present (for compile-time feature enablement)
 set(VULKAN_BACKEND_AVAILABLE FALSE)
 if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-vulkan.so)
     set(VULKAN_BACKEND_AVAILABLE TRUE)
-    message(STATUS "Vulkan backend library found for ${ANDROID_ABI}")
+    message(STATUS "Vulkan backend library found in jniLibs for ${ANDROID_ABI} (compile-time)")
+    message(STATUS "  Note: Runtime availability depends on device Vulkan support")
 else()
-    message(STATUS "Vulkan backend library not found for ${ANDROID_ABI}")
+    message(STATUS "Vulkan backend library not found in jniLibs for ${ANDROID_ABI}")
 endif()
 
-# Check if OpenCL backend library is available
+# Check if OpenCL backend library is present (for compile-time feature enablement)
 set(OPENCL_BACKEND_AVAILABLE FALSE)
-# Check only for libggml-opencl.so - libOpenCL.so is a system library (not shipped)
 if(EXISTS ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-opencl.so)
     set(OPENCL_BACKEND_AVAILABLE TRUE)
-    message(STATUS "OpenCL backend library found for ${ANDROID_ABI}")
-    message(STATUS "Note: libOpenCL.so will be provided by the system at runtime")
+    message(STATUS "OpenCL backend library found in jniLibs for ${ANDROID_ABI} (compile-time)")
+    message(STATUS "  Note: Runtime availability requires system libOpenCL.so (not checked here)")
+    message(STATUS "  Note: Backend will gracefully fail to load if device lacks OpenCL support")
 else()
-    message(STATUS "OpenCL backend library not found for ${ANDROID_ABI}")
+    message(STATUS "OpenCL backend library not found in jniLibs for ${ANDROID_ABI}")
 endif()
 
-# Hybrid backend approach: CPU static (built into main libraries), GPU dynamic
-# CPU backend will be statically linked into main libraries (libggml.so, libllama.so)
-# GPU backends (OpenCL, Vulkan) will be dynamically loaded at runtime only if available
+# Dynamic backend approach: ALL backends (CPU + GPU) are dynamically loaded
+# With GGML_BACKEND_DL=ON, CPU backend is built as libggml-cpu.so (separate from libggml.so)
+# GPU backends (OpenCL, Vulkan) are also built as separate .so files
+# All backends are loaded dynamically via ggml_backend_load_all() at runtime
 target_compile_definitions(common PRIVATE 
-    -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
-    -DGGML_CPU=1         # CPU backend statically built into main libraries
+    -DGGML_BACKEND_DL=1  # Enable dynamic loading for ALL backends (CPU + GPU)
+    -DGGML_CPU=1         # CPU backend enabled (built as libggml-cpu.so when GGML_BACKEND_DL=ON)
+    # NOTE: Do NOT define GGML_USE_CPU=1 when GGML_BACKEND_DL=ON
+    #       CPU backend is loaded dynamically via ggml_backend_load_all()
 )
 target_compile_definitions(RNLlamaCpp PRIVATE 
-    -DGGML_BACKEND_DL=1  # Enable dynamic loading for GPU backends
-    -DGGML_CPU=1         # CPU backend statically built into main libraries
+    -DGGML_BACKEND_DL=1  # Enable dynamic loading for ALL backends (CPU + GPU)
+    -DGGML_CPU=1         # CPU backend enabled (built as libggml-cpu.so when GGML_BACKEND_DL=ON)
+    # NOTE: Do NOT define GGML_USE_CPU=1 when GGML_BACKEND_DL=ON
+    #       CPU backend is loaded dynamically via ggml_backend_load_all()
     -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON  # Support Android 15+ 16KB page sizes
 )
 
@@ -179,7 +199,7 @@ target_link_libraries(
     llama       # Link against the imported prebuilt core llama library
     ggml-base   # Link against the imported GGML base library
     ggml        # Link against the imported GGML library
-    ggml-cpu    # Link against the imported GGML CPU library
+    # NOTE: ggml-cpu is NOT linked - CPU backend is dynamically loaded from libggml-cpu.so
     jsi
     reactnative
     fbjni
@@ -212,10 +232,16 @@ add_custom_command(TARGET RNLlamaCpp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml.so
         $<TARGET_FILE_DIR:RNLlamaCpp>/libggml.so
+    COMMENT "Copying dependency libraries to build output directory"
+)
+
+# libggml-cpu.so is REQUIRED when GGML_BACKEND_DL=ON (CPU backend is dynamically loaded)
+# Copy it so it gets packaged into the APK
+add_custom_command(TARGET RNLlamaCpp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${JNI_LIBS_DIR}/${ANDROID_ABI}/libggml-cpu.so
         $<TARGET_FILE_DIR:RNLlamaCpp>/libggml-cpu.so
-    COMMENT "Copying dependency libraries to build output directory"
+    COMMENT "Copying libggml-cpu.so (REQUIRED for CPU backend when GGML_BACKEND_DL=ON)"
 )
 
 # Also copy any optional GPU libraries if they exist

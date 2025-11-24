@@ -8,6 +8,9 @@
 #include <unordered_map>
 #include <utility>
 #include <thread>
+#include <cstdio>
+#include <cstring>
+#include <cerrno>
 #include "SystemUtils.h"
 // Include our custom headers - this was missing!
 #include "rn-llama.h"
@@ -17,6 +20,18 @@
 
 #if defined(__ANDROID__) || defined(__linux__)
 #include <unistd.h>
+#include <dlfcn.h>
+#include <android/log.h>
+#define LOG_TAG "RNLlamaCpp"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#else
+#define LOGI(...) fprintf(stderr, __VA_ARGS__)
+#define LOGE(...) fprintf(stderr, __VA_ARGS__)
+#define LOGW(...) fprintf(stderr, __VA_ARGS__)
+#define LOGD(...) fprintf(stderr, __VA_ARGS__)
 #endif
 
 // Include the llama.cpp headers directly
@@ -72,6 +87,42 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
       // Launch background thread for model info loading
       std::thread([selfPtr, path, resolve, reject, runtimePtr, invoker]() {
         try {
+          // Set up logging callback to capture llama.cpp error messages
+          llama_log_set([](enum ggml_log_level level, const char * text, void * /* user_data */) {
+            if (level >= GGML_LOG_LEVEL_ERROR) {
+              LOGE("llama.cpp: %s", text);
+            }
+          }, nullptr);
+          
+          // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
+          // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
+          // CPU backend is in libggml-cpu.so, GPU backends are in libggml-opencl.so, libggml-vulkan.so
+          // On Android, dlopen() can load libraries by name even from inside APKs
+          #ifdef __ANDROID__
+          // Load CPU backend directly - Android's linker will find it in the same directory
+          void* cpu_handle = dlopen("libggml-cpu.so", RTLD_LAZY | RTLD_LOCAL);
+          if (cpu_handle) {
+            typedef ggml_backend_reg_t (*backend_init_fn_t)();
+            backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
+            if (backend_init) {
+              ggml_backend_reg_t cpu_backend = backend_init();
+              if (cpu_backend) {
+                ggml_backend_register(cpu_backend);
+              }
+            }
+          }
+          
+          // Load GPU backends (OpenCL, Vulkan) if present - they will be found by name
+          ggml_backend_load_all();
+          #else
+          ggml_backend_load_all();
+          #endif
+          
+          // Verify at least CPU backend was loaded
+          if (ggml_backend_reg_count() == 0) {
+            throw std::runtime_error("No backends registered - CPU backend library not found");
+          }
+          
           // Initialize llama backend
           llama_backend_init();
 
@@ -313,7 +364,35 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
         try {
           // Thread-safe access to member variables
           std::lock_guard<std::mutex> lock(selfPtr->mutex_);
-
+          
+          // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
+          // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
+          // CPU backend is in libggml-cpu.so, GPU backends are in libggml-opencl.so, libggml-vulkan.so
+          #ifdef __ANDROID__
+          // Load CPU backend directly - Android's linker will find it in the same directory
+          void* cpu_handle = dlopen("libggml-cpu.so", RTLD_LAZY | RTLD_LOCAL);
+          if (cpu_handle) {
+            typedef ggml_backend_reg_t (*backend_init_fn_t)();
+            backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
+            if (backend_init) {
+              ggml_backend_reg_t cpu_backend = backend_init();
+              if (cpu_backend) {
+                ggml_backend_register(cpu_backend);
+              }
+            }
+          }
+          
+          // Load GPU backends (OpenCL, Vulkan) if present - they will be found by name
+          ggml_backend_load_all();
+          #else
+          ggml_backend_load_all();
+          #endif
+          
+          // Verify at least CPU backend was loaded
+          if (ggml_backend_reg_count() == 0) {
+            throw std::runtime_error("No backends registered - CPU backend library not found");
+          }
+          
           // Initialize llama backend
           llama_backend_init();
 
@@ -374,8 +453,6 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           } catch (const std::exception& e) {
             // If we were trying to use GPU and got an error, retry with CPU-only
             if (params.n_gpu_layers > 0) {
-              fprintf(stderr, "GPU initialization failed (%s), retrying with CPU-only\n", e.what());
-              
               params.n_gpu_layers = 0;
               
               try {
@@ -384,8 +461,6 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
                 if (!result.model || !result.context) {
                   throw std::runtime_error("Failed to initialize model and context even with CPU-only mode");
                 }
-                
-                fprintf(stderr, "Successfully recovered with CPU-only mode after GPU failure\n");
               } catch (const std::exception& cpu_e) {
                 throw std::runtime_error(std::string("Model initialization failed: ") + cpu_e.what());
               }
@@ -477,7 +552,6 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
         } catch (const std::exception& e) {
           // Schedule error callback on JS thread
           std::string errorMsg(e.what());
-          fprintf(stderr, "initLlama error: %s\n", errorMsg.c_str());
           invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
             try {
               reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg));

@@ -372,9 +372,12 @@ CMAKE_ARGS=(
   -DGGML_USE_K_QUANTS=ON  # Enable quantization support
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
-  -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings (for wstring_convert)
-  -DGGML_BACKEND_DL=ON   # Enable dynamic loading - GPU backends built as separate .so files
-  -DGGML_CPU=ON          # CPU backend statically built into libggml.so and libllama.so
+  -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings
+  -DGGML_BACKEND_DL=ON   # Enable dynamic loading - ALL backends (CPU + GPU) built as separate .so files
+  -DGGML_CPU=ON          # Enable CPU backend (built as libggml-cpu.so when GGML_BACKEND_DL=ON)
+  # NOTE: With GGML_BACKEND_DL=ON, CPU backend is built as libggml-cpu.so (dynamic loading)
+  #       GPU backends (OpenCL, Vulkan) are also built as separate .so files for dynamic loading
+  #       Do NOT set GGML_USE_CPU=1 when GGML_BACKEND_DL=ON - they are mutually exclusive
   -DGGML_METAL=OFF        # Disable Metal (Apple GPU) for Android
   -DGGML_CUDA=OFF         # Not applicable to Android
   -DGGML_HIP=OFF          # Not applicable to Android
@@ -644,6 +647,15 @@ build_for_abi() {
     return 1
   }
   
+  # Verify that GGML_USE_CPU is properly configured
+  echo -e "${YELLOW}Verifying GGML_USE_CPU configuration...${NC}"
+  if grep -q "GGML_USE_CPU" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+    echo -e "${GREEN}✓ GGML_USE_CPU found in CMakeCache.txt${NC}"
+    grep "GGML_USE_CPU" "$BUILD_DIR/CMakeCache.txt" | head -1
+  else
+    echo -e "${YELLOW}⚠ GGML_USE_CPU not found in CMakeCache.txt - checking compile definitions...${NC}"
+  fi
+  
   # Build
   echo -e "${YELLOW}Building for $ABI with $N_CORES cores...${NC}"
   cmake --build . --config "$BUILD_TYPE" -- -j$N_CORES || {
@@ -730,22 +742,27 @@ build_for_abi() {
     echo -e "${GREEN}Copied libggml-base.so for $ABI${NC}"
   fi
   
-  # Copy libggml.so (includes CPU backend with GGML_BACKEND_DL)
+  # Copy libggml.so
   if [ -f "$BUILD_DIR/bin/libggml.so" ]; then
     cp "$BUILD_DIR/bin/libggml.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml.so for $ABI (includes CPU backend)${NC}"
+    echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
   elif [ -f "$BUILD_DIR/libggml.so" ]; then
     cp "$BUILD_DIR/libggml.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml.so for $ABI (includes CPU backend)${NC}"
+    echo -e "${GREEN}Copied libggml.so for $ABI${NC}"
   fi
   
-  # Copy libggml-cpu.so (essential CPU backend)
+  # Copy libggml-cpu.so (REQUIRED when GGML_BACKEND_DL=ON - CPU backend is dynamically loaded)
   if [ -f "$BUILD_DIR/bin/libggml-cpu.so" ]; then
     cp "$BUILD_DIR/bin/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
+    echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
   elif [ -f "$BUILD_DIR/libggml-cpu.so" ]; then
     cp "$BUILD_DIR/libggml-cpu.so" "$ANDROID_JNI_DIR/$ABI/"
-    echo -e "${GREEN}Copied libggml-cpu.so for $ABI${NC}"
+    echo -e "${GREEN}✓ Copied libggml-cpu.so for $ABI (REQUIRED for CPU backend)${NC}"
+  else
+    echo -e "${RED}✗ ERROR: libggml-cpu.so not found for $ABI - CPU backend will NOT work!${NC}"
+    echo -e "${RED}  Searched: $BUILD_DIR/bin/libggml-cpu.so and $BUILD_DIR/libggml-cpu.so${NC}"
+    echo -e "${YELLOW}  This is a critical error - CPU backend is required for all devices${NC}"
+    # Don't fail the build, but warn loudly
   fi
   
   # With GGML_BACKEND_DL=ON, GPU backends can be built as separate dynamic libraries
@@ -1042,6 +1059,13 @@ if [ "$BUILD_SUCCESS" = true ]; then
         fi
       else
         echo -e "${YELLOW}⚠ 'nm' command not available, skipping symbol check${NC}"
+      fi
+      
+      # Check for CPU backend (statically linked into libggml.so with GGML_USE_CPU=1)
+      if [ -f "$ANDROID_JNI_DIR/$ABI/libggml-cpu.so" ]; then
+        echo -e "${YELLOW}⚠ Found libggml-cpu.so for $ABI (optional - CPU is statically linked)${NC}"
+      else
+        echo -e "${GREEN}✓ CPU backend is statically linked into libggml.so (libggml-cpu.so not needed)${NC}"
       fi
       
       # Check for GPU libraries
