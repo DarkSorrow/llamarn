@@ -297,15 +297,15 @@ jobs:
           # Build with Hexagon if SDK is available
           if [ "${{ steps.setup-hexagon.outputs.hexagon_available }}" = "true" ]; then
             echo "Building with Hexagon support for arm64-v8a..."
-            scripts/build_android_external.sh --abi=arm64-v8a --hexagon --clean
+            scripts/build_android_external.sh --abi=arm64-v8a --hexagon
             # Build other ABIs without Hexagon
             for ABI in x86_64 armeabi-v7a x86; do
               echo "Building for $ABI (without Hexagon)..."
-              scripts/build_android_external.sh --abi=$ABI --clean || true
+              scripts/build_android_external.sh --abi=$ABI || true
             done
           else
             echo "Building without Hexagon support..."
-            scripts/build_android_external.sh --abi=all --clean
+            scripts/build_android_external.sh --abi=all
           fi
           
           # Copy GGML GPU backend libraries from prebuilt/gpu to jniLibs
