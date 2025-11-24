@@ -351,24 +351,69 @@ jobs:
           
           # Verify final jniLibs contents
           echo "Verifying final jniLibs contents..."
-          for ABI in arm64-v8a x86_64; do
+          VERIFICATION_FAILED=0
+          for ABI in arm64-v8a x86_64 armeabi-v7a x86; do
             echo "📦 Libraries in jniLibs/$ABI/:"
             ls -lh android/src/main/jniLibs/$ABI/ || echo "  (directory not found)"
             
-            # Verify we have the main libraries
-            if [ -f "android/src/main/jniLibs/$ABI/libllama.so" ]; then
+            # Verify we have the main libraries (REQUIRED for all ABIs)
+            if [ ! -f "android/src/main/jniLibs/$ABI/libllama.so" ]; then
+              echo "❌ ERROR: libllama.so missing for $ABI"
+              VERIFICATION_FAILED=1
+            else
               echo "✅ libllama.so present"
             fi
-            if [ -f "android/src/main/jniLibs/$ABI/libggml.so" ]; then
+            if [ ! -f "android/src/main/jniLibs/$ABI/libggml.so" ]; then
+              echo "❌ ERROR: libggml.so missing for $ABI"
+              VERIFICATION_FAILED=1
+            else
               echo "✅ libggml.so present"
             fi
-            
-            # Verify GGML GPU backends
-            if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
-              echo "✅ libggml-opencl.so present"
+            if [ ! -f "android/src/main/jniLibs/$ABI/libggml-base.so" ]; then
+              echo "❌ ERROR: libggml-base.so missing for $ABI"
+              VERIFICATION_FAILED=1
+            else
+              echo "✅ libggml-base.so present"
             fi
-            if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
-              echo "✅ libggml-vulkan.so present"
+            
+            # Verify CPU backend libraries
+            if [ "$ABI" = "arm64-v8a" ]; then
+              # For arm64-v8a, we should have CPU variants (GGML_CPU_ALL_VARIANTS enabled)
+              CPU_VARIANT_COUNT=$(ls -1 android/src/main/jniLibs/$ABI/libggml-cpu-android_armv8*.so 2>/dev/null | wc -l)
+              if [ "$CPU_VARIANT_COUNT" -gt 0 ]; then
+                echo "✅ Found $CPU_VARIANT_COUNT CPU variant libraries for $ABI:"
+                ls -1 android/src/main/jniLibs/$ABI/libggml-cpu-android_armv8*.so | sed 's/.*\//  - /'
+              else
+                # Fallback: check for single libggml-cpu.so
+                if [ -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
+                  echo "⚠️  Only single libggml-cpu.so found (CPU variants not built - may indicate build issue)"
+                else
+                  echo "❌ ERROR: No CPU backend libraries found for $ABI"
+                  VERIFICATION_FAILED=1
+                fi
+              fi
+            else
+              # For other ABIs, single libggml-cpu.so is expected
+              if [ -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
+                echo "✅ libggml-cpu.so present"
+              else
+                echo "❌ ERROR: libggml-cpu.so missing for $ABI"
+                VERIFICATION_FAILED=1
+              fi
+            fi
+            
+            # Verify GGML GPU backends (only for 64-bit ABIs)
+            if [ "$ABI" = "arm64-v8a" ] || [ "$ABI" = "x86_64" ]; then
+              if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
+                echo "✅ libggml-opencl.so present"
+              else
+                echo "⚠️  libggml-opencl.so not found (optional - GPU backend)"
+              fi
+              if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
+                echo "✅ libggml-vulkan.so present"
+              else
+                echo "⚠️  libggml-vulkan.so not found (optional - GPU backend)"
+              fi
             fi
             
             # Verify Hexagon backend (arm64-v8a only)
@@ -387,7 +432,7 @@ jobs:
               fi
             fi
             
-            # Verify we're NOT shipping libOpenCL.so (system library, not ours)
+            # Verify we're NOT shipping system libraries (should not be in our package)
             if [ -f "android/src/main/jniLibs/$ABI/libOpenCL.so" ]; then
               echo "❌ ERROR: libOpenCL.so found - should NOT be shipped!"
               echo "  libOpenCL.so is a system library, not our build output"
@@ -395,9 +440,20 @@ jobs:
             fi
             if [ -f "android/src/main/jniLibs/$ABI/libvulkan.so" ]; then
               echo "❌ ERROR: libvulkan.so found - should NOT be shipped!"
+              echo "  libvulkan.so is a system library, not our build output"
               exit 1
             fi
+            
+            echo ""
           done
+          
+          # Fail if any required libraries are missing
+          if [ "$VERIFICATION_FAILED" -eq 1 ]; then
+            echo "❌ Verification failed - some required libraries are missing!"
+            exit 1
+          else
+            echo "✅ All required libraries verified successfully!"
+          fi
       
       - name: Upload Android Native Libs
         uses: actions/upload-artifact@v4
@@ -735,13 +791,49 @@ jobs:
             echo "⚠️ Warning: 'scripts' directory is included in package.json 'files' field but should be excluded from the published package"
           fi
           
-          # Verify native libraries exist
+          # Verify native libraries exist and are complete
           if [ ! -d "android/src/main/jniLibs" ] || [ ! "$(ls -A android/src/main/jniLibs 2>/dev/null)" ]; then
             echo "❌ Android native libraries missing!"
             exit 1
           else
             echo "✅ Android native libraries present"
             ls -la android/src/main/jniLibs
+            
+            # Verify required libraries for each ABI
+            for ABI in arm64-v8a x86_64 armeabi-v7a x86; do
+              if [ ! -d "android/src/main/jniLibs/$ABI" ]; then
+                echo "❌ ERROR: Missing ABI directory: $ABI"
+                exit 1
+              fi
+              
+              # Check required libraries
+              REQUIRED_LIBS=("libllama.so" "libggml.so" "libggml-base.so")
+              for lib in "${REQUIRED_LIBS[@]}"; do
+                if [ ! -f "android/src/main/jniLibs/$ABI/$lib" ]; then
+                  echo "❌ ERROR: Missing required library $lib for $ABI"
+                  exit 1
+                fi
+              done
+              
+              # For arm64-v8a, verify CPU variants are present
+              if [ "$ABI" = "arm64-v8a" ]; then
+                CPU_VARIANT_COUNT=$(ls -1 android/src/main/jniLibs/$ABI/libggml-cpu-android_armv8*.so 2>/dev/null | wc -l)
+                if [ "$CPU_VARIANT_COUNT" -eq 0 ]; then
+                  echo "❌ ERROR: No CPU variant libraries found for arm64-v8a"
+                  echo "  Expected: libggml-cpu-android_armv8*.so"
+                  exit 1
+                else
+                  echo "✅ Found $CPU_VARIANT_COUNT CPU variant libraries for arm64-v8a"
+                fi
+              else
+                # For other ABIs, check for single libggml-cpu.so
+                if [ ! -f "android/src/main/jniLibs/$ABI/libggml-cpu.so" ]; then
+                  echo "❌ ERROR: Missing libggml-cpu.so for $ABI"
+                  exit 1
+                fi
+              fi
+            done
+            echo "✅ All required Android libraries verified"
           fi
           
           if [ ! -d "ios/libs/llama.xcframework" ] || [ ! "$(ls -A ios/libs/llama.xcframework 2>/dev/null)" ]; then

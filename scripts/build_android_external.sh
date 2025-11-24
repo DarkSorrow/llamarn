@@ -573,12 +573,14 @@ build_for_abi() {
     ARCH="i686"
   fi
   
-  # Enable CPU variant building for ARM64 builds (unless Hexagon will override)
+  # Enable CPU variant building for ARM64 builds
   # This builds multiple CPU backend variants (baseline + optimized) and runtime loader picks the best one
   # - Emulators get baseline variant (no crashes)
   # - Real devices get optimized variants (best performance)
   # For Android, this builds: android_armv8.0_1, android_armv8.2_1, android_armv8.2_2, android_armv8.6_1
-  if [ "$ENABLE_CPU_VARIANTS" = true ] && ! ([ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]); then
+  # NOTE: CPU variants are independent of Hexagon - both can be built together
+  # Hexagon is for NPU acceleration, CPU variants are for different CPU instruction sets
+  if [ "$ENABLE_CPU_VARIANTS" = true ]; then
     # Enable building all CPU variants - runtime will select the best one for each device
     ARCH_FLAGS+=(-DGGML_CPU_ALL_VARIANTS=ON)
     echo -e "${YELLOW}Building all CPU variants for optimal device-specific performance${NC}"
@@ -763,7 +765,8 @@ build_for_abi() {
   }
   
   # Verify CPU variant libraries were built (if GGML_CPU_ALL_VARIANTS is enabled)
-  if [ "$ENABLE_CPU_VARIANTS" = true ] && ! ([ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]); then
+  # CPU variants are independent of Hexagon - verify them regardless of Hexagon status
+  if [ "$ENABLE_CPU_VARIANTS" = true ]; then
     echo -e "${YELLOW}Verifying CPU variant libraries were built...${NC}"
     local VARIANT_COUNT=0
     for variant_lib in "$BUILD_DIR/lib"/libggml-cpu-android_armv8*.so "$BUILD_DIR/bin"/libggml-cpu-android_armv8*.so; do
