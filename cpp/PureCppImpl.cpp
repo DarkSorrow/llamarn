@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include <cstdlib>  // for setenv
 #include "SystemUtils.h"
 // Include our custom headers - this was missing!
 #include "rn-llama.h"
@@ -123,6 +124,29 @@ static void load_android_backends() {
   
   // Load Hexagon backend first (Snapdragon DSP) - more performant than Vulkan on Snapdragon devices
   if (!ggml_backend_reg_by_name("HTP")) {
+    // FastRPC (used by Hexagon) requires ADSP_LIBRARY_PATH to find HTP libraries
+    // Get the app's native library directory by using dladdr on a known symbol
+    // All libraries from jniLibs are extracted to the same directory by Android
+    void* test_handle = dlopen("libggml.so", RTLD_LAZY | RTLD_LOCAL);
+    if (test_handle) {
+      // Get a function pointer from the library to use with dladdr
+      void* symbol = dlsym(test_handle, "ggml_init");
+      if (symbol) {
+        Dl_info info;
+        if (dladdr(symbol, &info) && info.dli_fname) {
+          // Extract directory from library path (e.g., "/data/app/.../lib/arm64/libggml.so" -> "/data/app/.../lib/arm64")
+          std::string lib_path = info.dli_fname;
+          size_t last_slash = lib_path.find_last_of('/');
+          if (last_slash != std::string::npos) {
+            std::string lib_dir = lib_path.substr(0, last_slash);
+            // Set ADSP_LIBRARY_PATH so FastRPC can find HTP libraries in the same directory
+            setenv("ADSP_LIBRARY_PATH", lib_dir.c_str(), 0); // 0 = don't overwrite if already set
+          }
+        }
+      }
+      dlclose(test_handle);
+    }
+    
     void* hexagon_handle = dlopen("libggml-hexagon.so", RTLD_LAZY | RTLD_LOCAL);
     if (hexagon_handle) {
       backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(hexagon_handle, "ggml_backend_init");
