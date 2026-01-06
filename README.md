@@ -366,9 +366,20 @@ The module accepts different path formats depending on the platform:
 * [Example App](example/) - Working example with common use cases
 * [Contributing Guide](CONTRIBUTING.md) - How to help improve the library
 
-## About
+## About Novastera
+
+**LlamaRN** is part of the **Novastera** open-source ecosystem, a modern CRM/ERP platform designed for the next generation of business applications. Novastera combines cutting-edge AI capabilities with comprehensive business management tools, enabling organizations to leverage on-device AI for enhanced productivity and data privacy.
+
+### Key Features of Novastera Platform
+
+- **Modern CRM/ERP System**: Comprehensive business management with AI-powered insights
+- **On-Device AI**: Privacy-first approach with local LLM inference - no data leaves your device
+- **Mobile-First**: Native iOS and Android applications built with React Native
+- **Open Source**: Part of Novastera's commitment to open-source innovation
 
 This library is currently being used in [Novastera's](https://novastera.com) mobile application, demonstrating its capabilities in production environments. We're committed to enabling on-device LLM inference with no data leaving the user's device, helping developers build AI-powered applications that respect user privacy.
+
+Learn more about Novastera: [https://novastera.com/resources](https://novastera.com/resources)
 
 ## License
 
