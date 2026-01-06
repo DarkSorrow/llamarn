@@ -535,6 +535,7 @@ build_for_abi() {
       -DANDROID_ABI="arm64-v8a"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
+      -DLLAMA_BUILD_TOOLS=OFF
     )
     # Enable CPU variants for optimal device-specific performance
     # Hexagon will override this later if enabled
@@ -545,6 +546,7 @@ build_for_abi() {
       -DANDROID_ABI="x86_64"
       -DCMAKE_INSTALL_PREFIX="$PREBUILT_BUILD_DIR/$ABI/install"
       -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PREBUILT_BUILD_DIR/$ABI/lib"
+      -DLLAMA_BUILD_TOOLS=OFF
     )
     ARCH="x86_64"
   elif [ "$ABI" = "armeabi-v7a" ]; then

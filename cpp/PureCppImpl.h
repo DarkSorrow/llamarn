@@ -52,6 +52,9 @@ private:
     // The actual definition of rn_llama_context should be in "rn-llama.h"
     std::unique_ptr<struct rn_llama_context> rn_ctx_;
 
+    // Keep the common_init_result alive to maintain ownership of model and context
+    common_init_result_ptr init_result_;
+
     // Mutex for thread safety when accessing rn_ctx_ or other shared resources
     std::mutex mutex_;
     

@@ -576,13 +576,15 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           }
 
           // Initialize using common_init_from_params
-          common_init_result result;
+          // Note: common_init_from_params returns a unique_ptr, and we need to keep it alive
+          // to maintain ownership of the model and context
+          common_init_result_ptr result;
           
           try {
             result = common_init_from_params(params);
             
             // Check if initialization was successful
-            if (!result.model || !result.context) {
+            if (!result || !result->model() || !result->context()) {
               throw std::runtime_error("Failed to initialize model and context");
             }
           } catch (const std::exception& e) {
@@ -593,7 +595,7 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
               try {
                 result = common_init_from_params(params);
                 
-                if (!result.model || !result.context) {
+                if (!result || !result->model() || !result->context()) {
                   throw std::runtime_error("Failed to initialize model and context even with CPU-only mode");
                 }
               } catch (const std::exception& cpu_e) {
@@ -605,10 +607,20 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
             }
           }
 
+          // Clean up any existing model before loading a new one
+          // This ensures proper destruction order: clear rn_ctx_ first, then init_result_
+          // The move assignment will automatically destroy the old init_result_ if it exists
+          selfPtr->rn_ctx_.reset();
+          selfPtr->init_result_.reset();
+
           // Create and initialize rn_llama_context
           selfPtr->rn_ctx_ = std::make_unique<facebook::react::rn_llama_context>();
-          selfPtr->rn_ctx_->model = result.model.release();
-          selfPtr->rn_ctx_->ctx = result.context.release();
+          // Store the result to keep model and context alive
+          // This will properly destroy any previous init_result_ before assigning the new one
+          selfPtr->init_result_ = std::move(result);
+          // Get raw pointers from the result (result still owns them)
+          selfPtr->rn_ctx_->model = selfPtr->init_result_->model();
+          selfPtr->rn_ctx_->ctx = selfPtr->init_result_->context();
           selfPtr->rn_ctx_->model_loaded = true;
           selfPtr->rn_ctx_->vocab = llama_model_get_vocab(selfPtr->rn_ctx_->model);
 

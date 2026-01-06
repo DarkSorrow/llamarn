@@ -69,10 +69,15 @@ void LlamaCppModel::release() {
   }
 
   // Clean up our resources with proper mutex protection
+  // NOTE: We do NOT manually free the context or model here because they are owned
+  // by common_init_result_ptr in PureCppImpl. Manual freeing would cause a double-free
+  // crash when init_result_ is destroyed. Instead, we just clear the cache and reset
+  // pointers - the actual freeing will be handled by init_result_'s destructor.
   if (rn_ctx_) {
     std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
 
-    // Clear KV cache before freeing context (following server.cpp pattern)
+    // Clear KV cache before context is freed (following server.cpp pattern)
+    // This is safe even if context will be freed later by init_result_
     if (rn_ctx_->ctx) {
       try {
         llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
@@ -80,15 +85,12 @@ void LlamaCppModel::release() {
         // Ignore errors during cache clearing
       }
       
-      llama_free(rn_ctx_->ctx);
+      // DO NOT call llama_free() here - init_result_ owns the context
       rn_ctx_->ctx = nullptr;
     }
 
-    // Free model after context (following server.cpp cleanup order)
-    if (rn_ctx_->model) {
-      llama_model_free(rn_ctx_->model);
-      rn_ctx_->model = nullptr;
-    }
+    // DO NOT call llama_model_free() here - init_result_ owns the model
+    rn_ctx_->model = nullptr;
 
     // Clean up additional resources
     rn_ctx_->vocab = nullptr; // This is owned by the model, so just null it
@@ -925,55 +927,69 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     // Enable embedding mode
     llama_set_embeddings(rn_ctx_->ctx, true);
 
-    // Create and populate batch using common_batch functions (following server.cpp pattern)
+    // Create and populate batch using common_batch functions (following embedding.cpp pattern)
     llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
     
     common_batch_clear(batch);
+    const llama_seq_id seq_id = 0;
+    // For embeddings, we need logits for the token(s) that will produce embeddings
+    // For pooling models: typically only the last token needs logits (sequence-level embedding)
+    // For non-pooling models: we can get token-level embeddings, but for OpenAI compatibility
+    // we typically want a single embedding, so we'll use the last token
     for (int i = 0; i < (int)tokens.size(); i++) {
-      // For embeddings, we typically need logits for the last token (for pooling)
+      // Set logits for the last token (for both pooling and non-pooling, we want the final embedding)
       bool needs_logits = (i == (int)tokens.size() - 1);
-      common_batch_add(batch, tokens[i], i, {0}, needs_logits);
+      common_batch_add(batch, tokens[i], i, {seq_id}, needs_logits);
     }
 
     if (llama_decode(rn_ctx_->ctx, batch) != 0) {
       llama_batch_free(batch);
       throw std::runtime_error("Failed to decode tokens for embedding");
     }
-    
-    llama_batch_free(batch);
 
-    // Get embedding size from the model
-    const int n_embd = llama_model_n_embd(rn_ctx_->model);
-    if (n_embd <= 0) {
-      throw std::runtime_error("Invalid embedding dimension");
+    // Get embedding output size from the model (may differ from input size)
+    const int n_embd_out = llama_model_n_embd_out(rn_ctx_->model);
+    if (n_embd_out <= 0) {
+      llama_batch_free(batch);
+      throw std::runtime_error("Invalid embedding output dimension");
     }
 
-    // Note: Pooling is handled automatically by llama_get_embeddings()
-    // The function returns the appropriate embedding based on the model's configuration
+    // Get the pooling type to determine which API to use
+    const enum llama_pooling_type pooling_type = llama_pooling_type(rn_ctx_->ctx);
+    
+    // Get the embeddings based on pooling type (following embedding.cpp pattern)
+    std::vector<float> embedding_vec(n_embd_out);
+    const float* embd = nullptr;
 
-    // Get the embeddings
-    std::vector<float> embedding_vec(n_embd);
-    const float* embd = llama_get_embeddings(rn_ctx_->ctx);
+    if (pooling_type == LLAMA_POOLING_TYPE_NONE) {
+      // For non-pooling models, get the token-level embedding for the last token
+      // Since we only set logits for the last token, the batch index is batch.n_tokens - 1
+      // The index in llama_get_embeddings_ith refers to the batch position
+      int last_token_batch_idx = batch.n_tokens - 1;
+      if (last_token_batch_idx < 0 || !batch.logits[last_token_batch_idx]) {
+        llama_batch_free(batch);
+        throw std::runtime_error("No tokens with logits found in batch");
+      }
+      embd = llama_get_embeddings_ith(rn_ctx_->ctx, last_token_batch_idx);
+    } else {
+      // For pooling models, get the sequence-level embedding
+      embd = llama_get_embeddings_seq(rn_ctx_->ctx, seq_id);
+    }
+
+    llama_batch_free(batch);
 
     if (!embd) {
-      throw std::runtime_error("Failed to extract embeddings");
+      throw std::runtime_error("Failed to extract embeddings - model may not support embeddings or pooling configuration is invalid");
     }
 
     // Copy embeddings to our vector
-    std::copy(embd, embd + n_embd, embedding_vec.begin());
+    std::copy(embd, embd + n_embd_out, embedding_vec.begin());
 
-    // Normalize embedding
-    float norm = 0.0f;
-    for (int i = 0; i < n_embd; ++i) {
-      norm += embedding_vec[i] * embedding_vec[i];
-    }
-    norm = std::sqrt(norm);
-
-    if (norm > 0) {
-      for (int i = 0; i < n_embd; ++i) {
-        embedding_vec[i] /= norm;
-      }
-    }
+    // Normalize embedding using common_embd_normalize (Euclidean norm, type 2)
+    // This matches the behavior in embedding.cpp example (always normalizes)
+    std::vector<float> normalized_vec(n_embd_out);
+    common_embd_normalize(embedding_vec.data(), normalized_vec.data(), n_embd_out, 2);
+    embedding_vec = std::move(normalized_vec);
 
     // Create OpenAI-compatible response
     jsi::Object response(rt);
@@ -992,8 +1008,8 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
       embeddingObj.setProperty(rt, "encoding_format", jsi::String::createFromUtf8(rt, "base64"));
     } else {
       // Create embedding array of floats
-      jsi::Array embeddingArray(rt, n_embd);
-      for (int i = 0; i < n_embd; i++) {
+      jsi::Array embeddingArray(rt, n_embd_out);
+      for (int i = 0; i < n_embd_out; i++) {
         embeddingArray.setValueAtIndex(rt, i, jsi::Value(embedding_vec[i]));
       }
       embeddingObj.setProperty(rt, "embedding", embeddingArray);

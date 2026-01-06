@@ -238,6 +238,7 @@ build_for_abi() {
     -DLLAMA_BUILD_TESTS=OFF
     -DLLAMA_BUILD_EXAMPLES=OFF
     -DLLAMA_BUILD_SERVER=OFF
+    -DLLAMA_BUILD_TOOLS=OFF
     -DLLAMA_CURL=OFF
     -DGGML_BACKEND_DL=ON          # Enable dynamic loading - backends as separate .so files
     -DGGML_CPU=OFF                # Don't build CPU backend here (built in main libs)

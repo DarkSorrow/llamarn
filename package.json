@@ -1,6 +1,6 @@
 {
   "name": "@novastera-oss/llamarn",
-  "version": "0.5.1",
+  "version": "0.6.10",
   "description": "React Native library for on-device LLM inference using llama.cpp. Part of Novastera CRM/ERP platform ecosystem.",
   "source": "./src/index.tsx",
   "main": "./lib/module/index.js",
@@ -48,7 +48,7 @@
     "!cpp/llama.cpp/benches"
   ],
   "scripts": {
-    "example": "yarn workspace pure-cpp-turbo-module-library-example",
+    "example": "npm --workspace=example",
     "test": "jest",
     "typecheck": "tsc",
     "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",

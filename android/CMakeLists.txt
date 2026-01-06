@@ -66,6 +66,9 @@ add_library(
     ${CPP_DIR}/llama.cpp/common/chat.cpp
     ${CPP_DIR}/llama.cpp/common/chat-parser.cpp
     ${CPP_DIR}/llama.cpp/common/chat-parser-xml-toolcall.cpp
+    ${CPP_DIR}/llama.cpp/common/chat-peg-parser.cpp
+    ${CPP_DIR}/llama.cpp/common/peg-parser.cpp
+    ${CPP_DIR}/llama.cpp/common/unicode.cpp
     ${CPP_DIR}/llama.cpp/common/regex-partial.cpp
     ${CPP_DIR}/llama.cpp/common/arg.cpp
     ${CPP_DIR}/llama.cpp/common/console.cpp

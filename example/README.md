@@ -55,9 +55,6 @@ To start the Metro dev server, run the following command from the root of your R
 ```sh
 # Using npm
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
 ## Step 2: Build and run your app
@@ -71,9 +68,6 @@ The build process automatically copies appropriate models to Android assets befo
 ```sh
 # Using npm
 npm run android
-
-# OR using Yarn
-yarn android
 ```
 
 ### iOS
@@ -99,9 +93,6 @@ The build process automatically copies models to iOS bundle before building:
 ```sh
 # Using npm
 npm run ios
-
-# OR using Yarn
-yarn ios
 ```
 
 **Note for iOS**: After copying models, you may need to add them to your Xcode project's "Copy Bundle Resources" build phase manually if they don't appear automatically.
