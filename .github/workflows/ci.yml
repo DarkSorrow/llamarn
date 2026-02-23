@@ -670,6 +670,10 @@ jobs:
     if: (github.event_name == 'release') || (github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (startsWith(github.ref, 'refs/tags/v') && (contains(github.ref, '.') || contains(github.ref, '-')))
     needs: [build-success]
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write   # Required for OIDC trusted publishing
+      contents: read
     steps:
       - name: Download Repository
         uses: actions/download-artifact@v4
@@ -697,7 +701,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
       
       - name: Install dependencies
         run: |
@@ -845,7 +848,6 @@ jobs:
           fi
       
       - name: Publish to NPM
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_SECRET }}
+        run: |
+          npm publish --provenance --access public
 
