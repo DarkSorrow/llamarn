@@ -220,157 +220,21 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.stream = obj.getProperty(rt, "stream").asBool();
   }
 
-  // Extract and parse messages if present (for chat completion)
+  // Convert messages and tools directly using jsiValueToJson — no manual field extraction.
+  // This preserves all fields the model template needs (role, content, tool_calls, tool_call_id,
+  // reasoning_content, name, etc.) exactly as the JS layer provides them, in the OpenAI-compatible
+  // format that common_chat_msgs_parse_oaicompat and common_chat_tools_parse_oaicompat expect.
   if (obj.hasProperty(rt, "messages") && obj.getProperty(rt, "messages").isObject()) {
     auto messagesVal = obj.getProperty(rt, "messages").getObject(rt);
     if (messagesVal.isArray(rt)) {
-      json messagesJson = json::array();
-      auto messagesArr = messagesVal.getArray(rt);
-
-      // Convert JSI messages to JSON format
-      for (size_t i = 0; i < messagesArr.size(rt); i++) {
-        auto msgVal = messagesArr.getValueAtIndex(rt, i);
-        if (msgVal.isObject()) {
-          auto msgObj = msgVal.getObject(rt);
-
-          json msgJson = json::object();
-          if (msgObj.hasProperty(rt, "role")) {
-            msgJson["role"] = msgObj.getProperty(rt, "role").asString(rt).utf8(rt);
-          }
-
-          if (msgObj.hasProperty(rt, "content")) {
-            auto contentVal = msgObj.getProperty(rt, "content");
-            if (contentVal.isString()) {
-              msgJson["content"] = contentVal.asString(rt).utf8(rt);
-            } else if (contentVal.isNull()) {
-              msgJson["content"] = nullptr;
-            }
-          }
-
-          if (msgObj.hasProperty(rt, "name")) {
-            msgJson["name"] = msgObj.getProperty(rt, "name").asString(rt).utf8(rt);
-          }
-
-          // Handle tool_calls if present
-          if (msgObj.hasProperty(rt, "tool_calls") && msgObj.getProperty(rt, "tool_calls").isObject()) {
-            auto toolCallsVal = msgObj.getProperty(rt, "tool_calls").getObject(rt);
-            if (toolCallsVal.isArray(rt)) {
-              auto toolCallsArr = toolCallsVal.getArray(rt);
-              json toolCallsJson = json::array();
-
-              for (size_t j = 0; j < toolCallsArr.size(rt); j++) {
-                auto tcVal = toolCallsArr.getValueAtIndex(rt, j);
-                if (tcVal.isObject()) {
-                  auto tcObj = tcVal.getObject(rt);
-                  json tcJson = json::object();
-
-                  if (tcObj.hasProperty(rt, "id")) {
-                    tcJson["id"] = tcObj.getProperty(rt, "id").asString(rt).utf8(rt);
-                  }
-
-                  if (tcObj.hasProperty(rt, "type")) {
-                    tcJson["type"] = tcObj.getProperty(rt, "type").asString(rt).utf8(rt);
-                  }
-
-                  if (tcObj.hasProperty(rt, "function") && tcObj.getProperty(rt, "function").isObject()) {
-                    auto fnObj = tcObj.getProperty(rt, "function").getObject(rt);
-                    json fnJson = json::object();
-
-                    if (fnObj.hasProperty(rt, "name")) {
-                      fnJson["name"] = fnObj.getProperty(rt, "name").asString(rt).utf8(rt);
-                    }
-
-                    if (fnObj.hasProperty(rt, "parameters")) {
-                      // For parameters, parse it as a JSON object
-                      auto paramsVal = fnObj.getProperty(rt, "parameters");
-                      if (paramsVal.isObject()) {
-                        try {
-                          // Convert the JSI object directly to nlohmann::json using the new helper
-                          fnJson["parameters"] = jsiValueToJson(rt, paramsVal);
-                        } catch (const std::exception& e) {
-                          // Log error or handle as appropriate
-                          fprintf(stderr, "Failed to parse tool parameters: %s\n", e.what());
-                          fnJson["parameters"] = json::object(); // Fallback to empty object
-                        }
-                      }
-                    }
-
-                    tcJson["function"] = fnJson;
-                  }
-
-                  toolCallsJson.push_back(tcJson);
-                }
-              }
-
-              msgJson["tool_calls"] = toolCallsJson;
-            }
-          }
-
-          // Handle tool_call_id if present
-          if (msgObj.hasProperty(rt, "tool_call_id")) {
-            msgJson["tool_call_id"] = msgObj.getProperty(rt, "tool_call_id").asString(rt).utf8(rt);
-          }
-
-          messagesJson.push_back(msgJson);
-        }
-      }
-
-      options.messages = messagesJson;
+      options.messages = jsiValueToJson(rt, jsi::Value(rt, std::move(messagesVal)));
     }
   }
 
-  // Extract and parse tools if present
   if (obj.hasProperty(rt, "tools") && obj.getProperty(rt, "tools").isObject()) {
     auto toolsVal = obj.getProperty(rt, "tools").getObject(rt);
     if (toolsVal.isArray(rt)) {
-      auto toolsArr = toolsVal.getArray(rt);
-      json toolsJson = json::array();
-
-      for (size_t i = 0; i < toolsArr.size(rt); i++) {
-        auto toolVal = toolsArr.getValueAtIndex(rt, i);
-        if (toolVal.isObject()) {
-          auto toolObj = toolVal.getObject(rt);
-          json toolJson = json::object();
-
-          if (toolObj.hasProperty(rt, "type")) {
-            toolJson["type"] = toolObj.getProperty(rt, "type").asString(rt).utf8(rt);
-          }
-
-          if (toolObj.hasProperty(rt, "function") && toolObj.getProperty(rt, "function").isObject()) {
-            auto fnObj = toolObj.getProperty(rt, "function").getObject(rt);
-            json fnJson = json::object();
-
-            if (fnObj.hasProperty(rt, "name")) {
-              fnJson["name"] = fnObj.getProperty(rt, "name").asString(rt).utf8(rt);
-            }
-
-            if (fnObj.hasProperty(rt, "description")) {
-              fnJson["description"] = fnObj.getProperty(rt, "description").asString(rt).utf8(rt);
-            }
-
-            if (fnObj.hasProperty(rt, "parameters")) {
-              // For parameters, parse it as a JSON object
-              auto paramsVal = fnObj.getProperty(rt, "parameters");
-              if (paramsVal.isObject()) {
-                try {
-                  // Convert the JSI object directly to nlohmann::json using the new helper
-                  fnJson["parameters"] = jsiValueToJson(rt, paramsVal);
-                } catch (const std::exception& e) {
-                  // Log error or handle as appropriate
-                  fprintf(stderr, "Failed to parse tool parameters: %s\n", e.what());
-                  fnJson["parameters"] = json::object(); // Fallback to empty object
-                }
-              }
-            }
-
-            toolJson["function"] = fnJson;
-          }
-
-          toolsJson.push_back(toolJson);
-        }
-      }
-
-      options.tools = toolsJson;
+      options.tools = jsiValueToJson(rt, jsi::Value(rt, std::move(toolsVal)));
     }
   }
 

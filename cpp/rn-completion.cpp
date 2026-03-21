@@ -132,14 +132,27 @@ CompletionResult run_completion(
     }
 
     try {
+        // Clear the KV cache before each inference. The context is reused across calls;
+        // each call processes the full conversation history from position 0, so stale
+        // KV entries from the previous call must be evicted first.
+        llama_memory_clear(llama_get_memory(rn_ctx->ctx), false);
+
         // Initialize state with context values
         state.rn_ctx = rn_ctx;
         state.chat_format = rn_ctx->params.chat_format;
 
         const auto& params = rn_ctx->params;
-        
+
         // Create a copy of sampling parameters and apply grammar if provided
         common_params_sampling sampling_params = params.sampling;
+
+        // Merge preserved token IDs from the chat template autoparser into sampling params.
+        // These are special single-token strings (e.g. "<think>", "<|eot_id|>") that the
+        // tokenizer must not split — required for lazy grammar triggers to work correctly.
+        for (auto tok : options.preserved_tokens) {
+            sampling_params.preserved_tokens.insert(tok);
+        }
+
         if (!options.grammar.empty()) {
             sampling_params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, options.grammar);
             // Force grammar_lazy to false whenever tools are present to ensure strict JSON format enforcement
@@ -372,19 +385,52 @@ CompletionResult run_chat_completion(
             }
         }
 
-        // Apply template. If the autoparser fails (e.g., jinja runtime gap for this model's template),
-        // fall back to force_pure_content which bypasses the autoparser. Tools are still rendered in
-        // the prompt by the Jinja template itself; only grammar-constrained output is lost.
+        // Apply the jinja chat template.
+        //
+        // common_chat_templates_apply_jinja renders the template twice against real messages
+        // (add_generation_prompt=false then true) to extract the generation-prompt suffix before
+        // invoking either the specialized handler or the auto-parser.  If the model's embedded
+        // jinja template references a field that is absent or a wrong type (e.g. calls .lstrip()
+        // on a non-string), the runtime throws std::runtime_error.
+        //
+        // Level 1: full jinja path — autoparser generates a grammar/parser for structured output.
+        // Level 2 (force_pure_content): skips the autoparser; jinja still renders the prompt but
+        //          no grammar constraint is produced.  Tool calls still appear in the prompt via
+        //          the template itself; only grammar-constrained sampling is lost.
+        // Level 3 (use_jinja=false): the C++ llama_chat_apply_template path — zero jinja.
+        //          Last resort to prevent a hard crash when jinja itself cannot execute the
+        //          template.  Produces a usable prompt; tool-call grammar/parser is not available.
         common_chat_params chat_params;
         try {
             chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-        } catch (const std::invalid_argument & e) {
-            template_inputs.force_pure_content = true;
-            chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+        } catch (const std::exception & e) {
+            try {
+                template_inputs.force_pure_content = true;
+                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+            } catch (const std::exception &) {
+                template_inputs.use_jinja = false;
+                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+            }
         }
 
         CompletionOptions cmpl_options = options;
         cmpl_options.prompt = chat_params.prompt;
+
+        // Add extra stop strings emitted by the chat format (e.g. EOS variants, special separators).
+        // Mirrors server-common.cpp: llama_params["stop"].push_back(stop)
+        for (const auto & stop : chat_params.additional_stops) {
+            cmpl_options.stop.push_back(stop);
+        }
+
+        // Tokenize preserved_tokens strings from the chat template and insert single-token IDs
+        // into sampling params so the tokenizer never splits them mid-sequence.
+        // Mirrors server-task.cpp: common_tokenize → insert if size() == 1.
+        for (const auto & pt : chat_params.preserved_tokens) {
+            auto ids = common_tokenize(rn_ctx->vocab, pt, false, true);
+            if (ids.size() == 1) {
+                cmpl_options.preserved_tokens.insert(ids[0]);
+            }
+        }
 
         if (!chat_params.grammar.empty()) {
             cmpl_options.grammar = chat_params.grammar;
@@ -412,9 +458,17 @@ CompletionResult run_chat_completion(
             // Only parse if we have tools available and the response isn't empty
             if (!template_inputs.tools.empty() && !result.content.empty()) {
                 try {
-                    // Construct parser params from the applied chat params, then override reasoning format
+                    // Construct parser params from the applied chat params, then override reasoning format.
+                    // The common_chat_parser_params(chat_params) constructor only copies format and
+                    // generation_prompt — it does NOT copy the PEG arena.  Load it explicitly so that
+                    // common_chat_parse uses the autoparser's generated PEG grammar for tool-call
+                    // parsing instead of the fallback pure-content parser.
+                    // Mirrors server-task.cpp: params.chat_parser_params.parser.load(data["chat_parser"])
                     common_chat_parser_params parser_params(chat_params);
                     parser_params.reasoning_format = rn_ctx->params.reasoning_format;
+                    if (!chat_params.parser.empty()) {
+                        parser_params.parser.load(chat_params.parser);
+                    }
 
                     // Parse the generated content for tool calls
                     parsed_msg = common_chat_parse(result.content, false, parser_params);

@@ -16,6 +16,7 @@
 
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -70,6 +71,7 @@ struct CompletionOptions {
     json tools;         // tools for function calling
     std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
     std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar
+    std::set<llama_token> preserved_tokens; // single-token IDs that must not be split (from chat_params)
 
 };
 

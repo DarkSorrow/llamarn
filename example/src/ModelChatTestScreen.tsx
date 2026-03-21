@@ -10,6 +10,7 @@ import {
   Platform,
   TouchableOpacity,
   KeyboardAvoidingView,
+  InteractionManager,
 } from 'react-native';
 import { initLlama, loadLlamaModelInfo } from '@novastera-oss/llamarn';
 import type { LlamaModel, LlamaMessage, LlamaTool } from '@novastera-oss/llamarn';
@@ -24,9 +25,17 @@ const modelFileName = Platform.OS === 'android'
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  /** Thinking/reasoning text extracted from <think>…</think> blocks (thinking models only). */
+  reasoning_content?: string;
   name?: string;
   tool_call_id?: string;
   isToolCall?: boolean; // Simple flag to indicate if this is a tool call message
+  /** Present on assistant turns that only requested tools (needed for follow-up completion). */
+  tool_calls?: Array<{
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+  }>;
 }
 
 type ModelMode = 'conversation' | 'tools' | 'embeddings';
@@ -42,6 +51,87 @@ const extractResponseText = (response: any): string => {
     return response.text;
   }
   return response?.choices?.[0]?.message?.content || '';
+};
+
+/** Lets the native thread paint so batched chat updates appear step-by-step on device. */
+const yieldToUI = () =>
+  new Promise<void>(resolve => {
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(resolve, 50);
+    });
+  });
+
+/** Normalize tool calls from chat completion (top-level or OpenAI choices shape). */
+const extractToolCalls = (response: any): NonNullable<Message['tool_calls']> => {
+  if (!response) {
+    return [];
+  }
+  const top = response.tool_calls;
+  if (Array.isArray(top) && top.length > 0) {
+    return top;
+  }
+  const choice = response.choices?.[0];
+  const fromMessage = choice?.message?.tool_calls;
+  if (Array.isArray(fromMessage) && fromMessage.length > 0) {
+    return fromMessage;
+  }
+  if (choice?.finish_reason === 'tool_calls' && Array.isArray(fromMessage)) {
+    return fromMessage;
+  }
+  return [];
+};
+
+/**
+ * Strip <think>…</think> from the start of model output.
+ * Thinking models (Qwen3, DeepSeek-R1, etc.) embed reasoning in the content field.
+ * This must be separated before adding the message to history so the chat template
+ * receives properly structured messages ({content, reasoning_content}) on subsequent turns.
+ */
+const extractThinking = (content: string): { thinking: string | null; content: string } => {
+  const match = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
+  if (!match) return { thinking: null, content };
+  return { thinking: (match[1] ?? '').trim(), content: content.slice(match[0].length) };
+};
+
+/** Map our chat Message to the payload the native module expects (incl. tool_calls). */
+const messageToApiPayload = (msg: Message): Record<string, unknown> => {
+  const payload: Record<string, unknown> = {
+    role: msg.role,
+  };
+  const hasTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+  // Always use a string for `content`. The GGUF chat template (e.g. Qwen3) runs in minimal Jinja and
+  // does message.content.split(...).lstrip(...) — null/undefined is not a string there and crashes
+  // with "Callee is not a function ... (hint: 'lstrip')". OpenAI allows null for tool-only
+  // assistant turns; our native path needs "" instead.
+  payload.content = msg.content ?? '';
+  if (msg.reasoning_content) {
+    payload.reasoning_content = msg.reasoning_content;
+  }
+  if (msg.name) {
+    payload.name = msg.name;
+  }
+  if (msg.tool_call_id) {
+    payload.tool_call_id = msg.tool_call_id;
+  }
+  if (hasTools) {
+    payload.tool_calls = msg.tool_calls;
+  }
+  return payload;
+};
+
+const formatToolCallArgs = (tc: { function?: { name?: string; arguments?: unknown } }): string => {
+  const raw = tc.function?.arguments;
+  if (raw == null) {
+    return '{}';
+  }
+  if (typeof raw === 'string') {
+    return raw;
+  }
+  try {
+    return JSON.stringify(raw, null, 2);
+  } catch {
+    return String(raw);
+  }
 };
 
 const getPerformanceSummary = (response: any): string | null => {
@@ -434,12 +524,7 @@ Rules:
       const currentMessages = [...messages, userMessage];
       
       const completionOptions: any = {
-        messages: currentMessages.map(msg => ({
-          role: msg.role,
-          content: msg.content,
-          ...(msg.name && { name: msg.name }),
-          ...(msg.tool_call_id && { tool_call_id: msg.tool_call_id })
-        })) as LlamaMessage[],
+        messages: currentMessages.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
         // Qwen3 thinking mode settings (better for complex reasoning about tool usage)
         temperature: 0.6,
         top_p: 0.95,
@@ -504,111 +589,88 @@ Rules:
       );
       
       console.log('Response with tool calls:', response);
-      
-      // Extract the assistant's response content and optional performance summary
-      const responseContent = extractResponseText(response);
-      const perfSummary = getPerformanceSummary(response);
 
-      // Add the assistant response to the messages
+      const rawContent = extractResponseText(response);
+      const { thinking, content: cleanContent } = extractThinking(rawContent);
+      const perfSummary = getPerformanceSummary(response);
+      const toolCalls = extractToolCalls(response);
+      console.log('Tool calls extracted:', toolCalls?.length ?? 0, toolCalls);
+
       const assistantMessage: Message = {
         role: 'assistant',
-        content: `${responseContent || 'Sorry, I couldn\'t generate a response.'}${perfSummary || ''}`,
+        content: `${cleanContent || 'Sorry, I couldn\'t generate a response.'}${perfSummary || ''}`,
+        ...(thinking ? { reasoning_content: thinking } : {}),
       };
-       
-       // Check if there are tool calls to process
-       let toolCalls: any[] = [];
-       
-       // Try to find tool calls in different possible locations
-       if (response.tool_calls && Array.isArray(response.tool_calls) && response.tool_calls.length > 0) {
-         toolCalls = response.tool_calls;
-         console.log('Found tool_calls at top level:', toolCalls);
-       } else if (response.choices && response.choices.length > 0) {
-         const choice = response.choices[0];
-         
-         // Check if finish_reason indicates tool call
-         if (choice && choice.finish_reason === 'tool_calls') {
-           console.log('Finish reason indicates tool calls');
-           
-           // Try to find tool_calls in the message object
-           if (choice.message && Array.isArray(choice.message.tool_calls) && choice.message.tool_calls.length > 0) {
-             toolCalls = choice.message.tool_calls;
-             console.log('Found tool_calls in choices[0].message.tool_calls');
-           }
-         }
-       }
-      
-      console.log('Tool calls extracted:', toolCalls);
-      
-      // Process tool calls if found
-      if (toolCalls.length > 0) {
-        // Add assistant message with the tool call request
-        setMessages(prev => [...prev, assistantMessage]);
-        
-        // Add tool call messages to show what tools are being called
-        const toolCallMessages: Message[] = toolCalls.map((toolCall) => ({
-          role: 'assistant' as const,
-          content: `🔧 Calling tool: ${toolCall.function?.name}\nArguments: ${toolCall.function?.arguments || '{}'}`,
-          isToolCall: true
-        }));
-        
-        setMessages(prev => [...prev, ...toolCallMessages]);
-        
-        // Process all tool calls sequentially
-        const toolMessages: Message[] = [];
-        
-        for (const toolCall of toolCalls) {
-          const toolResponse = await handleToolCall(toolCall);
-          toolMessages.push(toolResponse);
-        }
-        
-        // Add all tool responses to messages
-        setMessages(prev => [...prev, ...toolMessages]);
-        
-        // Now get a follow-up response with the tool results included
-        const allMessages = [
-          ...currentMessages,
-          assistantMessage,
-          ...toolMessages
-        ];
-        
-        // Make a second completion call with the tool results
-        const finalResponse = await modelState.instance.completion({
-          ...completionOptions,
-          messages: allMessages.map(msg => ({
-            role: msg.role,
-            content: msg.content,
-            ...(msg.name && { name: msg.name }),
-            ...(msg.tool_call_id && { tool_call_id: msg.tool_call_id })
-          })) as LlamaMessage[],
-          // Disable tools for the final response to prevent infinite loops
-          tools: undefined,
-          tool_choice: undefined,
-          // Keep Qwen3 thinking mode settings for final response
-          temperature: 0.6,
-          top_p: 0.95,
-          top_k: 20,
-          min_p: 0,
-          presence_penalty: 1.5,
-          max_tokens: 4096,  // Smaller for final response
-        },
-        (data: { token: string }) => {
-          handleStreamingToken(data.token);
-        });
-        
-        console.log('Final response after tool call:', finalResponse);
-        
-        // Extract text and optional performance summary
-        const finalText = extractResponseText(finalResponse);
-        const finalPerfSummary = getPerformanceSummary(finalResponse);
 
-        // Add the final assistant response
+      // Tool path: show tool call → tool result(s) in chat, then final answer (with yields so UI updates on device).
+      if (toolCalls.length > 0) {
+        const toolCallsPayload = JSON.parse(JSON.stringify(toolCalls)) as NonNullable<Message['tool_calls']>;
+        const assistantToolTurn: Message = {
+          role: 'assistant',
+          content: rawContent.trim() ? `${cleanContent}${perfSummary || ''}` : '',
+          tool_calls: toolCallsPayload,
+          ...(thinking ? { reasoning_content: thinking } : {}),
+        };
+
+        if (rawContent.trim()) {
+          setMessages(prev => [...prev, assistantToolTurn]);
+          await yieldToUI();
+        }
+
+        for (const tc of toolCalls) {
+          const callLine: Message = {
+            role: 'assistant',
+            content: `🔧 Tool call: ${tc.function?.name ?? 'unknown'}\n${formatToolCallArgs(tc)}`,
+            isToolCall: true,
+          };
+          setMessages(prev => [...prev, callLine]);
+          await yieldToUI();
+        }
+
+        const toolResultMessages: Message[] = [];
+        for (const tc of toolCalls) {
+          const toolResponse = await handleToolCall(tc);
+          toolResultMessages.push(toolResponse);
+          setMessages(prev => [...prev, toolResponse]);
+          await yieldToUI();
+        }
+
+        const allMessages: Message[] = [
+          ...currentMessages,
+          assistantToolTurn,
+          ...toolResultMessages,
+        ];
+
+        const finalResponse = await modelState.instance.completion(
+          {
+            ...completionOptions,
+            messages: allMessages.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+            tools: undefined,
+            tool_choice: undefined,
+            temperature: 0.6,
+            top_p: 0.95,
+            top_k: 20,
+            min_p: 0,
+            presence_penalty: 1.5,
+            max_tokens: 4096,
+          },
+          (data: { token: string }) => {
+            handleStreamingToken(data.token);
+          },
+        );
+
+        console.log('Final response after tool call:', finalResponse);
+
+        const finalRaw = extractResponseText(finalResponse);
+        const { thinking: finalThinking, content: finalClean } = extractThinking(finalRaw);
+        const finalPerfSummary = getPerformanceSummary(finalResponse);
         const finalMessage: Message = {
           role: 'assistant',
-          content: `${finalText || 'I couldn\'t process the tool response.'}${finalPerfSummary || ''}`,
+          content: `${finalClean || 'I couldn\'t process the tool response.'}${finalPerfSummary || ''}`,
+          ...(finalThinking ? { reasoning_content: finalThinking } : {}),
         };
         setMessages(prev => [...prev, finalMessage]);
       } else {
-        // No tool calls - just add the assistant message
         setMessages(prev => [...prev, assistantMessage]);
       }
     } catch (err) {
