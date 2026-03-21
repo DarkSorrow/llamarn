@@ -21,6 +21,7 @@
     "RNLlamaCpp.podspec",
     "LICENSE",
     "README.md",
+    "BREAKING.md",
     "INTERFACE.md",
     "react-native.config.js",
     "!ios/build",

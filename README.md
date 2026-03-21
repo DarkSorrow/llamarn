@@ -23,6 +23,10 @@
 * **Flexible reasoning budget control** (unlimited, disabled, or limited)
 * **Multiple reasoning format support** (none, auto, deepseek, deepseek-legacy)
 
+## Breaking changes
+
+See **[BREAKING.md](./BREAKING.md)** for migration notes (thinking models / `reasoning_content`, KV cache behavior, GGUF + Jinja + tools pitfalls) and the **v0.7.0** release summary.
+
 ## What Needs Help
 
 We welcome contributions, especially in these areas:
@@ -244,39 +248,11 @@ console.log('Response:', result.text);
 // The response may include thinking tags like <think>...</think> depending on the model
 ```
 
-### Multi-turn conversations with thinking models
+### Thinking / tools / templates (breaking changes)
 
-**Breaking change**: The bridge returns the model's raw output in `content`, which for thinking models (Qwen3, DeepSeek-R1, etc.) includes `<think>…</think>` blocks. You **must** strip these and store the thinking separately in `reasoning_content` before feeding the message back as history. If you pass the raw content back unchanged, the chat template receives malformed input and the app crashes on the second turn.
+Multi-turn **thinking** conversations, **KV cache** behavior, **GGUF + Jinja + tools** pitfalls, and the **v0.7.0** migration summary are documented in **[BREAKING.md](./BREAKING.md)**.
 
 ```js
-/**
- * Strip <think>…</think> from the start of model output.
- * Returns clean content for history and the raw thinking text separately.
- */
-function extractThinking(content) {
-  const match = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
-  if (!match) return { thinking: null, content };
-  return { thinking: (match[1] ?? '').trim(), content: content.slice(match[0].length) };
-}
-
-// After receiving a completion:
-const raw = result.choices[0].message.content;
-const { thinking, content } = extractThinking(raw);
-
-// Add the assistant message to history with clean content:
-messages.push({
-  role: 'assistant',
-  content,                                          // response text only, no <think> tags
-  ...(thinking ? { reasoning_content: thinking } : {}), // thinking in its own field
-});
-
-// On the next turn, send the full messages array as-is.
-// The native bridge passes reasoning_content through to the chat template,
-// which renders it correctly (e.g. Qwen3's jinja wraps it back in <think> tags
-// during prompt construction without corrupting the conversation structure).
-const nextResult = await context.completion({ messages, temperature: 0.6 });
-```
-
 // Create a chat with tool calling
 const response = await context.completion({
   messages: [
