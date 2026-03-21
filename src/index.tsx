@@ -1,5 +1,5 @@
 // Import everything from NativeRNLlamaCpp.ts
-import RNLlamaCppInstance, {
+import {
   loadLlamaModelInfo,
   initLlama,
   // Import all necessary types as well
@@ -44,11 +44,6 @@ export type {
   LlamaContextMethods,
   Spec,
 };
-
-// Provide a way to access the raw native module's multiply method
-export function multiply(a: number, b: number): number {
-  return RNLlamaCppInstance.multiply(a, b);
-}
 
 // Optional: If direct access to the TurboModule instance is desired by library users.
 // export { RNLlamaCppInstance as RNLlamaCppModule };
