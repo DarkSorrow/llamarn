@@ -164,6 +164,18 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.presence_penalty = obj.getProperty(rt, "presence_penalty").asNumber();
   }
 
+  if (obj.hasProperty(rt, "repeat_penalty") && !obj.getProperty(rt, "repeat_penalty").isUndefined()) {
+    options.repeat_penalty = obj.getProperty(rt, "repeat_penalty").asNumber();
+  }
+
+  if (obj.hasProperty(rt, "repeat_last_n") && !obj.getProperty(rt, "repeat_last_n").isUndefined()) {
+    options.repeat_last_n = (int)obj.getProperty(rt, "repeat_last_n").asNumber();
+  }
+
+  if (obj.hasProperty(rt, "frequency_penalty") && !obj.getProperty(rt, "frequency_penalty").isUndefined()) {
+    options.frequency_penalty = obj.getProperty(rt, "frequency_penalty").asNumber();
+  }
+
   if (obj.hasProperty(rt, "n_predict") && !obj.getProperty(rt, "n_predict").isUndefined()) {
     options.n_predict = obj.getProperty(rt, "n_predict").asNumber();
   } else if (obj.hasProperty(rt, "max_tokens") && !obj.getProperty(rt, "max_tokens").isUndefined()) {
@@ -399,20 +411,26 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
 
   // Store original sampling parameters to restore later
-  float orig_temp = rn_ctx_->params.sampling.temp;
-  float orig_top_p = rn_ctx_->params.sampling.top_p;
-  float orig_top_k = rn_ctx_->params.sampling.top_k;
-  float orig_min_p = rn_ctx_->params.sampling.min_p;
-  float orig_presence_penalty = rn_ctx_->params.sampling.penalty_present;
-  int orig_n_predict = rn_ctx_->params.n_predict;
+  float orig_temp              = rn_ctx_->params.sampling.temp;
+  float orig_top_p             = rn_ctx_->params.sampling.top_p;
+  float orig_top_k             = rn_ctx_->params.sampling.top_k;
+  float orig_min_p             = rn_ctx_->params.sampling.min_p;
+  float orig_presence_penalty  = rn_ctx_->params.sampling.penalty_present;
+  float orig_repeat_penalty    = rn_ctx_->params.sampling.penalty_repeat;
+  int   orig_repeat_last_n     = rn_ctx_->params.sampling.penalty_last_n;
+  float orig_frequency_penalty = rn_ctx_->params.sampling.penalty_freq;
+  int orig_n_predict           = rn_ctx_->params.n_predict;
 
   // Set sampling parameters from options
-  rn_ctx_->params.sampling.temp = options.temperature;
-  rn_ctx_->params.sampling.top_p = options.top_p;
-  rn_ctx_->params.sampling.top_k = options.top_k;
-  rn_ctx_->params.sampling.min_p = options.min_p;
+  rn_ctx_->params.sampling.temp            = options.temperature;
+  rn_ctx_->params.sampling.top_p           = options.top_p;
+  rn_ctx_->params.sampling.top_k           = options.top_k;
+  rn_ctx_->params.sampling.min_p           = options.min_p;
   rn_ctx_->params.sampling.penalty_present = options.presence_penalty;
-  rn_ctx_->params.n_predict = options.n_predict;
+  rn_ctx_->params.sampling.penalty_repeat  = options.repeat_penalty;
+  rn_ctx_->params.sampling.penalty_last_n  = options.repeat_last_n;
+  rn_ctx_->params.sampling.penalty_freq    = options.frequency_penalty;
+  rn_ctx_->params.n_predict                = options.n_predict;
 
   // Check for a partial callback
   auto callback_adapter = [&partialCallback, runtime, this](const std::string& token, bool is_done) -> bool {
@@ -469,12 +487,15 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   }
 
   // Restore original parameters
-  rn_ctx_->params.sampling.temp = orig_temp;
-  rn_ctx_->params.sampling.top_p = orig_top_p;
-  rn_ctx_->params.sampling.top_k = orig_top_k;
-  rn_ctx_->params.sampling.min_p = orig_min_p;
+  rn_ctx_->params.sampling.temp            = orig_temp;
+  rn_ctx_->params.sampling.top_p           = orig_top_p;
+  rn_ctx_->params.sampling.top_k           = orig_top_k;
+  rn_ctx_->params.sampling.min_p           = orig_min_p;
   rn_ctx_->params.sampling.penalty_present = orig_presence_penalty;
-  rn_ctx_->params.n_predict = orig_n_predict;
+  rn_ctx_->params.sampling.penalty_repeat  = orig_repeat_penalty;
+  rn_ctx_->params.sampling.penalty_last_n  = orig_repeat_last_n;
+  rn_ctx_->params.sampling.penalty_freq    = orig_frequency_penalty;
+  rn_ctx_->params.n_predict                = orig_n_predict;
 
   return result;
 }
@@ -505,7 +526,15 @@ jsi::Object LlamaCppModel::completionResultToJsi(jsi::Runtime& rt, const Complet
 
   // Standard completion result
   jsResult.setProperty(rt, "content", jsi::String::createFromUtf8(rt, result.content));
-  jsResult.setProperty(rt, "timings", jsi::Object(rt));
+  {
+    jsi::Object timingsObj(rt);
+    timingsObj.setProperty(rt, "predicted_n",  jsi::Value(static_cast<double>(result.timings.predicted_n)));
+    timingsObj.setProperty(rt, "predicted_ms", jsi::Value(result.timings.predicted_ms));
+    timingsObj.setProperty(rt, "prompt_n",     jsi::Value(static_cast<double>(result.timings.prompt_n)));
+    timingsObj.setProperty(rt, "prompt_ms",    jsi::Value(result.timings.prompt_ms));
+    timingsObj.setProperty(rt, "total_ms",     jsi::Value(result.timings.total_ms));
+    jsResult.setProperty(rt, "timings", std::move(timingsObj));
+  }
   jsResult.setProperty(rt, "success", jsi::Value(result.success));
   jsResult.setProperty(rt, "promptTokens", jsi::Value(result.n_prompt_tokens));
   jsResult.setProperty(rt, "completionTokens", jsi::Value(result.n_predicted_tokens));

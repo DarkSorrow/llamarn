@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -7,7 +7,6 @@ import {
   ScrollView,
   ActivityIndicator,
   TextInput,
-  SafeAreaView,
   Platform,
   TouchableOpacity,
   KeyboardAvoidingView,
@@ -37,6 +36,38 @@ interface ModelState {
   info: any;
   mode: ModelMode;
 }
+
+const extractResponseText = (response: any): string => {
+  if (typeof response?.text === 'string' && response.text.trim().length > 0) {
+    return response.text;
+  }
+  return response?.choices?.[0]?.message?.content || '';
+};
+
+const getPerformanceSummary = (response: any): string | null => {
+  const perf = response?.performance || response?.timings || null;
+  if (!perf || typeof perf !== 'object') {
+    return null;
+  }
+
+  const tokensPerSecond =
+    perf.tokens_per_second ?? perf.tokensPerSecond ?? perf.predicted_per_second;
+  const promptTokens = perf.prompt_tokens ?? perf.promptTokens;
+  const completionTokens = perf.completion_tokens ?? perf.completionTokens;
+
+  const parts: string[] = [];
+  if (typeof tokensPerSecond === 'number') {
+    parts.push(`tok/s ${tokensPerSecond.toFixed(2)}`);
+  }
+  if (typeof promptTokens === 'number') {
+    parts.push(`prompt ${promptTokens}`);
+  }
+  if (typeof completionTokens === 'number') {
+    parts.push(`completion ${completionTokens}`);
+  }
+
+  return parts.length > 0 ? `\n\n[Performance] ${parts.join(' | ')}` : null;
+};
 
 // Model Loading Component
 const ModelLoader: React.FC<{
@@ -474,19 +505,15 @@ Rules:
       
       console.log('Response with tool calls:', response);
       
-             // Extract the assistant's response content
-       let responseContent = response.text; // Direct text property
-       
-       // If not available, try to get from choices array (standard OpenAI format)
-       if (!responseContent && response.choices && response.choices.length > 0) {
-         responseContent = response.choices[0]?.message?.content || '';
-       }
-       
-       // Add the assistant response to the messages
-       const assistantMessage: Message = { 
-         role: 'assistant', 
-         content: responseContent || 'Sorry, I couldn\'t generate a response.' 
-       };
+      // Extract the assistant's response content and optional performance summary
+      const responseContent = extractResponseText(response);
+      const perfSummary = getPerformanceSummary(response);
+
+      // Add the assistant response to the messages
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: `${responseContent || 'Sorry, I couldn\'t generate a response.'}${perfSummary || ''}`,
+      };
        
        // Check if there are tool calls to process
        let toolCalls: any[] = [];
@@ -518,7 +545,7 @@ Rules:
         setMessages(prev => [...prev, assistantMessage]);
         
         // Add tool call messages to show what tools are being called
-        const toolCallMessages: Message[] = toolCalls.map((toolCall, index) => ({
+        const toolCallMessages: Message[] = toolCalls.map((toolCall) => ({
           role: 'assistant' as const,
           content: `🔧 Calling tool: ${toolCall.function?.name}\nArguments: ${toolCall.function?.arguments || '{}'}`,
           isToolCall: true
@@ -570,17 +597,15 @@ Rules:
         
         console.log('Final response after tool call:', finalResponse);
         
-                 // Extract text from either text property or choices array
-         let finalText = finalResponse.text;
-         if (!finalText && finalResponse.choices && finalResponse.choices.length > 0) {
-           finalText = finalResponse.choices[0]?.message?.content || '';
-         }
-         
-         // Add the final assistant response
-         const finalMessage: Message = { 
-           role: 'assistant', 
-           content: finalText || 'I couldn\'t process the tool response.'
-         };
+        // Extract text and optional performance summary
+        const finalText = extractResponseText(finalResponse);
+        const finalPerfSummary = getPerformanceSummary(finalResponse);
+
+        // Add the final assistant response
+        const finalMessage: Message = {
+          role: 'assistant',
+          content: `${finalText || 'I couldn\'t process the tool response.'}${finalPerfSummary || ''}`,
+        };
         setMessages(prev => [...prev, finalMessage]);
       } else {
         // No tool calls - just add the assistant message
@@ -916,23 +941,15 @@ Rules:
     );
   };
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        {renderInterface()}
-      </View>
-    </SafeAreaView>
-  );
+  return <View style={styles.container}>{renderInterface()}</View>;
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#f8f9fa',
-  },
   container: {
     flex: 1,
     padding: 16,
+    paddingTop: 60,
+    paddingBottom: 60,
     backgroundColor: '#f8f9fa',
   },
   title: {

@@ -41,9 +41,6 @@ public:
     jsi::Value initLlama(jsi::Runtime &rt, jsi::Object params); // Matches LlamaModelParams
     jsi::Value loadLlamaModelInfo(jsi::Runtime &rt, jsi::String modelPath);
 
-    // Existing multiply method for testing - will be removed later
-    double multiply(jsi::Runtime &rt, double a, double b);
-
 private:
     // Helper method to create the HostObject that wraps the llama context and its methods
     jsi::Object createModelObject(jsi::Runtime& runtime, struct rn_llama_context* rn_ctx);

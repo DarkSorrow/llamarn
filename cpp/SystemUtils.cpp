@@ -95,10 +95,9 @@ int64_t getTotalPhysicalMemory() {
 int SystemUtils::getOptimalGpuLayers(struct llama_model* model) {
     // Get model parameters
     const int n_layer = llama_model_n_layer(model);
-    const int64_t n_params = llama_model_n_params(model);
 
-    // Estimate bytes per layer based on model parameters
-    int64_t bytes_per_layer = (n_params * sizeof(float)) / n_layer;
+    // Use actual quantized tensor size for per-layer estimate (more accurate than float32 assumption)
+    int64_t bytes_per_layer = (int64_t)llama_model_size(model) / n_layer;
 
     // Get actual device memory
     int64_t total_memory = getTotalPhysicalMemory();

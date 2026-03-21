@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -6,13 +6,10 @@ import {
   Button,
   ScrollView,
   ActivityIndicator,
-  TextInput,
-  SafeAreaView,
   Platform,
   NativeModules,
 } from 'react-native';
 import { loadLlamaModelInfo } from '@novastera-oss/llamarn';
-import type { LlamaModel } from '@novastera-oss/llamarn';
 import RNFS from 'react-native-fs';
 
 const { AssetCheckModule } = NativeModules;
@@ -24,19 +21,16 @@ const modelFileName = Platform.OS === 'android'
 //const modelFileName = "Qwen3-1.7B-Q4_K_M.gguf";
 
 export default function ConsolidatedTestScreen() {
-  const [llamaContext, setLlamaContext] = useState<LlamaModel | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
-  const [completionResult, setCompletionResult] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState('This is a test prompt.');
   const [error, setError] = useState<string | null>(null);
   const [fileCheckResult, setFileCheckResult] = useState<string | null>(null);
-  const [bundleFiles, setBundleFiles] = useState<string[]>([]);
+  const [modelInfoResult, setModelInfoResult] = useState<string | null>(null);
 
   const checkFileExists = useCallback(async () => {
     setError(null);
     setFileCheckResult(null);
-    setBundleFiles([]);
+    setModelInfoResult(null);
     setIsLoading(true);
     setLoadingMessage('Checking file existence...');
     
@@ -80,13 +74,11 @@ export default function ConsolidatedTestScreen() {
         if (Platform.OS === 'ios') {
           const files = await RNFS.readDir(bundlePath);
           const fileNames = files.map(file => file.name);
-          setBundleFiles(fileNames);
           resultMessage += `\n\nBundle contains ${files.length} files:\n${fileNames.join(', ')}`;
         } else if (Platform.OS === 'android') {
           // For Android, use our custom native module to list assets
           try {
             const assetList = await AssetCheckModule.listAssets('');
-            setBundleFiles(assetList);
             resultMessage += `\n\nAndroid assets (${assetList.length} files):\n${assetList.join(', ')}`;
           } catch (error) {
             console.error('Error listing Android assets:', error);
@@ -110,8 +102,7 @@ export default function ConsolidatedTestScreen() {
 
   const handleLoadModel = useCallback(async () => {
     setError(null);
-    setCompletionResult(null);
-    setLlamaContext(null);
+    setModelInfoResult(null);
     setIsLoading(true);
     setLoadingMessage(`Loading model: ${modelFileName}...`);
     try {
@@ -128,7 +119,7 @@ export default function ConsolidatedTestScreen() {
 
       console.log(`Attempting to load model using path: ${modelPath}`);
       
-      let context;
+      let info;
             if (Platform.OS === 'android') {
         // For Android, we need to copy the asset to a temporary location
         // because the native C++ code can't directly access Android assets
@@ -151,7 +142,7 @@ export default function ConsolidatedTestScreen() {
           }
           
           // Now try to load model info from the temp file
-          context = await loadLlamaModelInfo(tempModelPath);
+          info = await loadLlamaModelInfo(tempModelPath);
           console.log(`[Android] Success with temp file path: ${tempModelPath}`);
           
         } catch (copyError) {
@@ -160,61 +151,28 @@ export default function ConsolidatedTestScreen() {
         }
       } else {
         // iOS - use the single path
-        context = await loadLlamaModelInfo(modelPath);
+        info = await loadLlamaModelInfo(modelPath);
       }
       
-      console.log("Model info loaded successfully:", context);
-      if (context === undefined) {
+      console.log("Model info loaded successfully:", info);
+      if (info === undefined) {
         console.error("CRITICAL: loadLlamaModelInfo resolved with undefined!");
         throw new Error("loadLlamaModelInfo resolved with undefined. Native module issue.");
       }
+      const readableInfo = JSON.stringify(info, null, 2);
+      setModelInfoResult(readableInfo);
       setLoadingMessage('Model info loaded successfully!');
-      // Just display the info, don't set as context since this is just info loading
-      console.log("Model info details:", JSON.stringify(context, null, 2));
+      console.log("Model info details:", readableInfo);
     } catch (e) {
       const err = e as Error;
       console.error("Error loading Llama model:", err);
       setError(`Failed to load model: ${err.message}`);
-      setLlamaContext(null);
     }
     setIsLoading(false);
   }, []);
 
-  const handleSimpleCompletion = useCallback(async () => {
-    if (!llamaContext) {
-      setError("Model context not loaded. Load the model first.");
-      return;
-    }
-    setError(null);
-    setCompletionResult(null);
-    setIsLoading(true);
-    setLoadingMessage('Performing completion...');
-    try {
-      console.log(`Attempting completion with prompt: "${prompt}"`);
-      const result = await llamaContext.completion({
-        prompt: prompt,
-        n_predict: 30,
-        temperature: 0.2,
-      });
-      console.log("Completion successful:", result);
-      let responseText = "No text in result";
-      if (result.text) {
-        responseText = result.text;
-      } else if (result.choices?.[0]?.message?.content) {
-        responseText = result.choices[0].message.content;
-      }
-      setCompletionResult(responseText);
-      setLoadingMessage('Completion finished.');
-    } catch (e) {
-      const err = e as Error;
-      console.error("Error during completion:", err);
-      setError(`Completion failed: ${err.message}`);
-    }
-    setIsLoading(false);
-  }, [llamaContext, prompt]);
-
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <View style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Consolidated Model Tests</Text>
 
@@ -246,28 +204,14 @@ export default function ConsolidatedTestScreen() {
           </View>
         )}
         
-        {llamaContext && !isLoading && (
-          <View style={styles.sectionContainer}>
-            <Text style={styles.subTitle}>Test Completion</Text>
-            <TextInput
-              style={styles.input}
-              value={prompt}
-              onChangeText={setPrompt}
-              placeholder="Enter prompt here"
-              multiline
-            />
-            <Button title="Generate Completion" onPress={handleSimpleCompletion} disabled={isLoading} />
-          </View>
-        )}
-
-        {completionResult && !isLoading && (
+        {modelInfoResult && !isLoading && (
           <View style={styles.resultsContainer}>
-            <Text style={styles.subTitle}>Completion Result:</Text>
-            <Text style={styles.resultText}>{completionResult}</Text>
+            <Text style={styles.subTitle}>Model Info Result:</Text>
+            <Text style={styles.resultTextMono}>{modelInfoResult}</Text>
           </View>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -275,6 +219,8 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#f8f8f8',
+    paddingTop: 60,
+    paddingBottom: 60,
   },
   container: {
     flexGrow: 1,
@@ -326,16 +272,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'center',
   },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    padding: 10,
-    fontSize: 16,
-    borderRadius: 6,
-    marginBottom: 15,
-    minHeight: 80, // For multiline
-    textAlignVertical: 'top',
-  },
   resultsContainer: {
     width: '100%',
     padding: 15,
@@ -346,5 +282,10 @@ const styles = StyleSheet.create({
   resultText: {
     fontSize: 16,
     color: '#0d47a1',
+  },
+  resultTextMono: {
+    fontSize: 13,
+    color: '#0d47a1',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
 }); 

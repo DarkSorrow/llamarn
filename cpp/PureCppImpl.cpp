@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <utility>
 #include <thread>
+#include <mutex>
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -192,6 +193,23 @@ static void load_android_backends() {
 #endif
 }
 
+// One-time backend initialization — safe to call from multiple threads concurrently.
+// Uses std::call_once so backends are loaded and llama_backend_init() is called exactly once,
+// even if loadLlamaModelInfo and initLlama race on startup.
+static void ensure_backends_loaded() {
+  static std::once_flag flag;
+  std::call_once(flag, []() {
+#ifdef __ANDROID__
+    load_android_backends();
+#endif
+    ggml_backend_load_all();
+    if (ggml_backend_reg_count() == 0) {
+      throw std::runtime_error("No backends registered — CPU backend library not found");
+    }
+    llama_backend_init();
+  });
+}
+
 // Factory method implementation
 std::shared_ptr<TurboModule> PureCppImpl::create(std::shared_ptr<CallInvoker> jsInvoker) {
   return std::make_shared<PureCppImpl>(std::move(jsInvoker));
@@ -199,10 +217,6 @@ std::shared_ptr<TurboModule> PureCppImpl::create(std::shared_ptr<CallInvoker> js
 
 PureCppImpl::PureCppImpl(std::shared_ptr<CallInvoker> jsInvoker)
     : NativeRNLlamaCppCxxSpec(jsInvoker), jsInvoker_(jsInvoker) {
-}
-
-double PureCppImpl::multiply(jsi::Runtime& rt, double a, double b) {
-    return a * b;
 }
 
 jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String modelPath) {
@@ -242,30 +256,7 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           //   }
           // }, nullptr);
           
-          // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
-          // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
-          // When GGML_CPU_ALL_VARIANTS is enabled, CPU backend variants are:
-          //   libggml-cpu-android_armv8.0_1.so (baseline - emulator compatible)
-          //   libggml-cpu-android_armv8.2_1.so (DOTPROD)
-          //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
-          //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
-          // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
-          // On Android, manually load all backends since filesystem iteration doesn't work
-          // with APK-packaged libraries. ggml_backend_load_all() will skip already loaded backends.
-          #ifdef __ANDROID__
-          load_android_backends();
-          #endif
-          
-          // Load any remaining backends (ggml_backend_load_all will skip already loaded ones)
-          ggml_backend_load_all();
-          
-          // Verify at least CPU backend was loaded
-          if (ggml_backend_reg_count() == 0) {
-            throw std::runtime_error("No backends registered - CPU backend library not found");
-          }
-          
-          // Initialize llama backend
-          llama_backend_init();
+          ensure_backends_loaded();
 
           // Create model params
           llama_model_params params = llama_model_default_params();
@@ -312,11 +303,19 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
             }).base(), quantType.end());
           }
 
+          // Layer count, actual model size, and architecture from GGUF metadata
+          int32_t n_layers = llama_model_n_layer(model);
+          double model_size_bytes = (double)llama_model_size(model);
+
+          char arch_buf[128] = "unknown";
+          llama_model_meta_val_str(model, "general.architecture", arch_buf, sizeof(arch_buf));
+          std::string architecture = arch_buf;
+
           // Free the model
           llama_model_free(model);
 
           // Schedule success callback on JS thread to create JSI objects
-          invoker->invokeAsync([selfPtr, resolve, n_params, n_vocab, n_context, n_embd, description, gpuSupported, optimalGpuLayers, quantType, runtimePtr]() {
+          invoker->invokeAsync([selfPtr, resolve, n_params, n_vocab, n_context, n_embd, description, gpuSupported, optimalGpuLayers, quantType, n_layers, model_size_bytes, architecture, runtimePtr]() {
             try {
               // Create result object on JS thread
               jsi::Object result(*runtimePtr);
@@ -324,11 +323,13 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               result.setProperty(*runtimePtr, "n_vocab", jsi::Value(n_vocab));
               result.setProperty(*runtimePtr, "n_context", jsi::Value(n_context));
               result.setProperty(*runtimePtr, "n_embd", jsi::Value(n_embd));
+              result.setProperty(*runtimePtr, "n_layers", jsi::Value((double)n_layers));
+              result.setProperty(*runtimePtr, "model_size_bytes", jsi::Value(model_size_bytes));
               result.setProperty(*runtimePtr, "description", jsi::String::createFromUtf8(*runtimePtr, description));
               result.setProperty(*runtimePtr, "gpuSupported", jsi::Value(gpuSupported));
               result.setProperty(*runtimePtr, "optimalGpuLayers", jsi::Value(optimalGpuLayers));
               result.setProperty(*runtimePtr, "quant_type", jsi::String::createFromUtf8(*runtimePtr, quantType));
-              result.setProperty(*runtimePtr, "architecture", jsi::String::createFromUtf8(*runtimePtr, "Unknown"));
+              result.setProperty(*runtimePtr, "architecture", jsi::String::createFromUtf8(*runtimePtr, architecture));
 
               resolve->call(*runtimePtr, result);
             } catch (const std::exception& e) {
@@ -358,6 +359,23 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
   
   return Promise.callAsConstructor(runtime, std::move(executor));
 }
+
+struct InitLlamaParams {
+  std::string model_path;
+  int n_ctx, n_batch, n_ubatch, n_keep;
+  bool use_mmap, use_mlock, use_jinja, embedding;
+  int n_threads, n_gpu_layers;
+  std::string logits_file;
+  float rope_freq_base, rope_freq_scale;
+  uint32_t seed;
+  int verbosity;
+  float yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow;
+  std::string chat_template;
+  std::vector<std::pair<std::string, float>> lora_adapters;
+  int reasoning_budget;
+  common_reasoning_format reasoning_format;
+  bool thinking_forced_open, parse_tool_calls, parallel_tool_calls;
+};
 
 jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   // Parse JSI arguments to native types on JSI thread
@@ -483,53 +501,60 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
     }
   }
 
+  // Pack all parsed values into a shared struct so the lambda captures stay minimal.
+  auto p = std::make_shared<InitLlamaParams>();
+  p->model_path           = model_path;
+  p->n_ctx                = n_ctx;
+  p->n_batch              = n_batch;
+  p->n_ubatch             = n_ubatch;
+  p->n_keep               = n_keep;
+  p->use_mmap             = use_mmap;
+  p->use_mlock            = use_mlock;
+  p->use_jinja            = use_jinja;
+  p->embedding            = embedding;
+  p->n_threads            = n_threads;
+  p->n_gpu_layers         = n_gpu_layers;
+  p->logits_file          = logits_file;
+  p->rope_freq_base       = rope_freq_base;
+  p->rope_freq_scale      = rope_freq_scale;
+  p->seed                 = seed;
+  p->verbosity            = verbosity;
+  p->yarn_ext_factor      = yarn_ext_factor;
+  p->yarn_attn_factor     = yarn_attn_factor;
+  p->yarn_beta_fast       = yarn_beta_fast;
+  p->yarn_beta_slow       = yarn_beta_slow;
+  p->chat_template        = chat_template;
+  p->lora_adapters        = std::move(lora_adapters);
+  p->reasoning_budget     = reasoning_budget;
+  p->reasoning_format     = reasoning_format;
+  p->thinking_forced_open = thinking_forced_open;
+  p->parse_tool_calls     = parse_tool_calls;
+  p->parallel_tool_calls  = parallel_tool_calls;
+
   // Create Promise constructor
   auto Promise = runtime.global().getPropertyAsFunction(runtime, "Promise");
-  
+
   auto executor = jsi::Function::createFromHostFunction(
     runtime,
     jsi::PropNameID::forAscii(runtime, "executor"),
     2,
-    [this, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters, reasoning_budget, reasoning_format, thinking_forced_open, parse_tool_calls, parallel_tool_calls](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
-      
+    [this, p](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
+
       auto resolve = std::make_shared<jsi::Function>(args[0].asObject(runtime).asFunction(runtime));
       auto reject = std::make_shared<jsi::Function>(args[1].asObject(runtime).asFunction(runtime));
-      
+
       // Create shared references to runtime and invoker for thread safety
       auto runtimePtr = &runtime;
       auto invoker = jsInvoker_;
       auto selfPtr = shared_from_this();
-      
+
       // Launch background thread for model initialization
-      std::thread([selfPtr, model_path, n_ctx, n_batch, n_ubatch, n_keep, use_mmap, use_mlock, use_jinja, embedding, n_threads, n_gpu_layers, logits_file, rope_freq_base, rope_freq_scale, seed, verbosity, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, chat_template, lora_adapters, reasoning_budget, reasoning_format, thinking_forced_open, parse_tool_calls, parallel_tool_calls, resolve, reject, runtimePtr, invoker]() {
+      std::thread([selfPtr, p, resolve, reject, runtimePtr, invoker]() {
         try {
           // Thread-safe access to member variables
           std::lock_guard<std::mutex> lock(selfPtr->mutex_);
           
-          // Load all available backends (CPU is dynamically loaded when GGML_BACKEND_DL is enabled)
-          // With GGML_BACKEND_DL=ON, ALL backends (CPU + GPU) are dynamically loaded
-          // When GGML_CPU_ALL_VARIANTS is enabled, CPU backend variants are:
-          //   libggml-cpu-android_armv8.0_1.so (baseline - emulator compatible)
-          //   libggml-cpu-android_armv8.2_1.so (DOTPROD)
-          //   libggml-cpu-android_armv8.2_2.so (DOTPROD + FP16_VECTOR_ARITHMETIC)
-          //   libggml-cpu-android_armv8.6_1.so (DOTPROD + FP16_VECTOR_ARITHMETIC + MATMUL_INT8)
-          // GPU backends are in libggml-opencl.so, libggml-vulkan.so, libggml-hexagon.so
-          // On Android, manually load all backends since filesystem iteration doesn't work
-          // with APK-packaged libraries. ggml_backend_load_all() will skip already loaded backends.
-          #ifdef __ANDROID__
-          load_android_backends();
-          #endif
-          
-          // Load other backends (OpenCL, Vulkan, etc.) - ggml_backend_load_all will skip already loaded backends
-          ggml_backend_load_all();
-          
-          // Verify at least CPU backend was loaded
-          if (ggml_backend_reg_count() == 0) {
-            throw std::runtime_error("No backends registered - CPU backend library not found");
-          }
-          
-          // Initialize llama backend
-          llama_backend_init();
+          ensure_backends_loaded();
 
           // Initialize params with defaults
           rn_common_params params;
@@ -538,37 +563,37 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           params.sampling = common_params_sampling();
 
           // Set all parsed native values
-          params.model.path = model_path;
-          params.n_ctx = n_ctx;
-          params.n_batch = n_batch;
-          params.n_ubatch = n_ubatch;
-          params.n_keep = n_keep;
-          params.use_mmap = use_mmap;
-          params.use_mlock = use_mlock;
-          params.use_jinja = use_jinja;
-          params.embedding = embedding;
-          params.cpuparams.n_threads = n_threads;
-          params.n_gpu_layers = n_gpu_layers;
-          params.logits_file = logits_file;
-          params.rope_freq_base = rope_freq_base;
-          params.rope_freq_scale = rope_freq_scale;
-          params.sampling.seed = seed;
-          params.verbosity = verbosity;
-          params.yarn_ext_factor = yarn_ext_factor;
-          params.yarn_attn_factor = yarn_attn_factor;
-          params.yarn_beta_fast = yarn_beta_fast;
-          params.yarn_beta_slow = yarn_beta_slow;
-          
-          // Set thinking and reasoning parameters
-          params.reasoning_budget = reasoning_budget;
-          params.reasoning_format = reasoning_format;
+          params.model.path              = p->model_path;
+          params.n_ctx                   = p->n_ctx;
+          params.n_batch                 = p->n_batch;
+          params.n_ubatch                = p->n_ubatch;
+          params.n_keep                  = p->n_keep;
+          params.use_mmap                = p->use_mmap;
+          params.use_mlock               = p->use_mlock;
+          params.use_jinja               = p->use_jinja;
+          params.embedding               = p->embedding;
+          params.cpuparams.n_threads     = p->n_threads;
+          params.n_gpu_layers            = p->n_gpu_layers;
+          params.logits_file             = p->logits_file;
+          params.rope_freq_base          = p->rope_freq_base;
+          params.rope_freq_scale         = p->rope_freq_scale;
+          params.sampling.seed           = p->seed;
+          params.verbosity               = p->verbosity;
+          params.yarn_ext_factor         = p->yarn_ext_factor;
+          params.yarn_attn_factor        = p->yarn_attn_factor;
+          params.yarn_beta_fast          = p->yarn_beta_fast;
+          params.yarn_beta_slow          = p->yarn_beta_slow;
 
-          if (!chat_template.empty()) {
-            params.chat_template = chat_template;
+          // Set thinking and reasoning parameters
+          params.reasoning_budget        = p->reasoning_budget;
+          params.reasoning_format        = p->reasoning_format;
+
+          if (!p->chat_template.empty()) {
+            params.chat_template = p->chat_template;
           }
 
           // Add LoRA adapters
-          for (const auto& lora : lora_adapters) {
+          for (const auto& lora : p->lora_adapters) {
             common_adapter_lora_info lora_info;
             lora_info.path = lora.first;
             lora_info.scale = lora.second;
@@ -650,34 +675,20 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           // Configure chat template kwargs based on parsed options
           // reasoning_budget: -1 = unlimited thinking, 0 = disabled, >0 = limited thinking
           // This parameter comes from the JSI options and controls the thinking feature
-          if (reasoning_budget != 0) {
-              // Enable thinking if reasoning_budget is not 0 (allows -1 for unlimited or positive values)
+          if (p->reasoning_budget != 0) {
               params.default_template_kwargs["enable_thinking"] = "true";
           } else {
-              // Disable thinking if reasoning_budget is 0
               params.default_template_kwargs["enable_thinking"] = "false";
           }
-          
-          // Add other important thinking-related kwargs based on reasoning_format
-          if (reasoning_format != COMMON_REASONING_FORMAT_NONE) {
-              // If reasoning is enabled, we can add thinking_forced_open as an option
-              // This allows users to force thinking output when needed
-              params.default_template_kwargs["thinking_forced_open"] = thinking_forced_open ? "true" : "false";
-              
-              // reasoning_in_content controls whether reasoning appears in the main content
-              // Default to false for cleaner output, but can be overridden
+
+          if (p->reasoning_format != COMMON_REASONING_FORMAT_NONE) {
+              params.default_template_kwargs["thinking_forced_open"] = p->thinking_forced_open ? "true" : "false";
               params.default_template_kwargs["reasoning_in_content"] = "false";
           }
-          
-          // parse_tool_calls is enabled by default, but can be overridden by user options
-          // If use_jinja is enabled, parse_tool_calls should also be enabled for better tool support
-          // This is because Jinja templates often provide better tool calling capabilities
-          bool effective_parse_tool_calls = parse_tool_calls || use_jinja;
+
+          bool effective_parse_tool_calls = p->parse_tool_calls || p->use_jinja;
           params.default_template_kwargs["parse_tool_calls"] = effective_parse_tool_calls ? "true" : "false";
-          
-          // parallel_tool_calls allows multiple tool calls in a single response
-          // Can be enabled for supported models
-          params.default_template_kwargs["parallel_tool_calls"] = parallel_tool_calls ? "true" : "false";
+          params.default_template_kwargs["parallel_tool_calls"] = p->parallel_tool_calls ? "true" : "false";
           
           // Note: Users can override these kwargs by setting them in params.default_template_kwargs
           // before calling this function, or by using the --chat-template-kwargs CLI argument

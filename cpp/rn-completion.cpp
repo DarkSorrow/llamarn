@@ -38,6 +38,7 @@ struct completion_state {
     std::string generated_text;
     std::string stopping_word;
     bool stop_found = false;
+    bool stopped_by_limit = false;
 
     std::vector<llama_token> prompt_tokens;
     std::vector<llama_token> generated_tokens;
@@ -66,6 +67,7 @@ static bool check_stop_conditions(
 
     if (state.n_remaining <= 0) {
         state.has_next_token = false;
+        state.stopped_by_limit = true;
         return true;
     }
 
@@ -102,6 +104,7 @@ static bool check_stop_conditions(
     if (state.n_past >= state.n_ctx) {
         state.truncated = true;
         state.has_next_token = false;
+        state.stopped_by_limit = true;
         return true;
     }
 
@@ -133,9 +136,6 @@ CompletionResult run_completion(
         state.rn_ctx = rn_ctx;
         state.chat_format = rn_ctx->params.chat_format;
 
-        // Convert CompletionOptions to JSON for processing
-        json data = options.to_json();
-        // Prepare the sampling parameters
         const auto& params = rn_ctx->params;
         
         // Create a copy of sampling parameters and apply grammar if provided
@@ -171,33 +171,20 @@ CompletionResult run_completion(
             return result;
         }
 
-        // Process stop words
-        if (data.contains("stop")) {
-            if (data["stop"].is_string()) {
-                state.antiprompt.push_back(data["stop"].get<std::string>());
-            } else if (data["stop"].is_array()) {
-                for (const auto& stop : data["stop"]) {
-                    if (stop.is_string()) {
-                        state.antiprompt.push_back(stop.get<std::string>());
-                    }
-                }
-            }
-        }
+        // Stop words
+        state.antiprompt = options.stop;
 
-        // Set the prompt
-        if (data.contains("prompt")) {
-            // Tokenize the prompt
-            const auto& tokenized_prompts = tokenize_input_prompts(rn_ctx->vocab, data["prompt"], true, true);
-            if (tokenized_prompts.empty() || tokenized_prompts[0].empty()) {
-                result.success = false;
-                result.error_msg = "Empty prompt";
-                result.error_type = RN_ERROR_INVALID_PARAM;
-                return result;
-            }
-            state.prompt_tokens = std::move(tokenized_prompts[0]);
-        } else {
+        // Tokenize the prompt directly — always a string in this path
+        if (options.prompt.empty()) {
             result.success = false;
             result.error_msg = "No prompt provided";
+            result.error_type = RN_ERROR_INVALID_PARAM;
+            return result;
+        }
+        state.prompt_tokens = common_tokenize(rn_ctx->vocab, options.prompt, true, true);
+        if (state.prompt_tokens.empty()) {
+            result.success = false;
+            result.error_msg = "Empty prompt";
             result.error_type = RN_ERROR_INVALID_PARAM;
             return result;
         }
@@ -297,6 +284,18 @@ CompletionResult run_completion(
 
         llama_batch_free(gen_batch);
 
+        result.stopped_by_length = state.stopped_by_limit;
+
+        // Capture timings from the context performance counters
+        {
+            auto perf = llama_perf_context(rn_ctx->ctx);
+            result.timings.predicted_n  = perf.n_eval;
+            result.timings.predicted_ms = perf.t_eval_ms;
+            result.timings.prompt_n     = perf.n_p_eval;
+            result.timings.prompt_ms    = perf.t_p_eval_ms;
+            result.timings.total_ms     = perf.t_p_eval_ms + perf.t_eval_ms;
+        }
+
         // Set the result
         result.content = state.generated_text;
         result.tokens = state.generated_tokens;
@@ -324,14 +323,6 @@ CompletionResult run_chat_completion(
     std::function<bool(const std::string&, bool)> callback) {
 
     CompletionResult result;
-    // Log incoming tools via callback
-    /*
-    if (callback) {
-        std::string tools_json_str = options.tools.dump(2);
-        std::string debug_msg = "[DEBUG RN_COMPLETION_OPTIONS_TOOLS] options.tools JSON: " + tools_json_str;
-        callback(debug_msg, false); // false for is_done
-    }
-    */
     completion_state state;
 
     if (!rn_ctx || !rn_ctx->model || !rn_ctx->ctx) {
@@ -342,85 +333,55 @@ CompletionResult run_chat_completion(
     }
 
     try {
-        // Convert chat options to JSON
-        json data = options.to_chat_json();
-
-        // Parse messages from options if they exist
+        // Parse messages directly from options
         std::vector<common_chat_msg> chat_msgs;
-        if (!data["messages"].empty()) {
-            chat_msgs = common_chat_msgs_parse_oaicompat(data["messages"]);
+        if (!options.messages.is_null() && !options.messages.empty()) {
+            chat_msgs = common_chat_msgs_parse_oaicompat(options.messages);
         }
 
-        // Apply template (matches server.cpp oaicompat_chat_params_parse approach)
+        // Build template inputs directly from options — no JSON roundtrip
         common_chat_templates_inputs template_inputs;
-        template_inputs.messages = chat_msgs;
+        template_inputs.messages             = chat_msgs;
         template_inputs.add_generation_prompt = true;
-        template_inputs.use_jinja = rn_ctx->params.use_jinja;
-        template_inputs.reasoning_format = rn_ctx->params.reasoning_format;
-        
-        // Set chat_template_kwargs from params (matches server.cpp line 712)
+        template_inputs.use_jinja            = rn_ctx->params.use_jinja;
+        template_inputs.reasoning_format     = rn_ctx->params.reasoning_format;
         template_inputs.chat_template_kwargs = rn_ctx->params.default_template_kwargs;
-        
-        // Merge any chat_template_kwargs from request body (if present in future)
-        // For now, we use the defaults from params
-        
-        // Parse enable_thinking from chat_template_kwargs (matches server.cpp lines 718-725)
-        auto enable_thinking_kwarg = template_inputs.chat_template_kwargs.find("enable_thinking");
-        if (enable_thinking_kwarg != template_inputs.chat_template_kwargs.end()) {
-            const std::string& value = enable_thinking_kwarg->second;
-            if (value == "true") {
-                template_inputs.enable_thinking = true;
-            } else if (value == "false") {
-                template_inputs.enable_thinking = false;
-            }
-            // else: use default (true)
+
+        // enable_thinking from kwargs
+        auto it = template_inputs.chat_template_kwargs.find("enable_thinking");
+        if (it != template_inputs.chat_template_kwargs.end()) {
+            template_inputs.enable_thinking = (it->second == "true");
         }
 
-        // Add grammar if present in options
         if (!options.grammar.empty()) {
             template_inputs.grammar = options.grammar;
         }
 
-        // Parse json_schema if present (matches server.cpp line 696)
-        if (data.contains("json_schema") && !data["json_schema"].is_null()) {
-            template_inputs.json_schema = data["json_schema"].dump();
-        }
-        
-        // Check for conflicting grammar and json_schema (matches server.cpp lines 570-572)
-        if (!template_inputs.json_schema.empty() && !template_inputs.grammar.empty()) {
-            throw std::runtime_error("Cannot use both json_schema and grammar");
-        }
-
-        // Parse tools if present
-        if (data.contains("tools") && !data["tools"].empty()) {
-            template_inputs.tools = common_chat_tools_parse_oaicompat(data["tools"]);
-            // Force parallel_tool_calls to true if tools are present, as this generally
-            // aligns with grammars expecting a list of tool calls.
+        if (!options.tools.is_null() && !options.tools.empty()) {
+            template_inputs.tools = common_chat_tools_parse_oaicompat(options.tools);
             template_inputs.parallel_tool_calls = true;
         }
 
-        // Parse tool_choice if present
-        if (data.contains("tool_choice") && !data["tool_choice"].is_null()) {
-            template_inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(
-                data["tool_choice"].is_string()
-                ? data["tool_choice"].get<std::string>()
-                : data["tool_choice"].dump());
+        if (!options.tool_choice.empty()) {
+            template_inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(options.tool_choice);
         }
-        
-        // Parse parallel_tool_calls if present (matches server.cpp line 699)
-        if (data.contains("parallel_tool_calls")) {
-            template_inputs.parallel_tool_calls = data["parallel_tool_calls"].get<bool>();
-        }
-        
-        // Check for conflicting tools and grammar (matches server.cpp lines 703-706)
+
         if (!template_inputs.tools.empty() && template_inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE) {
             if (!template_inputs.grammar.empty()) {
                 throw std::runtime_error("Cannot use custom grammar constraints with tools.");
             }
         }
 
-        // Apply template (matches server.cpp approach - no try-catch, exceptions propagate to outer handler)
-        const auto& chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+        // Apply template. If the autoparser fails (e.g., jinja runtime gap for this model's template),
+        // fall back to force_pure_content which bypasses the autoparser. Tools are still rendered in
+        // the prompt by the Jinja template itself; only grammar-constrained output is lost.
+        common_chat_params chat_params;
+        try {
+            chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+        } catch (const std::invalid_argument & e) {
+            template_inputs.force_pure_content = true;
+            chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
+        }
 
         CompletionOptions cmpl_options = options;
         cmpl_options.prompt = chat_params.prompt;
@@ -479,7 +440,7 @@ CompletionResult run_chat_completion(
                 {"message", {
                     {"role", "assistant"}
                 }},
-                {"finish_reason", "stop"}
+                {"finish_reason", result.stopped_by_length ? "length" : "stop"}
             };
             
             // Add parsed content and tool calls if available

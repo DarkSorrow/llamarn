@@ -99,7 +99,7 @@ export interface LlamaCompletionParams {
 
 export interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | null;
   tool_call_id?: string;
   name?: string;
 }
@@ -235,9 +235,6 @@ export interface LlamaContextMethods {
 }
 
 export interface Spec extends TurboModule {
-  // Define your module's methods here
-  multiply(a: number, b: number): number;
-
   // Initialize a Llama context with the given model parameters
   initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods>;
 
@@ -247,11 +244,13 @@ export interface Spec extends TurboModule {
     n_vocab: number;
     n_context: number;
     n_embd: number;
+    n_layers: number;
     description: string;
     gpuSupported: boolean;
     optimalGpuLayers: number;
     quant_type?: string;
-    architecture?: string;
+    architecture: string;
+    model_size_bytes: number;
   }>;
 }
 

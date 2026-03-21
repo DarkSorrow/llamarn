@@ -14,6 +14,7 @@
 #include "base64.hpp"
 #include "chat.h"
 
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <string>
@@ -24,7 +25,7 @@
 
 using json = nlohmann::ordered_json;
 
-#define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
+#define DEFAULT_OAICOMPAT_MODEL "llamacpp"
 // build_info is defined in common.h — no redefinition needed here.
 
 // Error types simplified for a library context
@@ -55,9 +56,10 @@ struct CompletionOptions {
     float top_k = 40.0f;
     float min_p = 0.05f;
     float presence_penalty = 0.0f;  // for reducing repetitions (0-2 range)
+    float repeat_penalty = 1.0f;    // token repetition penalty
+    int repeat_last_n = 64;         // window for repetition penalty
+    float frequency_penalty = 0.0f; // frequency-based penalty
     int n_keep = 0;
-    int n_probs = 0;  // for log probabilities
-    bool post_sampling_probs = false;
     std::vector<std::string> stop;
     std::string grammar;
     bool grammar_lazy = false;
@@ -69,106 +71,14 @@ struct CompletionOptions {
     std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
     std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar
 
-    // Convert to JSON for the completion API
-    json to_json() const {
-        json j = {
-            {"prompt", prompt},
-            {"stream", stream},
-            {"temperature", temperature},
-            {"top_p", top_p},
-            {"top_k", top_k},
-            {"min_p", min_p},
-            {"presence_penalty", presence_penalty},
-            {"n_predict", n_predict},
-            {"n_keep", n_keep},
-            {"n_probs", n_probs},
-            {"post_sampling_probs", post_sampling_probs},
-            {"stop", stop},
-            {"ignore_eos", ignore_eos},
-            {"seed", seed}
-        };
+};
 
-        if (!model.empty()) {
-            j["model"] = model;
-        }
-
-        if (!grammar.empty()) {
-            j["grammar"] = grammar;
-            j["grammar_lazy"] = grammar_lazy;
-        }
-        // Add tools and tool_choice if available
-        if (!tools.empty()) {
-            j["tools"] = tools;
-            j["tool_choice"] = tool_choice;
-        }
-        // Add grammar_triggers if available (mainly for internal use, not direct API option)
-        if (!grammar_triggers.empty()) {
-            // This part is tricky as json can't directly hold common_grammar_trigger easily.
-            // For now, we'll skip adding it to the generic to_json() as it's passed internally.
-            // If it were needed for an API, we'd need a proper serialization for grammar_triggers.
-        }
-        return j;
-    }
-
-    // Convert to JSON for the chat completion API
-    json to_chat_json() const {
-        json data;
-
-        // Add messages if provided
-        if (!messages.empty()) {
-            data["messages"] = messages;
-        }
-
-        // Add model if provided
-        if (!model.empty()) {
-            data["model"] = model;
-        }
-
-        // Add tools if provided
-        if (!tools.empty()) {
-            data["tools"] = tools;
-        }
-
-        // Add tool_choice if provided
-        if (!tool_choice.empty()) {
-            if (tool_choice == "none" || tool_choice == "auto" || tool_choice == "required") {
-                data["tool_choice"] = tool_choice;
-            } else {
-                // Assume it's a JSON object
-                try {
-                    data["tool_choice"] = json::parse(tool_choice);
-                } catch (...) {
-                    // Fall back to string if not valid JSON
-                    data["tool_choice"] = tool_choice;
-                }
-            }
-        }
-
-        // Add other parameters
-        data["temperature"] = temperature;
-        data["top_p"] = top_p;
-        data["max_tokens"] = n_predict;
-        data["stream"] = stream;
-        data["presence_penalty"] = presence_penalty;
-
-        if (seed >= 0) {
-            data["seed"] = seed;
-        }
-
-        if (!stop.empty()) {
-            data["stop"] = stop;
-        }
-
-        if (!chat_template.empty()) {
-            data["chat_template"] = chat_template;
-        }
-
-        if (!grammar.empty()) {
-            data["grammar"] = grammar;
-        }
-
-        return data;
-    }
+struct CompletionTimings {
+    int32_t predicted_n  = 0;
+    double  predicted_ms = 0.0;
+    int32_t prompt_n     = 0;
+    double  prompt_ms    = 0.0;
+    double  total_ms     = 0.0;
 };
 
 // CompletionResult struct to hold completion response data
@@ -180,9 +90,9 @@ struct CompletionResult {
     int n_prompt_tokens = 0;
     int n_predicted_tokens = 0;
     std::vector<llama_token> tokens;
-
-    // For chat completions, store the parsed OAI-compatible response
     json chat_response;
+    CompletionTimings timings;
+    bool stopped_by_length = false;
 };
 
 // Utility functions
@@ -202,13 +112,12 @@ static T json_value(const json & body, const std::string & key, const T & defaul
 }
 
 inline std::string gen_chatcmplid() {
-    static const std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
-    std::random_device rd;
-    std::mt19937 generator(rd());
-    std::string result(32, ' ');
-    for (int i = 0; i < 32; ++i) {
-        result[i] = str[generator() % str.size()];
-    }
+    static const std::string chars("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+    static std::mt19937 gen(std::random_device{}());
+    static std::mutex   mtx;
+    std::lock_guard<std::mutex> lock(mtx);
+    std::string result(29, ' ');
+    for (auto & c : result) c = chars[gen() % chars.size()];
     return "chatcmpl-" + result;
 }
 
