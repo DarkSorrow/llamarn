@@ -33,10 +33,14 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/arg.{h,cpp}",
                    "cpp/llama.cpp/common/sampling.{h,cpp}",
                    "cpp/llama.cpp/common/chat.{h,cpp}",
-                   "cpp/llama.cpp/common/chat-parser.{h,cpp}",
-                   "cpp/llama.cpp/common/chat-parser-xml-toolcall.{h,cpp}",
+                   "cpp/llama.cpp/common/chat-auto-parser.h",
+                   "cpp/llama.cpp/common/chat-auto-parser-generator.cpp",
+                   "cpp/llama.cpp/common/chat-auto-parser-helpers.{h,cpp}",
+                   "cpp/llama.cpp/common/chat-diff-analyzer.cpp",
                    "cpp/llama.cpp/common/chat-peg-parser.{h,cpp}",
                    "cpp/llama.cpp/common/peg-parser.{h,cpp}",
+                   "cpp/llama.cpp/common/reasoning-budget.{h,cpp}",
+                   "cpp/llama.cpp/common/debug.{h,cpp}",
                    "cpp/llama.cpp/common/unicode.{h,cpp}",
                    "cpp/llama.cpp/common/regex-partial.{h,cpp}",
                    "cpp/llama.cpp/common/console.{h,cpp}",
@@ -46,7 +50,7 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/speculative.{h,cpp}",
                    "cpp/llama.cpp/common/llguidance.{h,cpp}",
                    "cpp/llama.cpp/common/*.hpp",
-                   "cpp/llama.cpp/vendor/minja/*.hpp"
+                   "cpp/llama.cpp/common/jinja/*.cpp",
                    "cpp/llama.cpp/vendor/nlohmann/*.hpp"
   
   # Include all necessary headers for compilation
@@ -61,9 +65,9 @@ Pod::Spec.new do |s|
 
   # Compiler settings
   s.pod_target_xcconfig = {
-    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_ROOT)/boost\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
+    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
     "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_CFG_NO_COROUTINES=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1",
-    "CLANG_CXX_LANGUAGE_STANDARD" => "c++17",
+    "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",
     "GCC_OPTIMIZATION_LEVEL" => "3", # Maximum optimization
     "SWIFT_OPTIMIZATION_LEVEL" => "-O",
     "ENABLE_BITCODE" => "NO",

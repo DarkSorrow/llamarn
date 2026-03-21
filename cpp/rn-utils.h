@@ -25,7 +25,7 @@
 using json = nlohmann::ordered_json;
 
 #define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
-const static std::string build_info("b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT);
+// build_info is defined in common.h — no redefinition needed here.
 
 // Error types simplified for a library context
 enum rn_error_type {

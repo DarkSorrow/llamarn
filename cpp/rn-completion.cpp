@@ -22,11 +22,7 @@ namespace facebook::react {
 // Struct to track prediction completion state
 struct completion_state {
     rn_llama_context* rn_ctx = nullptr;
-    const llama_model* model = nullptr;
-    llama_context* ctx = nullptr;
-    llama_model_params* params = nullptr;
 
-    bool stream = false;
     bool has_next_token = true;
     bool has_new_line = false;
     bool truncated = false;
@@ -38,9 +34,7 @@ struct completion_state {
     int n_remaining = 0;
 
     size_t n_sent_text = 0;
-    size_t last_nl_pos = 0;
 
-    std::string prompt;
     std::string generated_text;
     std::string stopping_word;
     bool stop_found = false;
@@ -49,11 +43,11 @@ struct completion_state {
     std::vector<llama_token> generated_tokens;
 
     common_sampler* sampler = nullptr;
-    std::vector<std::string> antiprompt; // Storing stop words here
+    std::vector<std::string> antiprompt;
 
     // Chat format and tools info
-    common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;  // Store the chat format for proper parsing
-    common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;  // Default to auto
+    common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
+    common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
 
     ~completion_state() {
         if (sampler) {
@@ -137,10 +131,6 @@ CompletionResult run_completion(
     try {
         // Initialize state with context values
         state.rn_ctx = rn_ctx;
-        state.model = rn_ctx->model;
-        state.ctx = rn_ctx->ctx;
-        state.params = (struct llama_model_params *)&rn_ctx->params.model;
-        state.prompt = options.prompt;
         state.chat_format = rn_ctx->params.chat_format;
 
         // Convert CompletionOptions to JSON for processing
@@ -151,7 +141,7 @@ CompletionResult run_completion(
         // Create a copy of sampling parameters and apply grammar if provided
         common_params_sampling sampling_params = params.sampling;
         if (!options.grammar.empty()) {
-            sampling_params.grammar = options.grammar;
+            sampling_params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, options.grammar);
             // Force grammar_lazy to false whenever tools are present to ensure strict JSON format enforcement
             if (!options.tools.empty()) {
                 sampling_params.grammar_lazy = false;
@@ -217,45 +207,36 @@ CompletionResult run_completion(
         state.n_predict = options.n_predict > 0 ? options.n_predict : params.n_predict;
         state.n_remaining = state.n_predict;
 
-        // Process the prompt
-        for (int i = 0; i < (int)state.prompt_tokens.size(); ++i) {
-            llama_token token = state.prompt_tokens[i];
+        // Process the entire prompt as a single batched decode — much faster than token-by-token.
+        // common_prompt_batch_decode handles chunking into n_batch-sized sub-batches, M-RoPE,
+        // and replays the last token so logits are valid immediately after return.
+        if (!common_prompt_batch_decode(rn_ctx->ctx, state.prompt_tokens,
+                                        state.n_past, rn_ctx->params.n_batch,
+                                        "", false)) {
+            result.success = false;
+            result.error_msg = "Failed to process prompt";
+            result.error_type = RN_ERROR_INFERENCE;
+            return result;
+        }
 
-            llama_batch batch = {
-                /* n_tokens    */ 1,
-                /* token       */ &token,
-                /* embd        */ nullptr,
-                /* pos         */ &i,
-                /* n_seq_id    */ nullptr,
-                /* seq_id      */ nullptr,
-                /* logits      */ nullptr
-            };
-
-            if (llama_decode(rn_ctx->ctx, batch) != 0) {
-                result.success = false;
-                result.error_msg = "Failed to process prompt";
-                result.error_type = RN_ERROR_INFERENCE;
-                return result;
+        // Accept all prompt tokens into the sampler (needed for repetition/presence penalty).
+        // For non-lazy grammars we skip this and re-init below to keep a clean grammar state.
+        for (auto tok : state.prompt_tokens) {
+            if (common_grammar_value(sampling_params.grammar).empty() || sampling_params.grammar_lazy) {
+                common_sampler_accept(state.sampler, tok, true);
             }
-
-            // For lazy grammars, we need to accept prompt tokens to properly set up the grammar state
-            // For non-lazy grammars, we only accept if no grammar is present (grammar needs clean state)
-            if (sampling_params.grammar.empty() || sampling_params.grammar_lazy) {
-                common_sampler_accept(state.sampler, token, true);
-            }
-            state.n_past++;
         }
 
         result.n_prompt_tokens = state.prompt_tokens.size();
 
-        // If using a non-lazy grammar, ensure the sampler is in a clean state for the grammar
-        if (!sampling_params.grammar.empty() && !sampling_params.grammar_lazy) {
+        // For non-lazy grammars, re-init the sampler so grammar state is clean for generation.
+        if (!common_grammar_value(sampling_params.grammar).empty() && !sampling_params.grammar_lazy) {
             common_sampler_free(state.sampler);
             state.sampler = common_sampler_init(rn_ctx->model, sampling_params);
         }
 
-        // Start generating tokens
-        // Note: Timing variables removed as they were not being used
+        // Allocate a single-token batch once and reuse it across the entire generation loop.
+        llama_batch gen_batch = llama_batch_init(1, 0, 1);
 
         while (state.has_next_token && state.n_remaining > 0) {
             // Sample the next token
@@ -272,21 +253,14 @@ CompletionResult run_completion(
             state.n_decoded++;
             state.n_remaining--;
 
-            // Accept the new token
+            // Accept the new token into the sampler
             common_sampler_accept(state.sampler, token_id, true);
 
-            // Prepare for next token
-            llama_batch batch = {
-                /* n_tokens    */ 1,
-                /* token       */ &token_id,
-                /* embd        */ nullptr,
-                /* pos         */ &state.n_past,
-                /* n_seq_id    */ nullptr,
-                /* seq_id      */ nullptr,
-                /* logits      */ nullptr
-            };
-
-            if (llama_decode(rn_ctx->ctx, batch) != 0) {
+            // Decode the generated token to prepare logits for the next sample
+            common_batch_clear(gen_batch);
+            common_batch_add(gen_batch, token_id, state.n_past, {0}, true);
+            if (llama_decode(rn_ctx->ctx, gen_batch) != 0) {
+                llama_batch_free(gen_batch);
                 result.success = false;
                 result.error_msg = "Failed to decode generated token";
                 result.error_type = RN_ERROR_INFERENCE;
@@ -298,20 +272,18 @@ CompletionResult run_completion(
             // Check stopping conditions
             bool should_stop = check_stop_conditions(state, state.antiprompt, token_text, options.ignore_eos);
 
-            // Handle stream mode
+            // Stream the token if callback is provided
             if (callback && !should_stop) {
                 std::string text_to_send = state.generated_text.substr(state.n_sent_text);
                 state.n_sent_text = state.generated_text.size();
 
-                // Send the token
                 if (!callback(text_to_send, false)) {
-                    // Callback returned false, stop generation
+                    // Callback returned false — caller wants to stop
                     state.has_next_token = false;
                     break;
                 }
             }
 
-            // Check if should stop (after streaming so we don't miss the last token)
             if (should_stop) {
                 break;
             }
@@ -323,7 +295,7 @@ CompletionResult run_completion(
             }
         }
 
-        // Note: Timing measurements removed as they were not being used
+        llama_batch_free(gen_batch);
 
         // Set the result
         result.content = state.generated_text;
@@ -479,16 +451,12 @@ CompletionResult run_chat_completion(
             // Only parse if we have tools available and the response isn't empty
             if (!template_inputs.tools.empty() && !result.content.empty()) {
                 try {
-                    // Construct the chat syntax for parsing using the format from template application
-                    common_chat_syntax syntax;
-                    syntax.format = chat_params.format;  // Use format from template, not from params
-                    syntax.reasoning_format = rn_ctx->params.reasoning_format;
-                    syntax.reasoning_in_content = true;
-                    syntax.thinking_forced_open = false;
-                    syntax.parse_tool_calls = true;
-                    
+                    // Construct parser params from the applied chat params, then override reasoning format
+                    common_chat_parser_params parser_params(chat_params);
+                    parser_params.reasoning_format = rn_ctx->params.reasoning_format;
+
                     // Parse the generated content for tool calls
-                    parsed_msg = common_chat_parse(result.content, false, syntax);
+                    parsed_msg = common_chat_parse(result.content, false, parser_params);
                     has_parsed_content = true;
                     
                 } catch (const std::exception& e) {
@@ -517,7 +485,7 @@ CompletionResult run_chat_completion(
             // Add parsed content and tool calls if available
             if (has_parsed_content && !parsed_msg.tool_calls.empty()) {
                 // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion
-                choice["message"] = parsed_msg.to_json_oaicompat<json>();
+                choice["message"] = parsed_msg.to_json_oaicompat();
                 choice["finish_reason"] = "tool_calls";
             } else if (has_parsed_content && !parsed_msg.content.empty()) {
                 // Regular text response with parsed content

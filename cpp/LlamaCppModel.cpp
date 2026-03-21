@@ -51,21 +51,18 @@ LlamaCppModel::~LlamaCppModel() {
 }
 
 void LlamaCppModel::release() {
-  // Signal completion to stop and wait for it to finish gracefully
-  if (is_predicting_) {
-    should_stop_completion_ = true;
+  // Signal inference to stop — abort_callback makes llama_decode exit on its next iteration
+  should_stop_completion_ = true;
+  if (rn_ctx_) {
+    rn_ctx_->abort_generation = true;
+  }
 
-    // Wait more patiently for completion to stop, with proper backoff
-    int retry = 0;
-    while (is_predicting_ && retry < 100) { // Increased from 10 to 100
-      std::this_thread::sleep_for(std::chrono::milliseconds(retry < 50 ? 10 : 50));
-      retry++;
-    }
-
-    // Force stop if still predicting
-    if (is_predicting_) {
-      is_predicting_ = false;
-    }
+  // Wait for inference to finish using a condition variable.
+  // With abort_callback set, this typically resolves within one token decode latency.
+  {
+    std::unique_lock<std::mutex> lock(predicting_cv_mutex_);
+    predicting_cv_.wait_for(lock, std::chrono::milliseconds(500),
+                            [this] { return !is_predicting_.load(); });
   }
 
   // Clean up our resources with proper mutex protection
@@ -131,9 +128,9 @@ bool LlamaCppModel::shouldStopCompletion() const {
 
 void LlamaCppModel::setShouldStopCompletion(bool value) {
   should_stop_completion_ = value;
-  if (value) {
-    // Reset the predicting flag when stopping completion
-    is_predicting_ = false;
+  if (value && rn_ctx_) {
+    // Signal the abort_callback — llama_decode will exit on its next graph eval
+    rn_ctx_->abort_generation = true;
   }
 }
 
@@ -436,9 +433,15 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   CompletionResult result;
 
   try {
-    // Set the predicting flag to prevent interruption
-    is_predicting_ = true;
+    // Set the predicting flag and reset stop signals for this run
+    {
+      std::lock_guard<std::mutex> cv_lock(predicting_cv_mutex_);
+      is_predicting_ = true;
+    }
     should_stop_completion_ = false;
+    if (rn_ctx_) {
+      rn_ctx_->abort_generation = false;
+    }
 
     if (!options.messages.empty()) {
       // Chat completion (with messages)
@@ -448,10 +451,18 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
       result = run_completion(rn_ctx_, options, callback_adapter);
     }
 
-    // Reset the predicting flag
-    is_predicting_ = false;
+    // Notify release() (or any waiter) that inference is done
+    {
+      std::lock_guard<std::mutex> cv_lock(predicting_cv_mutex_);
+      is_predicting_ = false;
+    }
+    predicting_cv_.notify_all();
   } catch (const std::exception& e) {
-    is_predicting_ = false;
+    {
+      std::lock_guard<std::mutex> cv_lock(predicting_cv_mutex_);
+      is_predicting_ = false;
+    }
+    predicting_cv_.notify_all();
     result.success = false;
     result.error_msg = std::string("Completion failed: ") + e.what();
     result.error_type = RN_ERROR_INFERENCE;

@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.4.1)
 project(RNLlamaCpp)
 
-set(CMAKE_VERBOSE_MAKEFILE ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Get the absolute path to the module root and cpp directory
 get_filename_component(MODULE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
@@ -64,9 +65,18 @@ add_library(
     ${CPP_DIR}/llama.cpp/common/common.cpp
     ${CPP_DIR}/llama.cpp/common/sampling.cpp
     ${CPP_DIR}/llama.cpp/common/chat.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-parser.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-parser-xml-toolcall.cpp
+    ${CPP_DIR}/llama.cpp/common/chat-auto-parser-generator.cpp
+    ${CPP_DIR}/llama.cpp/common/chat-auto-parser-helpers.cpp
+    ${CPP_DIR}/llama.cpp/common/chat-diff-analyzer.cpp
     ${CPP_DIR}/llama.cpp/common/chat-peg-parser.cpp
+    ${CPP_DIR}/llama.cpp/common/reasoning-budget.cpp
+    ${CPP_DIR}/llama.cpp/common/debug.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/lexer.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/parser.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/runtime.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/value.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/string.cpp
+    ${CPP_DIR}/llama.cpp/common/jinja/caps.cpp
     ${CPP_DIR}/llama.cpp/common/peg-parser.cpp
     ${CPP_DIR}/llama.cpp/common/unicode.cpp
     ${CPP_DIR}/llama.cpp/common/regex-partial.cpp
@@ -176,7 +186,6 @@ target_include_directories(common PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/vendor/minja
     ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
 )
@@ -186,7 +195,6 @@ target_include_directories(RNLlamaCpp PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
-    ${LLAMA_CPP_DIR}/vendor/minja  # Add this for chat-template.hpp
     ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
     # Add the generated headers path

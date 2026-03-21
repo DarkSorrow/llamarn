@@ -1,12 +1,14 @@
 #pragma once
 
 #include <jsi/jsi.h>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
 #include <unordered_map>
-#include <functional>
+#include <vector>
 
 // Add ReactCommon includes for proper async handling
 #include <ReactCommon/CallInvoker.h>
@@ -163,12 +165,17 @@ private:
   // LLAMA context pointer (owned by the module)
   rn_llama_context* rn_ctx_;
 
-  // Completion state
-  bool should_stop_completion_;
-  bool is_predicting_;
+  // Completion state — atomic because they are read on the inference thread and written on the JS thread
+  std::atomic<bool> should_stop_completion_;
+  std::atomic<bool> is_predicting_;
 
   // Add CallInvoker for async operations
   std::shared_ptr<CallInvoker> jsInvoker_;
+
+  // Condition variable used to notify release() when inference finishes.
+  // predicting_cv_mutex_ is only held briefly during the notify/wait — not during inference.
+  std::condition_variable predicting_cv_;
+  std::mutex              predicting_cv_mutex_;
 
   static json jsiValueToJson(jsi::Runtime& rt, const jsi::Value& val); // Declaration of new helper
 };

@@ -75,17 +75,12 @@ copy_header_files() {
   cp -f "$CPP_DIR/llama.cpp/common/json-schema-to-grammar.h" "$INCLUDE_DIR/"
   cp -f "$CPP_DIR/llama.cpp/common/speculative.h" "$INCLUDE_DIR/"
   
-  # Create minja subdirectory
-  mkdir -p "$INCLUDE_DIR/common/minja"
-  
-  # Minja headers
-  cp -f "$CPP_DIR/llama.cpp/vendor/minja/minja.hpp" "$INCLUDE_DIR/common/minja/"
-  cp -f "$CPP_DIR/llama.cpp/vendor/minja/chat-template.hpp" "$INCLUDE_DIR/common/minja/"
-  
-  # JSON headers
+  # JSON headers — nlohmann is vendored, resolved via HEADER_SEARCH_PATHS at build time
   mkdir -p "$INCLUDE_DIR/nlohmann"
   cp -f "$CPP_DIR/llama.cpp/vendor/nlohmann/json.hpp" "$INCLUDE_DIR/nlohmann/"
   cp -f "$CPP_DIR/llama.cpp/common/base64.hpp" "$INCLUDE_DIR/common/"
+  # Note: minja/ vendor was removed upstream; jinja template engine is now
+  # in common/jinja/ and compiled directly into the bridge (no copy needed).
   
   echo -e "${GREEN}Header files copied successfully${NC}"
   return 0

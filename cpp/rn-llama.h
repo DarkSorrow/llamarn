@@ -6,21 +6,16 @@
 #include "common.h"
 #include "llama.h"
 #include "chat.h"
-#include "chat-template.hpp"
 #include "json-schema-to-grammar.h"
 #pragma GCC diagnostic pop
 
 #include "rn-utils.h"
 
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
-
-// Forward declarations
-struct llama_model;
-struct llama_context;
-struct llama_vocab;
 
 namespace facebook::react {
 
@@ -49,6 +44,10 @@ struct rn_llama_context {
     // State
     bool model_loaded = false;
     std::mutex mutex;
+
+    // Abort flag: set to true to make llama_decode exit on the next graph eval.
+    // Read by the abort_callback registered via llama_set_abort_callback().
+    std::atomic<bool> abort_generation{false};
 };
 
 // Core completion functions

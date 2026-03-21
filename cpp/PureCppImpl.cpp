@@ -624,6 +624,17 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
           selfPtr->rn_ctx_->model_loaded = true;
           selfPtr->rn_ctx_->vocab = llama_model_get_vocab(selfPtr->rn_ctx_->model);
 
+          // Register abort callback so llama_decode can exit early when abort_generation is set.
+          // Using a plain function-pointer lambda (no captures) — safe for C callback interop.
+          llama_set_abort_callback(
+              selfPtr->rn_ctx_->ctx,
+              [](void* data) -> bool {
+                  auto* ctx = static_cast<rn_llama_context*>(data);
+                  return ctx->abort_generation.load(std::memory_order_relaxed);
+              },
+              selfPtr->rn_ctx_.get()
+          );
+
           // Create a rn_common_params from the common_params
           rn_common_params rn_params;
           // Copy the base class fields
