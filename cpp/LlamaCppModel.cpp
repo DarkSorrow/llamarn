@@ -38,11 +38,6 @@ namespace facebook::react {
 
 LlamaCppModel::LlamaCppModel(rn_llama_context* rn_ctx, std::shared_ptr<CallInvoker> jsInvoker)
     : rn_ctx_(rn_ctx), should_stop_completion_(false), is_predicting_(false), jsInvoker_(jsInvoker) {
-    initHelpers();
-}
-
-void LlamaCppModel::initHelpers() {
-    // No longer need tool handler initialization
 }
 
 LlamaCppModel::~LlamaCppModel() {
@@ -169,7 +164,7 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
   }
 
   if (obj.hasProperty(rt, "repeat_last_n") && !obj.getProperty(rt, "repeat_last_n").isUndefined()) {
-    options.repeat_last_n = (int)obj.getProperty(rt, "repeat_last_n").asNumber();
+    options.repeat_last_n = static_cast<int>(obj.getProperty(rt, "repeat_last_n").asNumber());
   }
 
   if (obj.hasProperty(rt, "frequency_penalty") && !obj.getProperty(rt, "frequency_penalty").isUndefined()) {
@@ -274,18 +269,11 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   // Clear the context KV cache
   llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
 
-  // Store original sampling parameters to restore later
-  float orig_temp              = rn_ctx_->params.sampling.temp;
-  float orig_top_p             = rn_ctx_->params.sampling.top_p;
-  float orig_top_k             = rn_ctx_->params.sampling.top_k;
-  float orig_min_p             = rn_ctx_->params.sampling.min_p;
-  float orig_presence_penalty  = rn_ctx_->params.sampling.penalty_present;
-  float orig_repeat_penalty    = rn_ctx_->params.sampling.penalty_repeat;
-  int   orig_repeat_last_n     = rn_ctx_->params.sampling.penalty_last_n;
-  float orig_frequency_penalty = rn_ctx_->params.sampling.penalty_freq;
-  int orig_n_predict           = rn_ctx_->params.n_predict;
+  // Save sampling parameters to restore after completion
+  auto saved_sampling  = rn_ctx_->params.sampling;
+  const auto saved_n_predict = rn_ctx_->params.n_predict;
 
-  // Set sampling parameters from options
+  // Apply per-request sampling overrides
   rn_ctx_->params.sampling.temp            = options.temperature;
   rn_ctx_->params.sampling.top_p           = options.top_p;
   rn_ctx_->params.sampling.top_k           = options.top_k;
@@ -350,16 +338,9 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
     result.error_type = RN_ERROR_INFERENCE;
   }
 
-  // Restore original parameters
-  rn_ctx_->params.sampling.temp            = orig_temp;
-  rn_ctx_->params.sampling.top_p           = orig_top_p;
-  rn_ctx_->params.sampling.top_k           = orig_top_k;
-  rn_ctx_->params.sampling.min_p           = orig_min_p;
-  rn_ctx_->params.sampling.penalty_present = orig_presence_penalty;
-  rn_ctx_->params.sampling.penalty_repeat  = orig_repeat_penalty;
-  rn_ctx_->params.sampling.penalty_last_n  = orig_repeat_last_n;
-  rn_ctx_->params.sampling.penalty_freq    = orig_frequency_penalty;
-  rn_ctx_->params.n_predict                = orig_n_predict;
+  // Restore sampling parameters for future calls
+  rn_ctx_->params.sampling = saved_sampling;
+  rn_ctx_->params.n_predict = saved_n_predict;
 
   return result;
 }
@@ -405,7 +386,7 @@ jsi::Object LlamaCppModel::completionResultToJsi(jsi::Runtime& rt, const Complet
 
   if (!result.success) {
     jsResult.setProperty(rt, "error", jsi::String::createFromUtf8(rt, result.error_msg));
-    jsResult.setProperty(rt, "errorType", jsi::Value((int)result.error_type));
+    jsResult.setProperty(rt, "errorType", jsi::Value(static_cast<int>(result.error_type)));
   }
 
   return jsResult;
@@ -431,8 +412,8 @@ jsi::Value LlamaCppModel::jsonToJsi(jsi::Runtime& rt, const json& j) {
     return array;
   } else if (j.is_object()) {
     jsi::Object object(rt);
-    for (const auto& item : j.items()) {
-      object.setProperty(rt, item.key().c_str(), jsonToJsi(rt, item.value()));
+    for (const auto& [key, val] : j.items()) {
+      object.setProperty(rt, key.c_str(), jsonToJsi(rt, val));
     }
     return object;
   }
@@ -681,7 +662,7 @@ jsi::Value LlamaCppModel::tokenizeJsi(jsi::Runtime& rt, const jsi::Value* args, 
       if (with_pieces) {
         // Create an object with ID and piece text
         jsi::Object tokenObj(rt);
-        tokenObj.setProperty(rt, "id", jsi::Value((int)tokens[i]));
+        tokenObj.setProperty(rt, "id", jsi::Value(static_cast<int>(tokens[i])));
 
         // Get the text piece for this token
         std::string piece = common_token_to_piece(rn_ctx_->vocab, tokens[i]);
@@ -690,12 +671,12 @@ jsi::Value LlamaCppModel::tokenizeJsi(jsi::Runtime& rt, const jsi::Value* args, 
         tokensArray.setValueAtIndex(rt, i, tokenObj);
       } else {
         // Just add the token ID
-        tokensArray.setValueAtIndex(rt, i, jsi::Value((int)tokens[i]));
+        tokensArray.setValueAtIndex(rt, i, jsi::Value(static_cast<int>(tokens[i])));
       }
     }
 
     result.setProperty(rt, "tokens", tokensArray);
-    result.setProperty(rt, "count", jsi::Value((int)tokens.size()));
+    result.setProperty(rt, "count", jsi::Value(static_cast<int>(tokens.size())));
 
     return result;
   } catch (const std::exception& e) {
@@ -722,7 +703,7 @@ jsi::Value LlamaCppModel::detokenizeJsi(jsi::Runtime& rt, const jsi::Value* args
     }
 
     jsi::Array tokensArr = tokensVal.getArray(rt);
-    int token_count = tokensArr.size(rt);
+    auto token_count = static_cast<int>(tokensArr.size(rt));
 
     if (!rn_ctx_ || !rn_ctx_->model || !rn_ctx_->vocab) {
       throw std::runtime_error("Model not loaded or vocab not available");
@@ -932,8 +913,8 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
 
     // Create usage info
     jsi::Object usage(rt);
-    usage.setProperty(rt, "prompt_tokens", jsi::Value((int)tokens.size()));
-    usage.setProperty(rt, "total_tokens", jsi::Value((int)tokens.size()));
+    usage.setProperty(rt, "prompt_tokens", jsi::Value(static_cast<int>(tokens.size())));
+    usage.setProperty(rt, "total_tokens", jsi::Value(static_cast<int>(tokens.size())));
 
     // Assemble the response
     response.setProperty(rt, "object", jsi::String::createFromUtf8(rt, "list"));

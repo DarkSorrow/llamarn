@@ -28,41 +28,6 @@
 
 namespace facebook::react {
 
-// Chat message structure for representing messages in a conversation
-struct Message {
-  std::string role;       // Role such as "user", "assistant", "system"
-  std::string content;    // Message content
-  std::string name;       // Optional name field for function calls
-};
-
-// Function parameter for tool calls
-struct FunctionParameter {
-  std::string name;
-  std::string type;
-  std::string description;
-  bool required;
-};
-
-// Function definition for tool calls
-struct Function {
-  std::string name;
-  std::string description;
-  std::vector<FunctionParameter> parameters;
-};
-
-// Tool for completion
-struct Tool {
-  std::string type;
-  Function function;
-};
-
-// Tool call parsed from completion
-struct ToolCall {
-  std::string id;
-  std::string type;
-  std::string name;
-  std::string arguments;
-};
 
 /**
  * LlamaCppModel - A JSI wrapper class around llama.cpp functionality
@@ -97,14 +62,14 @@ public:
   /**
    * Get information about the model
    */
-  int32_t getVocabSize() const;
-  int32_t getContextSize() const;
-  int32_t getEmbeddingSize() const;
+  [[nodiscard]] int32_t getVocabSize() const;
+  [[nodiscard]] int32_t getContextSize() const;
+  [[nodiscard]] int32_t getEmbeddingSize() const;
 
   /**
    * Control for active completion state
    */
-  bool shouldStopCompletion() const;
+  [[nodiscard]] bool shouldStopCompletion() const;
   void setShouldStopCompletion(bool value);
 
   /**
@@ -156,11 +121,6 @@ private:
    * Convert JSON to JSI value
    */
   jsi::Value jsonToJsi(jsi::Runtime& rt, const json& j);
-
-  /**
-   * Initialize utility functions and handlers
-   */
-  void initHelpers();
 
   // LLAMA context pointer (owned by the module)
   rn_llama_context* rn_ctx_;

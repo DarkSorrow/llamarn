@@ -484,7 +484,7 @@ CompletionResult run_chat_completion(
             json response = {
                 {"id", gen_chatcmplid()},
                 {"object", "chat.completion"},
-                {"created", (int)std::time(nullptr)},
+                {"created", static_cast<int>(std::time(nullptr))},
                 {"model", options.model.empty() ? "llamacpp-rn" : options.model}
             };
 

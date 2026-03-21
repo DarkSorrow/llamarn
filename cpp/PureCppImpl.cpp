@@ -1,6 +1,7 @@
 #include "PureCppImpl.h"
 
 #include <jsi/jsi.h>
+#include <array>
 #include <functional>
 #include <future>
 #include <memory>
@@ -61,26 +62,25 @@ static void load_android_cpu_backends() {
 
   // Try loading all CPU variant libraries (from most advanced to baseline)
   // Score each one and register only the best compatible variant
-  static const char* cpu_variants[] = {
+  static constexpr std::array<const char*, 4> cpu_variants = {{
     "libggml-cpu-android_armv8.6_1.so",  // DOTPROD + FP16 + MATMUL_INT8
     "libggml-cpu-android_armv8.2_2.so",  // DOTPROD + FP16
     "libggml-cpu-android_armv8.2_1.so",  // DOTPROD
     "libggml-cpu-android_armv8.0_1.so",  // Baseline (emulator compatible)
-    nullptr
-  };
+  }};
 
-  typedef ggml_backend_reg_t (*backend_init_fn_t)();
-  typedef int (*backend_score_t)();
-  
+  using backend_init_fn_t = ggml_backend_reg_t (*)();
+  using backend_score_t   = int (*)();
+
   int best_score = 0;
   void* best_handle = nullptr;
   backend_init_fn_t best_init = nullptr;
 
   // Score all variants and find the best one
-  for (int i = 0; cpu_variants[i] != nullptr; i++) {
-    void* cpu_handle = dlopen(cpu_variants[i], RTLD_LAZY | RTLD_LOCAL);
+  for (const auto* variant : cpu_variants) {
+    void* cpu_handle = dlopen(variant, RTLD_LAZY | RTLD_LOCAL);
     if (cpu_handle) {
-      backend_score_t score_fn = (backend_score_t)dlsym(cpu_handle, "ggml_backend_score");
+      auto score_fn = reinterpret_cast<backend_score_t>(dlsym(cpu_handle, "ggml_backend_score"));
       if (score_fn) {
         int score = score_fn();
         if (score > best_score) {
@@ -90,7 +90,7 @@ static void load_android_cpu_backends() {
           }
           best_score = score;
           best_handle = cpu_handle;
-          best_init = (backend_init_fn_t)dlsym(cpu_handle, "ggml_backend_init");
+          best_init = reinterpret_cast<backend_init_fn_t>(dlsym(cpu_handle, "ggml_backend_init"));
         } else {
           // This variant is not better, close it
           dlclose(cpu_handle);
@@ -121,8 +121,8 @@ static void load_android_cpu_backends() {
 // using dlopen() with just the library name - Android's linker finds them in the APK.
 static void load_android_backends() {
 #ifdef __ANDROID__
-  typedef ggml_backend_reg_t (*backend_init_fn_t)();
-  
+  using backend_init_fn_t = ggml_backend_reg_t (*)();
+
   // Load Hexagon backend first (Snapdragon DSP) - more performant than Vulkan on Snapdragon devices
   if (!ggml_backend_reg_by_name("HTP")) {
     // FastRPC (used by Hexagon) requires ADSP_LIBRARY_PATH to find HTP libraries
@@ -150,7 +150,7 @@ static void load_android_backends() {
     
     void* hexagon_handle = dlopen("libggml-hexagon.so", RTLD_LAZY | RTLD_LOCAL);
     if (hexagon_handle) {
-      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(hexagon_handle, "ggml_backend_init");
+      auto backend_init = reinterpret_cast<backend_init_fn_t>(dlsym(hexagon_handle, "ggml_backend_init"));
       if (backend_init) {
         ggml_backend_reg_t hexagon_backend = backend_init();
         if (hexagon_backend) {
@@ -159,12 +159,12 @@ static void load_android_backends() {
       }
     }
   }
-  
+
   // Load OpenCL backend
   if (!ggml_backend_reg_by_name("OpenCL")) {
     void* opencl_handle = dlopen("libggml-opencl.so", RTLD_LAZY | RTLD_LOCAL);
     if (opencl_handle) {
-      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(opencl_handle, "ggml_backend_init");
+      auto backend_init = reinterpret_cast<backend_init_fn_t>(dlsym(opencl_handle, "ggml_backend_init"));
       if (backend_init) {
         ggml_backend_reg_t opencl_backend = backend_init();
         if (opencl_backend) {
@@ -173,12 +173,12 @@ static void load_android_backends() {
       }
     }
   }
-  
+
   // Load Vulkan backend (disabled by default on Android due to emulator crashes, but try anyway)
   if (!ggml_backend_reg_by_name("Vulkan")) {
     void* vulkan_handle = dlopen("libggml-vulkan.so", RTLD_LAZY | RTLD_LOCAL);
     if (vulkan_handle) {
-      backend_init_fn_t backend_init = (backend_init_fn_t)dlsym(vulkan_handle, "ggml_backend_init");
+      auto backend_init = reinterpret_cast<backend_init_fn_t>(dlsym(vulkan_handle, "ggml_backend_init"));
       if (backend_init) {
         ggml_backend_reg_t vulkan_backend = backend_init();
         if (vulkan_backend) {
@@ -270,16 +270,16 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           }
 
           // Get model information (native types)
-          double n_params = (double)llama_model_n_params(model);
+          double n_params  = static_cast<double>(llama_model_n_params(model));
           const llama_vocab* vocab = llama_model_get_vocab(model);
-          double n_vocab = (double)llama_vocab_n_tokens(vocab);
-          double n_context = (double)llama_model_n_ctx_train(model);
-          double n_embd = (double)llama_model_n_embd(model);
+          double n_vocab   = static_cast<double>(llama_vocab_n_tokens(vocab));
+          double n_context = static_cast<double>(llama_model_n_ctx_train(model));
+          double n_embd    = static_cast<double>(llama_model_n_embd(model));
 
           // Get model description
-          char buf[512];
-          llama_model_desc(model, buf, sizeof(buf));
-          std::string description = buf[0] ? buf : "Unknown model";
+          std::array<char, 512> buf{};
+          llama_model_desc(model, buf.data(), buf.size());
+          std::string description = buf[0] ? buf.data() : "Unknown model";
 
           // Check if GPU is supported
           bool gpuSupported = llama_supports_gpu_offload();
@@ -291,7 +291,7 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           }
 
           // Extract quantization type from model description
-          std::string desc(buf);
+          std::string desc(buf.data());
           std::string quantType = "Unknown";
           size_t qPos = desc.find(" Q");
           if (qPos != std::string::npos && qPos + 5 <= desc.length()) {
@@ -299,17 +299,17 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
             quantType = desc.substr(qPos + 1, 4);
             // Remove any trailing non-alphanumeric characters
             quantType.erase(std::find_if(quantType.rbegin(), quantType.rend(), [](char c) {
-              return std::isalnum(c);
+              return std::isalnum(static_cast<unsigned char>(c));
             }).base(), quantType.end());
           }
 
           // Layer count, actual model size, and architecture from GGUF metadata
           int32_t n_layers = llama_model_n_layer(model);
-          double model_size_bytes = (double)llama_model_size(model);
+          double model_size_bytes = static_cast<double>(llama_model_size(model));
 
-          char arch_buf[128] = "unknown";
-          llama_model_meta_val_str(model, "general.architecture", arch_buf, sizeof(arch_buf));
-          std::string architecture = arch_buf;
+          std::array<char, 128> arch_buf{"unknown"};
+          llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
+          std::string architecture = arch_buf.data();
 
           // Free the model
           llama_model_free(model);
@@ -323,7 +323,7 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               result.setProperty(*runtimePtr, "n_vocab", jsi::Value(n_vocab));
               result.setProperty(*runtimePtr, "n_context", jsi::Value(n_context));
               result.setProperty(*runtimePtr, "n_embd", jsi::Value(n_embd));
-              result.setProperty(*runtimePtr, "n_layers", jsi::Value((double)n_layers));
+              result.setProperty(*runtimePtr, "n_layers", jsi::Value(static_cast<double>(n_layers)));
               result.setProperty(*runtimePtr, "model_size_bytes", jsi::Value(model_size_bytes));
               result.setProperty(*runtimePtr, "description", jsi::String::createFromUtf8(*runtimePtr, description));
               result.setProperty(*runtimePtr, "gpuSupported", jsi::Value(gpuSupported));
