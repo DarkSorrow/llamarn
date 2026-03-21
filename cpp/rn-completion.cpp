@@ -143,8 +143,24 @@ CompletionResult run_completion(
 
         const auto& params = rn_ctx->params;
 
-        // Create a copy of sampling parameters and apply grammar if provided
+        // Create a copy of sampling parameters and apply per-request overrides.
+        // All mutations happen on this LOCAL copy — rn_ctx_->params.sampling is never touched.
         common_params_sampling sampling_params = params.sampling;
+
+        // Apply per-request sampling overrides from CompletionOptions.
+        sampling_params.temp            = options.temperature;
+        sampling_params.top_p           = options.top_p;
+        sampling_params.top_k           = options.top_k;
+        sampling_params.min_p           = options.min_p;
+        sampling_params.penalty_present = options.presence_penalty;
+        sampling_params.penalty_repeat  = options.repeat_penalty;
+        sampling_params.penalty_last_n  = options.repeat_last_n;
+        sampling_params.penalty_freq    = options.frequency_penalty;
+        // Map JS sentinel -1 ("use default/random") to the model's configured seed.
+        // Only override if the caller supplied an explicit non-negative seed.
+        if (options.seed >= 0) {
+            sampling_params.seed = static_cast<uint32_t>(options.seed);
+        }
 
         // Merge preserved token IDs from the chat template autoparser into sampling params.
         // These are special single-token strings (e.g. "<think>", "<|eot_id|>") that the

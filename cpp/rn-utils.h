@@ -67,7 +67,7 @@ struct CompletionOptions {
     bool ignore_eos = false;
     std::string chat_template;
     bool use_jinja = false;
-    int seed = -1;
+    int seed = -1;  // -1 = leave model's default seed unchanged; >=0 overrides (applied in run_completion)
     json tools;         // tools for function calling
     std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
     std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar

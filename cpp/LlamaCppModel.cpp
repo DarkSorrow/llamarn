@@ -239,8 +239,12 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     if (toolChoiceVal.isString()) {
       options.tool_choice = toolChoiceVal.asString(rt).utf8(rt);
     } else if (toolChoiceVal.isObject()) {
-      // Handle the case where tool_choice is an object with "type": "function", etc.
-      options.tool_choice = "required"; // Default to "required" if a specific tool is selected
+      // OpenAI allows tool_choice = { type: "function", function: { name: "foo" } }
+      // to force a specific function. llama.cpp's common_chat_tool_choice_parse_oaicompat
+      // only accepts "auto" / "none" / "required" — per-function enforcement is not
+      // available at the sampling level. Map to "required" (forces tool use), which is
+      // the closest valid approximation.
+      options.tool_choice = "required";
     }
   }
 
@@ -269,20 +273,8 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   // Clear the context KV cache
   llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
 
-  // Save sampling parameters to restore after completion
-  auto saved_sampling  = rn_ctx_->params.sampling;
-  const auto saved_n_predict = rn_ctx_->params.n_predict;
-
-  // Apply per-request sampling overrides
-  rn_ctx_->params.sampling.temp            = options.temperature;
-  rn_ctx_->params.sampling.top_p           = options.top_p;
-  rn_ctx_->params.sampling.top_k           = options.top_k;
-  rn_ctx_->params.sampling.min_p           = options.min_p;
-  rn_ctx_->params.sampling.penalty_present = options.presence_penalty;
-  rn_ctx_->params.sampling.penalty_repeat  = options.repeat_penalty;
-  rn_ctx_->params.sampling.penalty_last_n  = options.repeat_last_n;
-  rn_ctx_->params.sampling.penalty_freq    = options.frequency_penalty;
-  rn_ctx_->params.n_predict                = options.n_predict;
+  // Sampling overrides are applied per-request inside run_completion() on a LOCAL
+  // copy of the sampling params — rn_ctx_->params is never mutated here.
 
   // Check for a partial callback
   auto callback_adapter = [&partialCallback, runtime, this](const std::string& token, bool is_done) -> bool {
@@ -337,10 +329,6 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
     result.error_msg = std::string("Completion failed: ") + e.what();
     result.error_type = RN_ERROR_INFERENCE;
   }
-
-  // Restore sampling parameters for future calls
-  rn_ctx_->params.sampling = saved_sampling;
-  rn_ctx_->params.n_predict = saved_n_predict;
 
   return result;
 }
@@ -429,7 +417,19 @@ json LlamaCppModel::jsiValueToJson(jsi::Runtime& rt, const jsi::Value& val) {
     } else if (val.isBool()) {
         return val.getBool();
     } else if (val.isNumber()) {
-        return val.getNumber();
+        double num = val.getNumber();
+        // Store whole-number doubles as int64_t so nlohmann's is_number_integer()
+        // returns true and json-schema-to-grammar integer-bound checks work correctly.
+        // JS has only one numeric type (double), but JSON distinguishes integers from
+        // floats. Without this, schema values like { minLength: 1 } become 1.0
+        // (number_float), causing is_number_integer() checks in json-schema-to-grammar
+        // to silently fail (e.g. maxItems becomes INT_MAX instead of the actual limit).
+        if (std::isfinite(num) && num == std::floor(num) &&
+            num >= static_cast<double>(std::numeric_limits<int64_t>::min()) &&
+            num <= static_cast<double>(std::numeric_limits<int64_t>::max())) {
+            return static_cast<int64_t>(num);
+        }
+        return num;
     } else if (val.isString()) {
         return val.getString(rt).utf8(rt);
     } else if (val.isObject()) {
@@ -447,12 +447,19 @@ json LlamaCppModel::jsiValueToJson(jsi::Runtime& rt, const jsi::Value& val) {
             for (size_t i = 0; i < propNames.size(rt); ++i) {
                 jsi::String propName = propNames.getValueAtIndex(rt, i).asString(rt);
                 std::string key = propName.utf8(rt);
-                jsonObj[key] = jsiValueToJson(rt, jsiObj.getProperty(rt, propName));
+                jsi::Value propVal = jsiObj.getProperty(rt, propName);
+                // Skip undefined-valued properties — matches JSON.stringify behaviour.
+                // Without this, { type: undefined } in a JSON Schema becomes
+                // { "type": null }, which causes json-schema-to-grammar to push an
+                // "Unrecognized schema" error and throw at check_errors().
+                if (propVal.isUndefined()) {
+                    continue;
+                }
+                jsonObj[key] = jsiValueToJson(rt, propVal);
             }
             return jsonObj;
         }
     }
-    // Should not happen for valid JSON-like structures
     return nullptr;
 }
 
