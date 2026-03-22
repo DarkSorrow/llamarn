@@ -132,11 +132,6 @@ CompletionResult run_completion(
     }
 
     try {
-        // Clear the KV cache before each inference. The context is reused across calls;
-        // each call processes the full conversation history from position 0, so stale
-        // KV entries from the previous call must be evicted first.
-        llama_memory_clear(llama_get_memory(rn_ctx->ctx), false);
-
         // Initialize state with context values
         state.rn_ctx = rn_ctx;
         state.chat_format = rn_ctx->params.chat_format;
@@ -218,21 +213,91 @@ CompletionResult run_completion(
             return result;
         }
 
+        // KV cache: run_chat_completion already evicted stale entries and passes the
+        // trusted common prefix length via kv_hint_pos. We just apply it here.
+        // Direct callers (no kv_hint_pos) always start from position 0 with a full clear.
+        if (options.kv_hint_pos >= 0) {
+            size_t kv_common_len = static_cast<size_t>(options.kv_hint_pos);
+            // Safety: need at least 1 new token to encode for valid logits.
+            if (kv_common_len >= state.prompt_tokens.size()) {
+                kv_common_len = 0;
+                llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            }
+            state.n_past = static_cast<int>(kv_common_len);
+        } else {
+            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            state.n_past = 0;
+        }
+
         // Configure state
         state.n_ctx = llama_n_ctx(rn_ctx->ctx);
         state.n_predict = options.n_predict > 0 ? options.n_predict : params.n_predict;
         state.n_remaining = state.n_predict;
 
-        // Process the entire prompt as a single batched decode — much faster than token-by-token.
-        // common_prompt_batch_decode handles chunking into n_batch-sized sub-batches, M-RoPE,
-        // and replays the last token so logits are valid immediately after return.
-        if (!common_prompt_batch_decode(rn_ctx->ctx, state.prompt_tokens,
-                                        state.n_past, rn_ctx->params.n_batch,
-                                        "", false)) {
+        // Guard: prompt must fit in the context window, otherwise llama_decode will ggml_abort.
+        if (static_cast<int>(state.prompt_tokens.size()) >= state.n_ctx) {
             result.success = false;
-            result.error_msg = "Failed to process prompt";
-            result.error_type = RN_ERROR_INFERENCE;
+            result.error_msg = "Prompt too long: " + std::to_string(state.prompt_tokens.size())
+                + " tokens exceeds context size " + std::to_string(state.n_ctx);
+            result.error_type = RN_ERROR_INVALID_PARAM;
             return result;
+        }
+
+        // Encode prompt tokens into the KV cache.
+        if (state.n_past > 0) {
+            // Prefix reuse: only encode prompt_tokens[n_past:] at positions [n_past, n_past+1, ...]
+            const int n_new = static_cast<int>(state.prompt_tokens.size()) - state.n_past;
+            if (n_new > 0) {
+                llama_batch new_batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
+                for (int i = 0; i < n_new; ) {
+                    common_batch_clear(new_batch);
+                    int chunk = std::min(rn_ctx->params.n_batch, n_new - i);
+                    bool last_chunk = (i + chunk >= n_new);
+                    for (int j = 0; j < chunk; j++) {
+                        common_batch_add(new_batch,
+                            state.prompt_tokens[state.n_past + i + j],
+                            state.n_past + i + j,
+                            {0},
+                            last_chunk && (j == chunk - 1));
+                    }
+                    if (llama_decode(rn_ctx->ctx, new_batch) != 0) {
+                        llama_batch_free(new_batch);
+                        result.success = false;
+                        result.error_msg = "Failed to process prompt";
+                        result.error_type = RN_ERROR_INFERENCE;
+                        return result;
+                    }
+                    i += chunk;
+                }
+                llama_batch_free(new_batch);
+                state.n_past = static_cast<int>(state.prompt_tokens.size());
+            }
+        } else {
+            // Standard path: encode all tokens from position 0.
+            // We use our own chunked loop (identical to the prefix-reuse path above) so that
+            // prompts longer than n_batch are split correctly. common_prompt_batch_decode passes
+            // all tokens in a single llama_batch_get_one call which aborts when n_tokens > n_batch.
+            const int n_total = static_cast<int>(state.prompt_tokens.size());
+            llama_batch batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
+            for (int i = 0; i < n_total; ) {
+                common_batch_clear(batch);
+                int chunk = std::min(rn_ctx->params.n_batch, n_total - i);
+                bool last_chunk = (i + chunk >= n_total);
+                for (int j = 0; j < chunk; j++) {
+                    common_batch_add(batch, state.prompt_tokens[i + j], i + j,
+                                     {0}, last_chunk && (j == chunk - 1));
+                }
+                if (llama_decode(rn_ctx->ctx, batch) != 0) {
+                    llama_batch_free(batch);
+                    result.success = false;
+                    result.error_msg = "Failed to process prompt";
+                    result.error_type = RN_ERROR_INFERENCE;
+                    return result;
+                }
+                i += chunk;
+            }
+            llama_batch_free(batch);
+            state.n_past = n_total;
         }
 
         // Accept all prompt tokens into the sampler (needed for repetition/presence penalty).
@@ -331,6 +396,8 @@ CompletionResult run_completion(
         result.n_prompt_tokens = state.prompt_tokens.size();
         result.n_predicted_tokens = state.n_decoded;
 
+        // KV state is owned by run_chat_completion (kv_messages). Nothing to update here.
+
         // Final callback with is_done=true
         if (callback) {
             callback(state.generated_text, true);
@@ -366,6 +433,59 @@ CompletionResult run_chat_completion(
         std::vector<common_chat_msg> chat_msgs;
         if (!options.messages.is_null() && !options.messages.empty()) {
             chat_msgs = common_chat_msgs_parse_oaicompat(options.messages);
+        }
+
+        // --- Per-message KV cache prefix reuse ---
+        // Extract optional "id" fields from each message in the JSON array.
+        // IDs are an optional caller-supplied field (not part of the OpenAI spec);
+        // they let the native layer skip re-encoding messages that haven't changed
+        // without doing a full token-by-token comparison.
+        std::vector<std::string> msg_ids;
+        if (!options.messages.is_null() && options.messages.is_array()) {
+            for (const auto& msg : options.messages) {
+                if (msg.is_object() && msg.contains("id") && msg["id"].is_string()) {
+                    msg_ids.push_back(msg["id"].get<std::string>());
+                } else {
+                    msg_ids.push_back(""); // message has no ID — cannot be reused by lookup
+                }
+            }
+        }
+
+        // Find how many leading messages have IDs that match the cached sequence.
+        // A message with an empty ID never matches (we can't trust it's unchanged).
+        size_t kv_match_count = 0;
+        if (!msg_ids.empty() && rn_ctx->kv_has_messages && !options.reset_kv_cache) {
+            const auto& cached = rn_ctx->kv_messages;
+            while (kv_match_count < msg_ids.size()
+                   && kv_match_count < cached.size()
+                   && !msg_ids[kv_match_count].empty()
+                   && msg_ids[kv_match_count] == cached[kv_match_count].id) {
+                kv_match_count++;
+            }
+        }
+
+        // Decide the KV common position and evict stale entries.
+        int32_t kv_hint_pos = 0; // default: full encode from position 0
+        if (kv_match_count > 0) {
+            const int32_t kv_common_len = rn_ctx->kv_messages[kv_match_count - 1].token_end;
+            if (kv_match_count < rn_ctx->kv_messages.size()) {
+                // Some cached messages are no longer present — evict beyond the common prefix.
+                if (!llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, kv_common_len, -1)) {
+                    // seq_rm failed (e.g. recurrent model): fall back to full clear.
+                    llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+                    kv_hint_pos = 0;
+                } else {
+                    kv_hint_pos = kv_common_len;
+                }
+            } else {
+                // All cached messages still match and new messages are being appended.
+                // KV entries at [0..kv_common_len) are fully valid — no eviction needed.
+                kv_hint_pos = kv_common_len;
+            }
+        } else {
+            // No matching prefix (or no IDs provided): full clear.
+            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            kv_hint_pos = 0;
         }
 
         // Build template inputs directly from options — no JSON roundtrip
@@ -431,6 +551,8 @@ CompletionResult run_chat_completion(
 
         CompletionOptions cmpl_options = options;
         cmpl_options.prompt = chat_params.prompt;
+        // Pass the trusted KV start position so run_completion skips its own KV management.
+        cmpl_options.kv_hint_pos = kv_hint_pos;
 
         // Add extra stop strings emitted by the chat format (e.g. EOS variants, special separators).
         // Mirrors server-common.cpp: llama_params["stop"].push_back(stop)
@@ -465,6 +587,46 @@ CompletionResult run_chat_completion(
 
         // Run standard completion with the processed prompt
         result = run_completion(rn_ctx, cmpl_options, callback);
+
+        // Update per-message KV boundaries so the next call can skip unchanged messages.
+        // We only do this when message IDs were provided (otherwise there's nothing to track).
+        if (result.success && !msg_ids.empty()) {
+            // Retain boundaries for matched messages (they're already correct in kv_messages).
+            rn_ctx->kv_messages.resize(kv_match_count);
+
+            // For each new/changed message, determine where its tokens end by applying
+            // the chat template up to that message and tokenizing the result.
+            // This is O(n_new_messages) template applications — typically 1–2 per turn.
+            const size_t n_msgs = chat_msgs.size();
+            for (size_t k = kv_match_count; k < n_msgs && k < msg_ids.size(); k++) {
+                if (msg_ids[k].empty()) {
+                    // No ID for this message — stop tracking here; subsequent messages
+                    // can't be matched by ID either.
+                    break;
+                }
+                // Apply the template to messages[0..k] without a generation prompt to get
+                // the token boundary at the end of this message.
+                common_chat_templates_inputs tinput;
+                tinput.messages               = std::vector<common_chat_msg>(chat_msgs.begin(),
+                                                                              chat_msgs.begin() + k + 1);
+                tinput.add_generation_prompt  = false;
+                tinput.use_jinja              = rn_ctx->params.use_jinja;
+                tinput.reasoning_format       = rn_ctx->params.reasoning_format;
+                tinput.chat_template_kwargs   = rn_ctx->params.default_template_kwargs;
+                try {
+                    auto partial = common_chat_templates_apply(rn_ctx->chat_templates.get(), tinput);
+                    auto partial_tokens = common_tokenize(rn_ctx->vocab, partial.prompt, true, true);
+                    rn_ctx->kv_messages.push_back({msg_ids[k],
+                                                   static_cast<int32_t>(partial_tokens.size())});
+                } catch (...) {
+                    break; // template failed — stop tracking; next call will do a full encode
+                }
+            }
+            rn_ctx->kv_has_messages = true;
+        } else if (options.reset_kv_cache) {
+            rn_ctx->kv_messages.clear();
+            rn_ctx->kv_has_messages = false;
+        }
 
         if (result.success) {
             // Parse the generated content for tool calls and structured responses

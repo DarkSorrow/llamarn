@@ -73,6 +73,12 @@ struct CompletionOptions {
     std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar
     std::set<llama_token> preserved_tokens; // single-token IDs that must not be split (from chat_params)
 
+    // KV cache control
+    bool    reset_kv_cache = false; // force full KV cache clear even when message IDs match
+
+    // Internal: set by run_chat_completion after message-ID matching.
+    // When >= 0, run_completion skips KV management and uses this value directly as n_past.
+    int32_t kv_hint_pos = -1;
 };
 
 struct CompletionTimings {

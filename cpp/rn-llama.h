@@ -48,6 +48,16 @@ struct rn_llama_context {
     // Abort flag: set to true to make llama_decode exit on the next graph eval.
     // Read by the abort_callback registered via llama_set_abort_callback().
     std::atomic<bool> abort_generation{false};
+
+    // KV cache prefix reuse state (guarded by mutex).
+    // Stores the token boundary after each message so the next call can skip re-encoding
+    // messages whose IDs haven't changed. IDs are supplied by the caller per message.
+    struct kv_msg_entry {
+        std::string id;         // caller-supplied message ID
+        int32_t     token_end;  // exclusive token index after this message in the KV cache
+    };
+    std::vector<kv_msg_entry> kv_messages;
+    bool                      kv_has_messages = false;
 };
 
 // Core completion functions

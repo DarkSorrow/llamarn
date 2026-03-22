@@ -186,6 +186,11 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.seed = obj.getProperty(rt, "seed").asNumber();
   }
 
+  // KV cache control
+  if (obj.hasProperty(rt, "resetKvCache") && !obj.getProperty(rt, "resetKvCache").isUndefined()) {
+    options.reset_kv_cache = obj.getProperty(rt, "resetKvCache").asBool();
+  }
+
   // Extract stop sequences
   if (obj.hasProperty(rt, "stop") && !obj.getProperty(rt, "stop").isUndefined()) {
     auto stopVal = obj.getProperty(rt, "stop");
@@ -270,8 +275,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   // Lock the mutex during completion to avoid concurrent accesses
   std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
 
-  // Clear the context KV cache
-  llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
+  // KV cache management is handled inside run_completion() based on promptId.
 
   // Sampling overrides are applied per-request inside run_completion() on a LOCAL
   // copy of the sampling params — rn_ctx_->params is never mutated here.
