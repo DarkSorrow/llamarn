@@ -22,6 +22,7 @@
 * **Advanced thinking and reasoning support** for compatible models
 * **Flexible reasoning budget control** (unlimited, disabled, or limited)
 * **Multiple reasoning format support** (none, auto, deepseek, deepseek-legacy)
+* **KV cache prefix reuse** for multi-turn chat — pass a stable `id` per message to skip re-encoding unchanged history
 
 ## Breaking changes
 
@@ -195,6 +196,37 @@ const result = await context.completion({
 
 console.log('Response:', result.text);
 // For OpenAI-compatible format: result.choices[0].message.content
+```
+
+### Multi-Turn Chat with KV Cache Reuse
+
+Add a stable `id` field to each message. The native layer uses these IDs to detect which messages are already encoded in the KV cache and skips re-encoding them — only the new messages are processed.
+
+```js
+// Assign a stable id to each message. Any unique string works (uuid, counter, etc.)
+const history = [
+  { role: 'system',    content: 'You are a helpful assistant.', id: 'sys-1'    },
+  { role: 'user',      content: 'Hi!',                          id: 'turn-1-u' },
+];
+
+// Turn 1 — full encode, warms the cache for [sys-1, turn-1-u]
+const r1 = await context.completion({ messages: history });
+
+// Append the assistant reply with its own id
+history.push({ role: 'assistant', content: r1.text, id: 'turn-1-a' });
+history.push({ role: 'user',      content: 'Tell me more.', id: 'turn-2-u' });
+
+// Turn 2 — [sys-1, turn-1-u, turn-1-a] hit the cache; only [turn-2-u] is encoded
+const r2 = await context.completion({ messages: history });
+```
+
+**Rules:**
+- Messages without an `id` are never reused — they're always fully re-encoded (safe fallback).
+- If you edit a message's content, change its `id` too so the cache is invalidated.
+- Use `resetKvCache: true` to force a full clear regardless of IDs.
+
+```js
+await context.completion({ messages: history, resetKvCache: true });
 ```
 
 ### Chat with Tool Calling
