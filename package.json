@@ -104,7 +104,11 @@
     "email": "hassan@novastera.com"
   },
   "license": "Apache-2.0",
-  "homepage": "https://github.com/DarkSorrow/llamarn",
+  "homepage": "https://novastera.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DarkSorrow/llamarn"
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
