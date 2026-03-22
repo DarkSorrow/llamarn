@@ -18,8 +18,8 @@ import RNFS from 'react-native-fs';
 
 // Use smaller model for Android to avoid build size issues
 const modelFileName = Platform.OS === 'android' 
-  ? "Qwen3-1.7B-Q4_K_M.gguf"  // 770MB - smaller for Android
-  : "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"; // 4.1GB - full model for iOS
+  ? "Qwen3.5-0.8B-Q4_K_M.gguf"  // 770MB - smaller for Android
+  : "Qwen3.5-2B-Q4_K_M.gguf"; // 4.1GB - full model for iOS
 //const modelFileName = "Qwen3-1.7B-Q4_K_M.gguf";
 
 interface Message {
@@ -88,7 +88,8 @@ const extractToolCalls = (response: any): NonNullable<Message['tool_calls']> => 
  * receives properly structured messages ({content, reasoning_content}) on subsequent turns.
  */
 const extractThinking = (content: string): { thinking: string | null; content: string } => {
-  const match = content.match(/^<think>([\s\S]*?)<\/think>\s*/);
+  // Allow optional leading whitespace before <think> — models sometimes emit a newline first.
+  const match = content.match(/^\s*<think>([\s\S]*?)<\/think>\s*/);
   if (!match) return { thinking: null, content };
   return { thinking: (match[1] ?? '').trim(), content: content.slice(match[0].length) };
 };
@@ -103,7 +104,15 @@ const messageToApiPayload = (msg: Message): Record<string, unknown> => {
   // does message.content.split(...).lstrip(...) — null/undefined is not a string there and crashes
   // with "Callee is not a function ... (hint: 'lstrip')". OpenAI allows null for tool-only
   // assistant turns; our native path needs "" instead.
-  payload.content = msg.content ?? '';
+  let content = msg.content ?? '';
+  // The Qwen3 template crashes when an assistant message has </think> in content but no
+  // reasoning_content: it runs split('</think>')[0].rstrip().split('<think>')[-1].lstrip(),
+  // and if the before-</think> substring is empty, split('<think>') returns [] causing [-1]
+  // to be out-of-bounds → Undefined → lstrip() throws. Strip any residual think blocks.
+  if (msg.role === 'assistant' && !msg.reasoning_content && content.includes('</think>')) {
+    content = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+  }
+  payload.content = content;
   if (msg.reasoning_content) {
     payload.reasoning_content = msg.reasoning_content;
   }
@@ -407,11 +416,12 @@ export default function ModelChatTestScreen() {
           condition: ['Sunny', 'Cloudy', 'Rainy', 'Partly cloudy', 'Stormy'][Math.floor(Math.random() * 5)],
           humidity: Math.floor(Math.random() * 60) + 30, // 30-90%
         };
-        
-        // Create tool message
+
+        // Send raw JSON — the Qwen3 template wraps it in <tool_response> tags and the model
+        // expects structured JSON, not emoji-formatted display text.
         const toolMessage: Message = {
           role: 'tool',
-          content: `🌤️ Weather Result:\n${formatToolResponse(JSON.stringify(weatherData))}`,
+          content: JSON.stringify(weatherData),
           name: functionName,
           tool_call_id: toolCall.id
         };
@@ -430,10 +440,10 @@ export default function ModelChatTestScreen() {
           }
         };
         
-        // Create tool message
+        // Send raw JSON — the model expects structured JSON in tool responses.
         const toolMessage: Message = {
           role: 'tool',
-          content: `📍 Location Result:\n${formatToolResponse(JSON.stringify(locationData))}`,
+          content: JSON.stringify(locationData),
           name: functionName,
           tool_call_id: toolCall.id
         };
@@ -524,7 +534,8 @@ Rules:
       const currentMessages = [...messages, userMessage];
       
       const completionOptions: any = {
-        messages: currentMessages.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+        // Filter display-only messages (isToolCall) — they must not be sent to the model.
+        messages: currentMessages.filter(m => !m.isToolCall).map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
         // Qwen3 thinking mode settings (better for complex reasoning about tool usage)
         temperature: 0.6,
         top_p: 0.95,
@@ -612,10 +623,10 @@ Rules:
           ...(thinking ? { reasoning_content: thinking } : {}),
         };
 
-        if (rawContent.trim()) {
-          setMessages(prev => [...prev, assistantToolTurn]);
-          await yieldToUI();
-        }
+        // Always track the assistant tool turn in messages for history integrity,
+        // even when it has no visible content (model went straight to tool call).
+        setMessages(prev => [...prev, assistantToolTurn]);
+        await yieldToUI();
 
         for (const tc of toolCalls) {
           const callLine: Message = {
@@ -635,8 +646,9 @@ Rules:
           await yieldToUI();
         }
 
+        // Build the API conversation for the follow-up: exclude display-only callLine messages.
         const allMessages: Message[] = [
-          ...currentMessages,
+          ...currentMessages.filter(m => !m.isToolCall),
           assistantToolTurn,
           ...toolResultMessages,
         ];
@@ -846,6 +858,11 @@ Rules:
 
   // Render a message
   const renderMessage = (msg: Message, index: number) => {
+    // Skip display-only assistant turns that have no visible content (e.g. empty tool-call turns).
+    if (msg.role === 'assistant' && !msg.isToolCall && !msg.content && !msg.tool_calls?.length) {
+      return null;
+    }
+
     const getMessageStyle = () => {
       if (msg.role === 'user') return styles.userMessage;
       if (msg.role === 'tool') return styles.toolResponseMessage;
@@ -860,18 +877,23 @@ Rules:
       return 'Assistant';
     };
 
+    // Tool result messages store raw JSON for the model; format them nicely for display.
+    const displayContent = msg.role === 'tool'
+      ? formatToolResponse(msg.content)
+      : msg.content;
+
     return (
-      <View 
-        key={index} 
+      <View
+        key={index}
         style={[
-          styles.messageWrapper, 
+          styles.messageWrapper,
           getMessageStyle()
         ]}
       >
         <Text style={styles.messageSender}>
           {getMessageLabel()}
         </Text>
-        <Text style={styles.messageContent}>{msg.content}</Text>
+        <Text style={styles.messageContent}>{displayContent}</Text>
       </View>
     );
   };

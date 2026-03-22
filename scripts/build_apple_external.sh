@@ -78,7 +78,7 @@ copy_header_files() {
   # JSON headers — nlohmann is vendored, resolved via HEADER_SEARCH_PATHS at build time
   mkdir -p "$INCLUDE_DIR/nlohmann"
   cp -f "$CPP_DIR/llama.cpp/vendor/nlohmann/json.hpp" "$INCLUDE_DIR/nlohmann/"
-  cp -f "$CPP_DIR/llama.cpp/common/base64.hpp" "$INCLUDE_DIR/common/"
+  cp -f "$CPP_DIR/llama.cpp/common/base64.hpp" "$INCLUDE_DIR/"
   # Note: minja/ vendor was removed upstream; jinja template engine is now
   # in common/jinja/ and compiled directly into the bridge (no copy needed).
   
