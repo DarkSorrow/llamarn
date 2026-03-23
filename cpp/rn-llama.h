@@ -1,13 +1,8 @@
 #pragma once
 
-// Suppress warnings from llama.cpp headers
+// Suppress unused function warnings from llama.cpp headers
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
-// jinja/utils.h uses 64-bit FNV constants in a ternary; on 32-bit targets
-// (armeabi-v7a) the compiler warns/errors about the truncation even though
-// the branch is never taken at runtime. Suppress it here since we cannot
-// modify upstream llama.cpp sources.
-#pragma GCC diagnostic ignored "-Wconstant-conversion"
 #include "common.h"
 #include "llama.h"
 #include "chat.h"

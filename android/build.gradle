@@ -69,6 +69,11 @@ android {
 
     // Include ProGuard rules for apps that use this library
     consumerProguardFiles 'proguard-rules.pro'
+
+    ndk {
+      //abiFilters(*reactNativeArchitectures())
+      abiFilters "arm64-v8a", "x86_64"
+    }
   }
 
 
