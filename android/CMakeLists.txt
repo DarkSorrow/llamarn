@@ -60,7 +60,7 @@ add_library(
     common
     STATIC
     # Add back essential files now that we have prebuilt GGML libraries
-    ${CPP_DIR}/llama.cpp/common/build-info.cpp
+    # Note: build-info.cpp is NOT here - it's compiled as part of RNLlamaCpp (cpp/build-info.cpp)
     ${CPP_DIR}/llama.cpp/common/log.cpp
     ${CPP_DIR}/llama.cpp/common/common.cpp
     ${CPP_DIR}/llama.cpp/common/sampling.cpp
