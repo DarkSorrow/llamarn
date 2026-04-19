@@ -61,7 +61,6 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/tools/mtmd/mtmd-helper.{h,cpp}",
                    "cpp/llama.cpp/tools/mtmd/mtmd-audio.{h,cpp}",
                    "cpp/llama.cpp/tools/mtmd/mtmd-image.{h,cpp}",
-                   "cpp/llama.cpp/tools/mtmd/mtmd-debug.h",
                    "cpp/llama.cpp/tools/mtmd/deprecation-warning.cpp",
                    "cpp/llama.cpp/tools/mtmd/models/*.{h,cpp}",
                    # Our multimodal bridge helpers
