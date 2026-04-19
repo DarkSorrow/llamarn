@@ -79,6 +79,10 @@ struct CompletionOptions {
     // Internal: set by run_chat_completion after message-ID matching.
     // When >= 0, run_completion skips KV management and uses this value directly as n_past.
     int32_t kv_hint_pos = -1;
+
+    // Set by run_chat_completion after mtmd_helper_eval_chunks so run_completion
+    // skips its own encode step (prompt + images already in KV cache, logits ready).
+    int32_t mtmd_encoded_n_past = -1;
 };
 
 struct CompletionTimings {
