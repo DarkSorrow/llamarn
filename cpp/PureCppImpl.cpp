@@ -210,6 +210,14 @@ static void ensure_backends_loaded() {
   });
 }
 
+// Dispatches fn to the JS thread via invoker; silently drops if the runtime is already gone.
+template<typename Fn>
+static void safe_invoke(const std::shared_ptr<CallInvoker>& invoker, Fn&& fn) {
+    try {
+        invoker->invokeAsync(std::forward<Fn>(fn));
+    } catch (...) {}
+}
+
 // Factory method implementation
 std::shared_ptr<TurboModule> PureCppImpl::create(std::shared_ptr<CallInvoker> jsInvoker) {
   return std::make_shared<PureCppImpl>(std::move(jsInvoker));
@@ -314,41 +322,39 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Free the model
           llama_model_free(model);
 
-          // Schedule success callback on JS thread to create JSI objects
-          invoker->invokeAsync([selfPtr, resolve, n_params, n_vocab, n_context, n_embd, description, gpuSupported, optimalGpuLayers, quantType, n_layers, model_size_bytes, architecture, runtimePtr]() {
+          safe_invoke(invoker, [resolve, reject, n_params, n_vocab, n_context, n_embd, description,
+                                gpuSupported, optimalGpuLayers, quantType, n_layers,
+                                model_size_bytes, architecture, runtimePtr]() {
             try {
-              // Create result object on JS thread
               jsi::Object result(*runtimePtr);
-              result.setProperty(*runtimePtr, "n_params", jsi::Value(n_params));
-              result.setProperty(*runtimePtr, "n_vocab", jsi::Value(n_vocab));
-              result.setProperty(*runtimePtr, "n_context", jsi::Value(n_context));
-              result.setProperty(*runtimePtr, "n_embd", jsi::Value(n_embd));
-              result.setProperty(*runtimePtr, "n_layers", jsi::Value(static_cast<double>(n_layers)));
-              result.setProperty(*runtimePtr, "model_size_bytes", jsi::Value(model_size_bytes));
-              result.setProperty(*runtimePtr, "description", jsi::String::createFromUtf8(*runtimePtr, description));
-              result.setProperty(*runtimePtr, "gpuSupported", jsi::Value(gpuSupported));
-              result.setProperty(*runtimePtr, "optimalGpuLayers", jsi::Value(optimalGpuLayers));
-              result.setProperty(*runtimePtr, "quant_type", jsi::String::createFromUtf8(*runtimePtr, quantType));
-              result.setProperty(*runtimePtr, "architecture", jsi::String::createFromUtf8(*runtimePtr, architecture));
-
+              result.setProperty(*runtimePtr, "n_params",          jsi::Value(n_params));
+              result.setProperty(*runtimePtr, "n_vocab",           jsi::Value(n_vocab));
+              result.setProperty(*runtimePtr, "n_context",         jsi::Value(n_context));
+              result.setProperty(*runtimePtr, "n_embd",            jsi::Value(n_embd));
+              result.setProperty(*runtimePtr, "n_layers",          jsi::Value(static_cast<double>(n_layers)));
+              result.setProperty(*runtimePtr, "model_size_bytes",  jsi::Value(model_size_bytes));
+              result.setProperty(*runtimePtr, "description",       jsi::String::createFromUtf8(*runtimePtr, description));
+              result.setProperty(*runtimePtr, "gpuSupported",      jsi::Value(gpuSupported));
+              result.setProperty(*runtimePtr, "optimalGpuLayers",  jsi::Value(optimalGpuLayers));
+              result.setProperty(*runtimePtr, "quant_type",        jsi::String::createFromUtf8(*runtimePtr, quantType));
+              result.setProperty(*runtimePtr, "architecture",      jsi::String::createFromUtf8(*runtimePtr, architecture));
               resolve->call(*runtimePtr, result);
             } catch (const std::exception& e) {
-              // If conversion fails, create a simple error response
-              jsi::Object errorObj(*runtimePtr);
-              errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
-              resolve->call(*runtimePtr, errorObj);
+              // JSI object creation failed — reject (not resolve) so JS catch() sees it
+              try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, e.what())); } catch (...) {}
+            } catch (...) {
+              try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "loadLlamaModelInfo: JSI error")); } catch (...) {}
             }
           });
-          
+
         } catch (const std::exception& e) {
-          // Schedule error callback on JS thread
-          std::string errorMsg(e.what());
-          invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
-            try {
-              reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg));
-            } catch (...) {
-              // Ignore rejection errors
-            }
+          std::string msg = e.what();
+          safe_invoke(invoker, [reject, msg, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, msg)); } catch (...) {}
+          });
+        } catch (...) {
+          safe_invoke(invoker, [reject, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "loadLlamaModelInfo failed")); } catch (...) {}
           });
         }
       }).detach();
@@ -358,6 +364,38 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
   );
   
   return Promise.callAsConstructor(runtime, std::move(executor));
+}
+
+// Returns a valid init result or throws std::runtime_error.
+// Attempts GPU first if params.n_gpu_layers > 0; downgrades to CPU on failure.
+static common_init_result_ptr try_init_with_gpu_fallback(rn_common_params& params) {
+    if (params.n_gpu_layers > 0) {
+        try {
+            auto r = common_init_from_params(params);
+            if (r && r->model() && r->context()) return r;
+        } catch (const std::exception&) {
+            // GPU init failed — fall through to CPU
+        }
+        params.n_gpu_layers = 0;
+    }
+    auto r = common_init_from_params(params);
+    if (!r || !r->model() || !r->context())
+        throw std::runtime_error("model initialization failed (CPU)");
+    return r;
+}
+
+// Initializes chat templates with automatic chatml fallback; never throws.
+static void init_chat_templates_safe(rn_llama_context* ctx, const rn_common_params& params) {
+    try {
+        ctx->chat_templates = common_chat_templates_init(ctx->model, params.chat_template);
+        try {
+            common_chat_format_example(
+                ctx->chat_templates.get(), params.use_jinja, params.default_template_kwargs);
+        } catch (...) {}  // validation failure is non-fatal
+    } catch (...) {
+        try { ctx->chat_templates = common_chat_templates_init(ctx->model, "chatml"); }
+        catch (...) {}  // chatml fallback failed — chat won't work but don't crash
+    }
 }
 
 struct InitLlamaParams {
@@ -380,6 +418,103 @@ struct InitLlamaParams {
   std::string image_marker;
   uint32_t    declared_capabilities = 0;
 };
+
+struct ModelInitResult {
+    std::unique_ptr<rn_llama_context> rn_ctx;
+    common_init_result_ptr            init_result; // keeps llama_model / llama_context alive
+};
+
+// Performs all heavy model-loading work on the background thread.
+// No JSI, no Promise, no invoker — returns on success, throws on failure.
+static ModelInitResult do_init_llama(const InitLlamaParams& p) {
+    ensure_backends_loaded();
+
+    // ── 1. Build rn_common_params ──────────────────────────────────────────
+    rn_common_params params;
+    params.sampling            = common_params_sampling();
+    params.model.path          = p.model_path;
+    params.n_ctx               = p.n_ctx;
+    params.n_batch             = p.n_batch;
+    params.n_ubatch            = p.n_ubatch;
+    params.n_keep              = p.n_keep;
+    params.use_mmap            = p.use_mmap;
+    params.use_mlock           = p.use_mlock;
+    params.use_jinja           = p.use_jinja;
+    params.embedding           = p.embedding;
+    params.cpuparams.n_threads = p.n_threads;
+    params.n_gpu_layers        = p.n_gpu_layers;
+    params.logits_file         = p.logits_file;
+    params.rope_freq_base      = p.rope_freq_base;
+    params.rope_freq_scale     = p.rope_freq_scale;
+    params.sampling.seed       = p.seed;
+    params.verbosity           = p.verbosity;
+    params.yarn_ext_factor     = p.yarn_ext_factor;
+    params.yarn_attn_factor    = p.yarn_attn_factor;
+    params.yarn_beta_fast      = p.yarn_beta_fast;
+    params.yarn_beta_slow      = p.yarn_beta_slow;
+    params.reasoning_budget    = p.reasoning_budget;
+    params.reasoning_format    = p.reasoning_format;
+    if (!p.chat_template.empty()) params.chat_template = p.chat_template;
+    for (const auto& lora : p.lora_adapters) {
+        common_adapter_lora_info li;
+        li.path  = lora.first;
+        li.scale = lora.second;
+        params.lora_adapters.push_back(li);
+    }
+
+    // Set kwargs on `params` BEFORE copying to rn_params (fixes silent data-loss bug:
+    // previously kwargs were set on `params` AFTER rn_params was copy-constructed from it).
+    params.default_template_kwargs["enable_thinking"]     = (p.reasoning_budget != 0) ? "true" : "false";
+    if (p.reasoning_format != COMMON_REASONING_FORMAT_NONE) {
+        params.default_template_kwargs["thinking_forced_open"] = p.thinking_forced_open ? "true" : "false";
+        params.default_template_kwargs["reasoning_in_content"] = "false";
+    }
+    bool effective_parse = p.parse_tool_calls || p.use_jinja;
+    params.default_template_kwargs["parse_tool_calls"]    = effective_parse ? "true" : "false";
+    params.default_template_kwargs["parallel_tool_calls"] = p.parallel_tool_calls ? "true" : "false";
+
+    // rn_params is now copied AFTER all kwargs are set → kwargs are preserved
+    rn_common_params rn_params;
+    static_cast<common_params&>(rn_params) = params;
+    rn_params.use_jinja        = p.use_jinja;
+    rn_params.reasoning_format = p.reasoning_format;
+
+    // ── 2. Model init with GPU→CPU fallback ────────────────────────────────
+    auto init_result = try_init_with_gpu_fallback(params);
+
+    // ── 3. Build rn_llama_context ──────────────────────────────────────────
+    auto rn_ctx = std::make_unique<rn_llama_context>();
+    rn_ctx->model        = init_result->model();
+    rn_ctx->ctx          = init_result->context();
+    rn_ctx->model_loaded = true;
+    rn_ctx->vocab        = llama_model_get_vocab(rn_ctx->model);
+    rn_ctx->params       = rn_params;
+
+    llama_set_abort_callback(
+        rn_ctx->ctx,
+        [](void* data) -> bool {
+            return static_cast<rn_llama_context*>(data)->abort_generation.load(std::memory_order_relaxed);
+        },
+        rn_ctx.get());
+
+    // ── 4. Chat templates ──────────────────────────────────────────────────
+    init_chat_templates_safe(rn_ctx.get(), rn_params);
+
+    // ── 5. Multimodal (non-fatal: continue even if mmproj fails) ──────────
+    rn_ctx->declared_capabilities = p.declared_capabilities;
+    if (!p.mmproj_path.empty()) {
+        mtmd_context_params mparams  = mtmd_context_params_default();
+        mparams.use_gpu              = (p.n_gpu_layers != 0);
+        mparams.n_threads            = p.n_threads;
+        mparams.print_timings        = false;
+        mparams.warmup               = false;
+        if (!p.image_marker.empty()) mparams.media_marker = p.image_marker.c_str();
+        rn_ctx->mtmd_ctx          = mtmd_init_from_file(p.mmproj_path.c_str(), rn_ctx->model, mparams);
+        rn_ctx->multimodal_loaded = (rn_ctx->mtmd_ctx != nullptr);
+    }
+
+    return { std::move(rn_ctx), std::move(init_result) };
+}
 
 jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   // Parse JSI arguments to native types on JSI thread
@@ -584,220 +719,43 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
 
       // Launch background thread for model initialization
       std::thread([selfPtr, p, resolve, reject, runtimePtr, invoker]() {
+        // ── Phase 1: all heavy work — no JSI, no lock ──────────────────────
+        ModelInitResult r;
         try {
-          // Thread-safe access to member variables
+          r = do_init_llama(*p);
+        } catch (const std::exception& e) {
+          std::string msg = e.what();
+          safe_invoke(invoker, [reject, msg, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, msg)); } catch (...) {}
+          });
+          return;
+        } catch (...) {
+          safe_invoke(invoker, [reject, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "initLlama failed")); } catch (...) {}
+          });
+          return;
+        }
+
+        // ── Phase 2: store result under mutex (microseconds only) ───────────
+        {
           std::lock_guard<std::mutex> lock(selfPtr->mutex_);
-          
-          ensure_backends_loaded();
-
-          // Initialize params with defaults
-          rn_common_params params;
-
-          // Set default sampling parameters
-          params.sampling = common_params_sampling();
-
-          // Set all parsed native values
-          params.model.path              = p->model_path;
-          params.n_ctx                   = p->n_ctx;
-          params.n_batch                 = p->n_batch;
-          params.n_ubatch                = p->n_ubatch;
-          params.n_keep                  = p->n_keep;
-          params.use_mmap                = p->use_mmap;
-          params.use_mlock               = p->use_mlock;
-          params.use_jinja               = p->use_jinja;
-          params.embedding               = p->embedding;
-          params.cpuparams.n_threads     = p->n_threads;
-          params.n_gpu_layers            = p->n_gpu_layers;
-          params.logits_file             = p->logits_file;
-          params.rope_freq_base          = p->rope_freq_base;
-          params.rope_freq_scale         = p->rope_freq_scale;
-          params.sampling.seed           = p->seed;
-          params.verbosity               = p->verbosity;
-          params.yarn_ext_factor         = p->yarn_ext_factor;
-          params.yarn_attn_factor        = p->yarn_attn_factor;
-          params.yarn_beta_fast          = p->yarn_beta_fast;
-          params.yarn_beta_slow          = p->yarn_beta_slow;
-
-          // Set thinking and reasoning parameters
-          params.reasoning_budget        = p->reasoning_budget;
-          params.reasoning_format        = p->reasoning_format;
-
-          if (!p->chat_template.empty()) {
-            params.chat_template = p->chat_template;
-          }
-
-          // Add LoRA adapters
-          for (const auto& lora : p->lora_adapters) {
-            common_adapter_lora_info lora_info;
-            lora_info.path = lora.first;
-            lora_info.scale = lora.second;
-            params.lora_adapters.push_back(lora_info);
-          }
-
-          // Initialize using common_init_from_params
-          // Note: common_init_from_params returns a unique_ptr, and we need to keep it alive
-          // to maintain ownership of the model and context
-          common_init_result_ptr result;
-          
-          try {
-            result = common_init_from_params(params);
-            
-            // Check if initialization was successful
-            if (!result || !result->model() || !result->context()) {
-              throw std::runtime_error("Failed to initialize model and context");
-            }
-          } catch (const std::exception& e) {
-            // If we were trying to use GPU and got an error, retry with CPU-only
-            if (params.n_gpu_layers > 0) {
-              params.n_gpu_layers = 0;
-              
-              try {
-                result = common_init_from_params(params);
-                
-                if (!result || !result->model() || !result->context()) {
-                  throw std::runtime_error("Failed to initialize model and context even with CPU-only mode");
-                }
-              } catch (const std::exception& cpu_e) {
-                throw std::runtime_error(std::string("Model initialization failed: ") + cpu_e.what());
-              }
-            } else {
-              // Was already CPU-only, re-throw the original error
-              throw std::runtime_error(std::string("Model initialization failed: ") + e.what());
-            }
-          }
-
-          // Clean up any existing model before loading a new one
-          // This ensures proper destruction order: clear rn_ctx_ first, then init_result_
-          // The move assignment will automatically destroy the old init_result_ if it exists
           selfPtr->rn_ctx_.reset();
           selfPtr->init_result_.reset();
-
-          // Create and initialize rn_llama_context
-          selfPtr->rn_ctx_ = std::make_unique<facebook::react::rn_llama_context>();
-          // Store the result to keep model and context alive
-          // This will properly destroy any previous init_result_ before assigning the new one
-          selfPtr->init_result_ = std::move(result);
-          // Get raw pointers from the result (result still owns them)
-          selfPtr->rn_ctx_->model = selfPtr->init_result_->model();
-          selfPtr->rn_ctx_->ctx = selfPtr->init_result_->context();
-          selfPtr->rn_ctx_->model_loaded = true;
-          selfPtr->rn_ctx_->vocab = llama_model_get_vocab(selfPtr->rn_ctx_->model);
-
-          // Register abort callback so llama_decode can exit early when abort_generation is set.
-          // Using a plain function-pointer lambda (no captures) — safe for C callback interop.
-          llama_set_abort_callback(
-              selfPtr->rn_ctx_->ctx,
-              [](void* data) -> bool {
-                  auto* ctx = static_cast<rn_llama_context*>(data);
-                  return ctx->abort_generation.load(std::memory_order_relaxed);
-              },
-              selfPtr->rn_ctx_.get()
-          );
-
-          // Create a rn_common_params from the common_params
-          rn_common_params rn_params;
-          // Copy the base class fields
-          static_cast<common_params&>(rn_params) = params;
-          // Set additional fields
-          rn_params.use_jinja = params.use_jinja;
-          // Use the reasoning_format from params instead of hardcoding to NONE
-          rn_params.reasoning_format = params.reasoning_format;
-          
-          // Configure chat template kwargs for thinking and tool calling functionality
-          // This ensures that the thinking feature is available as an option when supported
-          
-          // Configure chat template kwargs based on parsed options
-          // reasoning_budget: -1 = unlimited thinking, 0 = disabled, >0 = limited thinking
-          // This parameter comes from the JSI options and controls the thinking feature
-          if (p->reasoning_budget != 0) {
-              params.default_template_kwargs["enable_thinking"] = "true";
-          } else {
-              params.default_template_kwargs["enable_thinking"] = "false";
-          }
-
-          if (p->reasoning_format != COMMON_REASONING_FORMAT_NONE) {
-              params.default_template_kwargs["thinking_forced_open"] = p->thinking_forced_open ? "true" : "false";
-              params.default_template_kwargs["reasoning_in_content"] = "false";
-          }
-
-          bool effective_parse_tool_calls = p->parse_tool_calls || p->use_jinja;
-          params.default_template_kwargs["parse_tool_calls"] = effective_parse_tool_calls ? "true" : "false";
-          params.default_template_kwargs["parallel_tool_calls"] = p->parallel_tool_calls ? "true" : "false";
-          
-          // Note: Users can override these kwargs by setting them in params.default_template_kwargs
-          // before calling this function, or by using the --chat-template-kwargs CLI argument
-          
-          // Now assign to the context
-          selfPtr->rn_ctx_->params = rn_params;
-
-          // Initialize chat templates (matches server.cpp approach)
-          // common_chat_templates_init already has try-catch internally for template parsing errors,
-          // but exceptions can escape from chat_template constructor during capability detection.
-          // We catch all exceptions (not just std::exception) to handle any edge cases.
-          try {
-            selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, params.chat_template);
-            
-            // Validate template by trying to format an example (catches runtime errors like null lstrip)
-            // This is optional - if it fails, we still use the template anyway (it might work in practice)
-            try {
-              common_chat_format_example(selfPtr->rn_ctx_->chat_templates.get(), params.use_jinja, params.default_template_kwargs);
-            } catch (...) {
-              // Template validation failed, but continue anyway - the template might work in practice
-              // This preserves backward compatibility for models that were working before
-            }
-          } catch (...) {
-            // Template initialization failed - fallback to chatml (matches server.cpp behavior)
-            // Catch all exceptions (not just std::exception) to handle any edge cases
-            try {
-              selfPtr->rn_ctx_->chat_templates = common_chat_templates_init(selfPtr->rn_ctx_->model, "chatml");
-            } catch (...) {
-              // Even chatml failed - this should never happen, but handle it gracefully
-              // The model will still load, but chat templates won't work
-            }
-          }
-
-          // Store declared capabilities and optionally init multimodal projection model
-          selfPtr->rn_ctx_->declared_capabilities = p->declared_capabilities;
-          if (!p->mmproj_path.empty()) {
-            mtmd_context_params mparams = mtmd_context_params_default();
-            mparams.use_gpu       = (p->n_gpu_layers != 0);
-            mparams.n_threads     = p->n_threads;
-            mparams.print_timings = false;
-            mparams.warmup        = false;
-            if (!p->image_marker.empty()) {
-              mparams.media_marker = p->image_marker.c_str();
-            }
-            selfPtr->rn_ctx_->mtmd_ctx = mtmd_init_from_file(
-                p->mmproj_path.c_str(), selfPtr->rn_ctx_->model, mparams);
-            selfPtr->rn_ctx_->multimodal_loaded =
-                (selfPtr->rn_ctx_->mtmd_ctx != nullptr);
-          }
-
-          // Schedule success callback on JS thread to create JSI objects
-          invoker->invokeAsync([selfPtr, resolve, runtimePtr]() {
-            try {
-              // Create the model object and resolve Promise on JS thread
-              jsi::Object modelObject = selfPtr->createModelObject(*runtimePtr, selfPtr->rn_ctx_.get());
-              resolve->call(*runtimePtr, modelObject);
-            } catch (const std::exception& e) {
-              // If conversion fails, create a simple error response
-              jsi::Object errorObj(*runtimePtr);
-              errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
-              resolve->call(*runtimePtr, errorObj);
-            }
-          });
-          
-        } catch (const std::exception& e) {
-          // Schedule error callback on JS thread
-          std::string errorMsg(e.what());
-          invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
-            try {
-              reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg));
-            } catch (...) {
-              // Ignore rejection errors
-            }
-          });
+          selfPtr->rn_ctx_      = std::move(r.rn_ctx);
+          selfPtr->init_result_ = std::move(r.init_result);
         }
+
+        // ── Phase 3: resolve Promise on JS thread ───────────────────────────
+        safe_invoke(invoker, [selfPtr, resolve, reject, runtimePtr]() {
+          try {
+            jsi::Object modelObject = selfPtr->createModelObject(*runtimePtr, selfPtr->rn_ctx_.get());
+            resolve->call(*runtimePtr, modelObject);
+          } catch (const std::exception& e) {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, e.what())); } catch (...) {}
+          } catch (...) {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "model object creation failed")); } catch (...) {}
+          }
+        });
       }).detach();
       
       return jsi::Value::undefined();

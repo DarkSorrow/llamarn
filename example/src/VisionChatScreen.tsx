@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
   Button,
   TextInput,
   ScrollView,
+  Image,
   StyleSheet,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
+import RNFS from 'react-native-fs';
 import { initLlama } from '@novastera-oss/llamarn';
 import type { LlamaModel } from '@novastera-oss/llamarn';
 
@@ -22,7 +25,33 @@ export default function VisionChatScreen() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus]   = useState('');
 
+  async function useTestImage() {
+    try {
+      const dest = `${RNFS.CachesDirectoryPath}/dataset.png`;
+      if (Platform.OS === 'android') {
+        // dataset.png is in android/app/src/main/assets/
+        await RNFS.copyFileAssets('dataset.png', dest);
+      } else {
+        // resolveAssetSource returns file:// in release, http:// from Metro in dev
+        const { uri } = Image.resolveAssetSource(require('../assets/dataset.png'));
+        if (uri.startsWith('http')) {
+          await RNFS.downloadFile({ fromUrl: uri, toFile: dest }).promise;
+        } else {
+          await RNFS.copyFile(uri.replace('file://', ''), dest);
+        }
+      }
+      setImage(`file://${dest}`);
+      setStatus('Test image ready');
+    } catch (e: any) {
+      setStatus(`Failed to load test image: ${e.message}`);
+    }
+  }
+
   async function loadModel() {
+    if (MODEL_FILE.startsWith('/path/to/') || MMPROJ_FILE.startsWith('/path/to/')) {
+      setStatus('Update MODEL_FILE and MMPROJ_FILE at the top of VisionChatScreen.tsx with real paths to a LLaVA-compatible model + mmproj.');
+      return;
+    }
     setLoading(true);
     setStatus('Loading model...');
     try {
@@ -102,6 +131,10 @@ export default function VisionChatScreen() {
       {!!status && <Text style={styles.status}>{status}</Text>}
       {loading && <ActivityIndicator style={styles.spinner} />}
 
+      <View style={styles.row}>
+        <Button title="Use Test Image" onPress={useTestImage} disabled={loading} />
+      </View>
+
       <TextInput
         style={styles.input}
         placeholder="file:///path/to/image.jpg or data:image/...;base64,..."
@@ -110,6 +143,10 @@ export default function VisionChatScreen() {
         autoCapitalize="none"
         autoCorrect={false}
       />
+
+      {!!imagePath && (
+        <Image source={{ uri: imagePath }} style={styles.preview} resizeMode="contain" />
+      )}
 
       <View style={styles.row}>
         <Button title="Describe" onPress={describe} disabled={!model || !imagePath.trim() || loading} />
@@ -126,12 +163,13 @@ export default function VisionChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container:   { padding: 16, flexGrow: 1 },
-  title:       { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
-  row:         { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
-  status:      { fontSize: 13, color: '#555', marginBottom: 4 },
-  spinner:     { marginVertical: 8 },
-  input:       { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 10, fontSize: 12 },
-  responseBox: { marginTop: 8, padding: 8, backgroundColor: '#f5f5f5', borderRadius: 6 },
-  responseText:{ fontSize: 13, lineHeight: 20 },
+  container:    { padding: 16, flexGrow: 1 },
+  title:        { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
+  row:          { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
+  status:       { fontSize: 13, color: '#555', marginBottom: 4 },
+  spinner:      { marginVertical: 8 },
+  input:        { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 10, fontSize: 12 },
+  preview:      { width: '100%', height: 180, marginBottom: 10, borderRadius: 6, backgroundColor: '#eee' },
+  responseBox:  { marginTop: 8, padding: 8, backgroundColor: '#f5f5f5', borderRadius: 6 },
+  responseText: { fontSize: 13, lineHeight: 20 },
 });

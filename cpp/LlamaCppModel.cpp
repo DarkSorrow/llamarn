@@ -958,6 +958,13 @@ jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args
   if (!rn_ctx_ || !rn_ctx_->mtmd_ctx)
     throw jsi::JSError(rt, "No multimodal context loaded");
 
+  // Validate capability before touching the atomic flag so we don't leave it stuck true.
+  std::string cap_str = args[3].isString() ? args[3].asString(rt).utf8(rt) : "";
+  uint32_t cap_flag = capabilities_from_strings({cap_str});
+  if (cap_flag == 0 || !has_capability(rn_ctx_->declared_capabilities, static_cast<ModelCapability>(cap_flag))) {
+    throw jsi::JSError(rt, "Capability '" + cap_str + "' was not declared at initLlama time");
+  }
+
   // Atomic frame drop: if still encoding the previous frame, return null immediately.
   // This avoids queuing frames behind the mutex at 30fps.
   if (is_processing_frame_.exchange(true)) {
@@ -1017,54 +1024,67 @@ jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args
       auto rtPtr   = &runtime;
 
       std::thread([selfPtr, raw_bm, resolve, reject, invoker, rtPtr]() {
+        // RAII: re-wrap raw_bm immediately so bitmap is freed on any exit path
         auto bm_del2 = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
         std::unique_ptr<mtmd_bitmap, decltype(bm_del2)> bm2(raw_bm, bm_del2);
+        // RAII: reset is_processing_frame_ unconditionally when thread exits
+        struct FrameGuard {
+          std::atomic<bool>& flag;
+          ~FrameGuard() { flag = false; }
+        } _guard{selfPtr->is_processing_frame_};
 
-        if (selfPtr->is_released_) {
-          selfPtr->is_processing_frame_ = false;
-          return;
-        }
+        try {
+          if (selfPtr->is_released_) return;
 
-        EmbedResult emb;
-        {
-          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
-          if (selfPtr->is_released_) {
-            selfPtr->is_processing_frame_ = false;
+          EmbedResult emb;
+          {
+            std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+            if (selfPtr->is_released_) return;
+            emb = encode_image_to_embeddings(
+                selfPtr->rn_ctx_->mtmd_ctx,
+                selfPtr->rn_ctx_->ctx,
+                bm2.get(),
+                selfPtr->rn_ctx_->params.n_batch);
+          }
+          bm2.reset(); // free bitmap before invokeAsync (reduces peak memory)
+
+          if (selfPtr->is_released_) return;
+          if (!emb.success) {
+            std::string err = emb.error_msg;
+            try { invoker->invokeAsync([reject, err, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err)); } catch (...) {}
+            }); } catch (...) {}
             return;
           }
-          emb = encode_image_to_embeddings(
-              selfPtr->rn_ctx_->mtmd_ctx,
-              selfPtr->rn_ctx_->ctx,
-              bm2.get(),
-              selfPtr->rn_ctx_->params.n_batch);
-        }
-        bm2.reset();
-        selfPtr->is_processing_frame_ = false;
 
-        if (selfPtr->is_released_) return;
-        if (!emb.success) {
-          std::string err = emb.error_msg;
-          invoker->invokeAsync([reject, err, rtPtr]() {
-            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
-          });
-          return;
+          size_t n_embd = static_cast<size_t>(
+              llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
+          size_t n_tok  = n_embd > 0 ? (emb.embedding.size() / n_embd) : 0;
+          auto embCopy  = std::move(emb.embedding);
+          if (selfPtr->is_released_) return;
+          try { invoker->invokeAsync([resolve, embCopy, n_tok, n_embd, rtPtr]() {
+            try {
+              jsi::Array arr(*rtPtr, embCopy.size());
+              for (size_t i = 0; i < embCopy.size(); ++i)
+                arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(embCopy[i])));
+              jsi::Object result(*rtPtr);
+              result.setProperty(*rtPtr, "embedding", std::move(arr));
+              result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
+              result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
+              resolve->call(*rtPtr, std::move(result));
+            } catch (...) {}
+          }); } catch (...) {}
+        } catch (const std::exception& e) {
+          std::string msg = e.what();
+          try { invoker->invokeAsync([reject, msg, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg)); } catch (...) {}
+          }); } catch (...) {}
+        } catch (...) {
+          try { invoker->invokeAsync([reject, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "runOnFrame failed")); } catch (...) {}
+          }); } catch (...) {}
         }
-
-        size_t n_embd = static_cast<size_t>(
-            llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
-        size_t n_tok  = n_embd > 0 ? (emb.embedding.size() / n_embd) : 0;
-        auto embCopy  = std::move(emb.embedding);
-        if (selfPtr->is_released_) return;
-        invoker->invokeAsync([resolve, embCopy, n_tok, n_embd, rtPtr]() {
-          jsi::Array arr(*rtPtr, embCopy.size());
-          for (size_t i = 0; i < embCopy.size(); ++i)
-            arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(embCopy[i])));
-          jsi::Object result(*rtPtr);
-          result.setProperty(*rtPtr, "embedding", std::move(arr));
-          result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
-          result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
-          resolve->call(*rtPtr, std::move(result));
-        });
+        // _guard destructor resets is_processing_frame_ = false here
       }).detach();
       return jsi::Value::undefined();
     });
@@ -1100,61 +1120,74 @@ jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args
       auto rtPtr   = &runtime;
 
       std::thread([selfPtr, path, normalize, resolve, reject, invoker, rtPtr]() {
-        if (selfPtr->is_released_) return;
-
-        auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
-        std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)> bm(
-            load_bitmap_from_uri(selfPtr->rn_ctx_->mtmd_ctx, path), bm_deleter);
-        if (!bm) {
+        try {
           if (selfPtr->is_released_) return;
-          std::string err = "Failed to load image: " + path;
-          invoker->invokeAsync([reject, err, rtPtr]() {
-            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
-          });
-          return;
-        }
 
-        EmbedResult res;
-        {
-          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+          auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
+          std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)> bm(
+              load_bitmap_from_uri(selfPtr->rn_ctx_->mtmd_ctx, path), bm_deleter);
+          if (!bm) {
+            if (selfPtr->is_released_) return;
+            std::string err = "Failed to load image: " + path;
+            try { invoker->invokeAsync([reject, err, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err)); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
+
+          EmbedResult res;
+          {
+            std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+            if (selfPtr->is_released_) return;
+            res = encode_image_to_embeddings(
+                selfPtr->rn_ctx_->mtmd_ctx,
+                selfPtr->rn_ctx_->ctx,
+                bm.get(),
+                selfPtr->rn_ctx_->params.n_batch);
+          }
+
+          if (!res.success) {
+            std::string err = res.error_msg;
+            try { invoker->invokeAsync([reject, err, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err)); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
+
+          if (normalize && !res.embedding.empty()) {
+            float norm = 0.0f;
+            for (float v : res.embedding) norm += v * v;
+            norm = std::sqrt(norm);
+            if (norm > 1e-6f) for (float& v : res.embedding) v /= norm;
+          }
+
+          size_t n_embd = static_cast<size_t>(
+              llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
+          size_t n_tok  = n_embd > 0 ? (res.embedding.size() / n_embd) : 0;
+          auto emb      = std::move(res.embedding);
           if (selfPtr->is_released_) return;
-          res = encode_image_to_embeddings(
-              selfPtr->rn_ctx_->mtmd_ctx,
-              selfPtr->rn_ctx_->ctx,
-              bm.get(),
-              selfPtr->rn_ctx_->params.n_batch);
+          try { invoker->invokeAsync([resolve, emb, n_tok, n_embd, rtPtr]() {
+            try {
+              jsi::Array arr(*rtPtr, emb.size());
+              for (size_t i = 0; i < emb.size(); ++i)
+                arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(emb[i])));
+              jsi::Object result(*rtPtr);
+              result.setProperty(*rtPtr, "embedding", std::move(arr));
+              result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
+              result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
+              resolve->call(*rtPtr, std::move(result));
+            } catch (...) {}
+          }); } catch (...) {}
+        } catch (const std::exception& e) {
+          std::string msg = e.what();
+          try { invoker->invokeAsync([reject, msg, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg)); } catch (...) {}
+          }); } catch (...) {}
+        } catch (...) {
+          try { invoker->invokeAsync([reject, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "embedImage failed")); } catch (...) {}
+          }); } catch (...) {}
         }
-
-        if (!res.success) {
-          std::string err = res.error_msg;
-          invoker->invokeAsync([reject, err, rtPtr]() {
-            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
-          });
-          return;
-        }
-
-        if (normalize && !res.embedding.empty()) {
-          float norm = 0.0f;
-          for (float v : res.embedding) norm += v * v;
-          norm = std::sqrt(norm);
-          if (norm > 1e-6f) for (float& v : res.embedding) v /= norm;
-        }
-
-        size_t n_embd = static_cast<size_t>(
-            llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
-        size_t n_tok  = n_embd > 0 ? (res.embedding.size() / n_embd) : 0;
-        auto emb      = std::move(res.embedding);
-        if (selfPtr->is_released_) return;
-        invoker->invokeAsync([resolve, emb, n_tok, n_embd, rtPtr]() {
-          jsi::Array arr(*rtPtr, emb.size());
-          for (size_t i = 0; i < emb.size(); ++i)
-            arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(emb[i])));
-          jsi::Object result(*rtPtr);
-          result.setProperty(*rtPtr, "embedding", std::move(arr));
-          result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
-          result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
-          resolve->call(*rtPtr, std::move(result));
-        });
       }).detach();
       return jsi::Value::undefined();
     });
@@ -1198,26 +1231,38 @@ jsi::Value LlamaCppModel::transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value*
       auto rtPtr   = &runtime;
 
       std::thread([selfPtr, opts, resolve, reject, invoker, rtPtr]() {
-        if (selfPtr->is_released_) return;
-        CompletionResult res;
-        {
-          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+        try {
           if (selfPtr->is_released_) return;
-          res = run_chat_completion(selfPtr->rn_ctx_, opts,
-              [](const std::string&, bool) { return false; });
-        }
-        if (selfPtr->is_released_) return;
-        invoker->invokeAsync([resolve, reject, res, rtPtr]() {
-          if (!res.success) {
-            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
-            return;
+          CompletionResult res;
+          {
+            std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+            if (selfPtr->is_released_) return;
+            res = run_chat_completion(selfPtr->rn_ctx_, opts,
+                [](const std::string&, bool) { return false; });
           }
-          jsi::Object result(*rtPtr);
-          result.setProperty(*rtPtr, "text",
-              jsi::String::createFromUtf8(*rtPtr, res.content));
-          result.setProperty(*rtPtr, "segments", jsi::Array(*rtPtr, 0));
-          resolve->call(*rtPtr, std::move(result));
-        });
+          if (selfPtr->is_released_) return;
+          try { invoker->invokeAsync([resolve, reject, res, rtPtr]() {
+            try {
+              if (!res.success) {
+                reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
+                return;
+              }
+              jsi::Object result(*rtPtr);
+              result.setProperty(*rtPtr, "text",     jsi::String::createFromUtf8(*rtPtr, res.content));
+              result.setProperty(*rtPtr, "segments",  jsi::Array(*rtPtr, 0));
+              resolve->call(*rtPtr, std::move(result));
+            } catch (...) {}
+          }); } catch (...) {}
+        } catch (const std::exception& e) {
+          std::string msg = e.what();
+          try { invoker->invokeAsync([reject, msg, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg)); } catch (...) {}
+          }); } catch (...) {}
+        } catch (...) {
+          try { invoker->invokeAsync([reject, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "transcribeAudio failed")); } catch (...) {}
+          }); } catch (...) {}
+        }
       }).detach();
       return jsi::Value::undefined();
     });
@@ -1263,25 +1308,37 @@ jsi::Value LlamaCppModel::visionReasoningJsi(jsi::Runtime& rt, const jsi::Value*
       auto rtPtr   = &runtime;
 
       std::thread([selfPtr, cmpl_opts, resolve, reject, invoker, rtPtr]() {
-        if (selfPtr->is_released_) return;
-        CompletionResult res;
-        {
-          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+        try {
           if (selfPtr->is_released_) return;
-          res = run_chat_completion(selfPtr->rn_ctx_, cmpl_opts,
-              [](const std::string&, bool) { return false; });
-        }
-        if (selfPtr->is_released_) return;
-        invoker->invokeAsync([resolve, reject, res, rtPtr]() {
-          if (!res.success) {
-            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
-            return;
+          CompletionResult res;
+          {
+            std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+            if (selfPtr->is_released_) return;
+            res = run_chat_completion(selfPtr->rn_ctx_, cmpl_opts,
+                [](const std::string&, bool) { return false; });
           }
-          jsi::Object result(*rtPtr);
-          result.setProperty(*rtPtr, "raw_text",
-              jsi::String::createFromUtf8(*rtPtr, res.content));
-          resolve->call(*rtPtr, std::move(result));
-        });
+          if (selfPtr->is_released_) return;
+          try { invoker->invokeAsync([resolve, reject, res, rtPtr]() {
+            try {
+              if (!res.success) {
+                reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
+                return;
+              }
+              jsi::Object result(*rtPtr);
+              result.setProperty(*rtPtr, "raw_text", jsi::String::createFromUtf8(*rtPtr, res.content));
+              resolve->call(*rtPtr, std::move(result));
+            } catch (...) {}
+          }); } catch (...) {}
+        } catch (const std::exception& e) {
+          std::string msg = e.what();
+          try { invoker->invokeAsync([reject, msg, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, msg)); } catch (...) {}
+          }); } catch (...) {}
+        } catch (...) {
+          try { invoker->invokeAsync([reject, rtPtr]() {
+            try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "visionReasoning failed")); } catch (...) {}
+          }); } catch (...) {}
+        }
       }).detach();
       return jsi::Value::undefined();
     });

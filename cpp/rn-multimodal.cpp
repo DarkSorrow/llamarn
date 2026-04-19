@@ -158,6 +158,10 @@ mtmd_bitmap* bitmap_from_native_frame(void* nativeHandle, uint32_t width,
     AHardwareBuffer_Planes planes{};
     if (AHardwareBuffer_lockPlanes(hbuf, AHARDWAREBUFFER_USAGE_CPU_READ_RARELY,
                                    -1, nullptr, &planes) != 0) return nullptr;
+    if (planes.planes[0].pixelStride != 4) {
+        AHardwareBuffer_unlock(hbuf, nullptr);
+        return nullptr; // unsupported pixel format — only RGBA8888 (stride=4) supported
+    }
     const uint8_t* src        = static_cast<const uint8_t*>(planes.planes[0].data);
     const uint32_t row_stride = static_cast<uint32_t>(planes.planes[0].rowStride);
     const uint32_t px_stride  = static_cast<uint32_t>(planes.planes[0].pixelStride); // 4 for RGBA8888
