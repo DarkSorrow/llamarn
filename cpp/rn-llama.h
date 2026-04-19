@@ -3,6 +3,7 @@
 // Suppress unused function warnings from llama.cpp headers
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #include "common.h"
 #include "llama.h"
 #include "chat.h"
@@ -10,6 +11,7 @@
 #pragma GCC diagnostic pop
 
 #include "rn-utils.h"
+#include "rn-multimodal.h"
 
 #include <atomic>
 #include <functional>
@@ -44,6 +46,13 @@ struct rn_llama_context {
     // State
     bool model_loaded = false;
     std::mutex mutex;
+
+    // Multimodal projection context (non-null when mmproj loaded)
+    mtmd_context* mtmd_ctx = nullptr;
+    bool multimodal_loaded = false;
+
+    // Bitmask of ModelCapability flags declared at initLlama time
+    uint32_t declared_capabilities = 0;
 
     // Abort flag: set to true to make llama_decode exit on the next graph eval.
     // Read by the abort_callback registered via llama_set_abort_callback().
