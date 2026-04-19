@@ -15,6 +15,19 @@ export interface LlamaContextType {
   // a pointer to the llama_context C++ objec
 }
 
+export type ModelCapability =
+  | 'vision-chat'
+  | 'image-encode'
+  | 'audio-transcribe'
+  | 'vision-reasoning';
+
+export type LlamaMessageContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+  | { type: 'audio_url'; audio_url: { url: string } };
+
+export type LlamaMessageContent = string | null | LlamaMessageContentPart[];
+
 export interface LlamaModelParams {
   // Model loading parameters
   model: string;               // path to the model file
@@ -67,6 +80,11 @@ export interface LlamaModelParams {
 
   // Grammar-based sampling
   grammar?: string;           // GBNF grammar for grammar-based sampling
+
+  // Multimodal
+  mmproj?: string;               // path to multimodal projection model (.gguf)
+  image_marker?: string;         // custom placeholder token (default: <__media__>)
+  capabilities?: ModelCapability[]; // declare which modalities are active
 }
 
 export interface LlamaCompletionParams {
@@ -99,7 +117,7 @@ export interface LlamaCompletionParams {
 
 export interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: LlamaMessageContent;
   tool_call_id?: string;
   name?: string;
 }
@@ -200,6 +218,33 @@ export interface EmbeddingResponse {
   };
 }
 
+export interface ImageEmbedResult {
+  embedding: number[];  // flat float32 array, length = n_tokens * n_embd
+  n_tokens: number;     // number of vision tokens
+  n_embd: number;       // embedding dimension
+}
+
+export interface TranscriptSegment {
+  start_s: number;
+  end_s: number;
+  text: string;
+}
+
+export interface TranscriptResult {
+  text: string;
+  segments?: TranscriptSegment[];
+}
+
+export interface DetectedObject {
+  label: string;
+  confidence: number;
+  bbox: { x: number; y: number; w: number; h: number };
+}
+
+export interface DetectionResult {
+  objects: DetectedObject[];
+}
+
 export interface LlamaContextMethods {
   completion(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): Promise<LlamaCompletionResult>;
   completionSync(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): LlamaCompletionResult;
@@ -232,6 +277,27 @@ export interface LlamaContextMethods {
   saveSession(path: string): Promise<boolean>;
   stopCompletion(): Promise<void>;
   release(): Promise<void>;
+
+  isMultimodalEnabled(): Promise<boolean>;
+  getSupportedModalities(): Promise<{
+    vision: boolean;
+    audio: boolean;
+    audioSampleRate?: number;
+  }>;
+
+  embedImage(imagePath: string, options?: { normalize?: boolean }): Promise<ImageEmbedResult>;
+
+  transcribeAudio(audioPath: string, options?: { language?: string }): Promise<TranscriptResult>;
+
+  visionReasoning(imagePath: string, options?: { prompt?: string }): Promise<{ raw_text: string }>;
+
+  runOnFrame(
+    buffer: Object,
+    width: number,
+    height: number,
+    capability: ModelCapability,
+    options?: { maxSize?: number },
+  ): Promise<ImageEmbedResult | TranscriptResult | DetectionResult | LlamaCompletionResult | null>;
 }
 
 export interface Spec extends TurboModule {
