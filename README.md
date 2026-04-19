@@ -1,72 +1,22 @@
 # LlamaRN
 
-> ⚠️ **WORK IN PROGRESS**: This package is currently under active development. Community help and feedback are greatly appreciated, especially in the areas mentioned in What Needs Help.
+A thin, reliable React Native Turbo Module wrapping [llama.cpp](https://github.com/ggml-org/llama.cpp) for on-device LLM inference on iOS and Android.
 
-## Goals
+## Features
 
-* Provide a thin, reliable wrapper around llama.cpp for React Native
-* Maintain compatibility with llama.cpp server API where possible
-* Make it easy to run LLMs on mobile devices with automatic resource management
-* Keep the codebase simple and maintainable
-
-## Current Features
-
-* Basic model loading and inference
-* Metal support on iOS
-* OpenCL/Vulkan GPU acceleration on Android
-* Snapdragon Hexagon NPU support on Android (arm64-v8a)
-* Automatic CPU/GPU detection
-* Chat completion with templates (including Jinja template support)
-* Embeddings generation
-* Function/tool calling support
-* **Advanced thinking and reasoning support** for compatible models
-* **Flexible reasoning budget control** (unlimited, disabled, or limited)
-* **Multiple reasoning format support** (none, auto, deepseek, deepseek-legacy)
-* **KV cache prefix reuse** for multi-turn chat — pass a stable `id` per message to skip re-encoding unchanged history
+- Model loading, text completion, and chat completion
+- Metal GPU on iOS; OpenCL / Vulkan / Hexagon NPU on Android
+- Automatic CPU/GPU detection and optimal GPU layer estimation
+- Chat completion with Jinja template support
+- Multi-turn KV cache prefix reuse (pass a stable `id` per message)
+- Embeddings generation
+- Function / tool calling
+- Thinking and reasoning model support (`reasoning_budget`, `reasoning_format`)
+- **Multimodal / Vision** — image-in-prompt chat, CLIP-style embeddings, Whisper-style transcription, open-ended vision reasoning, and zero-copy camera frame pipeline
 
 ## Breaking changes
 
 See **[BREAKING.md](./BREAKING.md)** for migration notes (thinking models / `reasoning_content`, KV cache behavior, GGUF + Jinja + tools pitfalls) and the **v0.7.0** release summary.
-
-## What Needs Help
-
-We welcome contributions, especially in these areas:
-
-1. **Android GPU and NPU Testing**:
-   * **OpenCL/Vulkan GPU Libraries**: GPU acceleration libraries (OpenCL and Vulkan) have been built and integrated, but we need help testing them on various Android devices to ensure proper functionality and performance.
-   * **Snapdragon Hexagon NPU Support**: Hexagon NPU support has been added for Snapdragon devices (arm64-v8a), but we need community testing on actual Snapdragon devices to verify it works correctly.
-   * Development of reliable GPU/NPU detection mechanism in React Native
-   * Implementation of proper backend initialization verification
-   * Creation of robust testing framework for GPU/NPU availability
-   * Performance benchmarking and optimization for mobile GPUs and NPUs
-   * Real-world device testing across different manufacturers and chipset generations
-
-2. **CI Improvements**:
-   * Adding automated Android GPU/NPU tests to CI pipeline
-   * Implementing device-specific testing strategies
-   * Adding performance benchmarks to CI
-
-3. **Tool Support**:
-   * Improving tool calling functionality for complex interactions
-   * Better JSON validation and error handling
-   * Enhanced thinking and reasoning model support
-   * Advanced reasoning format implementations
-
-4. **Testing**:
-   * Automated testing using the example project
-   * More comprehensive unit tests
-   * Cross-device compatibility tests
-
-5. **Documentation**:
-   * Improving examples and usage guides
-   * More detailed performance considerations
-
-6. **Performance**:
-   * Optimizing resource usage on different devices
-   * Memory management improvements
-   * Startup time optimization
-
-If you're interested in helping with any of these areas, please check our Contributing Guide.
 
 ## Installation
 
@@ -76,70 +26,37 @@ npm install @novastera-oss/llamarn
 
 ## Developer Setup
 
-If you're contributing to the library or running the example project, follow these setup steps:
-
 ### Prerequisites
 
-1. Clone the repository and navigate to the project directory
-2. Ensure you have React Native development environment set up for your target platform(s)
+1. Clone the repository
+2. React Native development environment for your target platform(s)
 
 ### Initial Setup
 
 ```sh
-# Install dependencies
 npm install
-
-# Optional if you already had previous version of llamacpp
-npm run clean-llama
-
-# Initialize llama.cpp submodule and dependencies
-npm run setup-llama-cpp
+npm run setup-llama-cpp        # init llama.cpp submodule
 ```
 
-### Android Development
+### Android
 
-1. Build the native Android libraries:
 ```sh
-# Build the external native libraries for Android
-./scripts/build_android_external.sh
+./scripts/build_android_external.sh   # build native libraries
+cd example && npm run android
 ```
 
-2. Run the example project:
+### iOS
+
 ```sh
-cd example
-npm run android
+cd example/ios && bundle exec pod install
+cd .. && npm run ios
 ```
 
-### iOS Development
+**Troubleshooting:**
+- Android: `cd android && ./gradlew clean`
+- iOS: `cd example/ios && rm -rf build Podfile.lock && pod install`
 
-1. Navigate to the example project and install iOS dependencies:
-```sh
-cd example
-cd ios
-
-# Install CocoaPods dependencies
-bundle exec pod install
-
-# Or if not using Bundler:
-# pod install
-
-cd ..
-```
-
-2. Run the example project:
-```sh
-npm run ios
-```
-
-### Development Notes
-
-- **Android**: The `build_android_external.sh` script compiles llama.cpp for Android architectures and sets up the necessary native libraries. This step is required before running the Android example.
-
-- **iOS**: The iOS setup uses CocoaPods to manage native dependencies. The prebuilt llama.cpp framework is included in the repository.
-
-- **Troubleshooting**: If you encounter build issues, try cleaning your build cache:
-  - Android: `cd android && ./gradlew clean`
-  - iOS: `cd example/ios && rm -rf build && rm Podfile.lock && pod install`
+---
 
 ## Basic Usage
 
@@ -148,250 +65,150 @@ npm run ios
 ```js
 import { initLlama } from '@novastera-oss/llamarn';
 
-// Initialize the model
 const context = await initLlama({
-  model: 'path/to/model.gguf',
+  model: '/path/to/model.gguf',
   n_ctx: 2048,
   n_batch: 512,
-  // Optional: Enable thinking and reasoning capabilities
-  reasoning_budget: -1,  // Unlimited thinking
-  reasoning_format: 'auto'  // Automatic reasoning format detection
 });
 
-// Generate a completion
 const result = await context.completion({
   prompt: 'What is artificial intelligence?',
   temperature: 0.7,
-  top_p: 0.95
+  top_p: 0.95,
 });
 
-console.log('Response:', result.text);
+console.log(result.text);
 ```
 
 ### Chat Completion
 
 ```js
-import { initLlama } from '@novastera-oss/llamarn';
-
-// Initialize the model
 const context = await initLlama({
-  model: 'path/to/model.gguf',
+  model: '/path/to/model.gguf',
   n_ctx: 4096,
-  n_batch: 512,
-  use_jinja: true,  // Enable Jinja template parsing
-  // Optional: Configure thinking and reasoning
-  reasoning_budget: -1,  // Enable unlimited thinking
-  reasoning_format: 'deepseek'  // Use DeepSeek reasoning format
+  use_jinja: true,
 });
 
-// Chat completion with messages
 const result = await context.completion({
   messages: [
     { role: 'system', content: 'You are a helpful assistant.' },
-    { role: 'user', content: 'Tell me about quantum computing.' }
+    { role: 'user',   content: 'Tell me about quantum computing.' },
   ],
   temperature: 0.7,
-  top_p: 0.95
 });
 
-console.log('Response:', result.text);
-// For OpenAI-compatible format: result.choices[0].message.content
+console.log(result.text);
+// OpenAI-compatible: result.choices[0].message.content
 ```
 
 ### Multi-Turn Chat with KV Cache Reuse
 
-Add a stable `id` field to each message. The native layer uses these IDs to detect which messages are already encoded in the KV cache and skips re-encoding them — only the new messages are processed.
+Assign a stable `id` to each message. The native layer re-uses KV cache entries for messages whose ID matches the previous turn — only new tokens are encoded.
 
 ```js
-// Assign a stable id to each message. Any unique string works (uuid, counter, etc.)
 const history = [
   { role: 'system',    content: 'You are a helpful assistant.', id: 'sys-1'    },
   { role: 'user',      content: 'Hi!',                          id: 'turn-1-u' },
 ];
 
-// Turn 1 — full encode, warms the cache for [sys-1, turn-1-u]
 const r1 = await context.completion({ messages: history });
 
-// Append the assistant reply with its own id
-history.push({ role: 'assistant', content: r1.text, id: 'turn-1-a' });
+history.push({ role: 'assistant', content: r1.text,         id: 'turn-1-a' });
 history.push({ role: 'user',      content: 'Tell me more.', id: 'turn-2-u' });
 
-// Turn 2 — [sys-1, turn-1-u, turn-1-a] hit the cache; only [turn-2-u] is encoded
+// Only [turn-2-u] is encoded; everything before hits the cache
 const r2 = await context.completion({ messages: history });
 ```
 
 **Rules:**
-- Messages without an `id` are never reused — they're always fully re-encoded (safe fallback).
-- If you edit a message's content, change its `id` too so the cache is invalidated.
-- Use `resetKvCache: true` to force a full clear regardless of IDs.
+- Messages without an `id` are always fully re-encoded.
+- If you edit a message's content, change its `id` so the cache is invalidated.
+- `resetKvCache: true` forces a full clear.
 
 ```js
 await context.completion({ messages: history, resetKvCache: true });
 ```
 
-### Chat with Tool Calling
-
-```js
-import { initLlama } from '@novastera-oss/llamarn';
-
-// Initialize the model with appropriate parameters for tool use
-const context = await initLlama({
-  model: 'path/to/model.gguf',
-  n_ctx: 2048,
-  n_batch: 512,
-  use_jinja: true,  // Enable template handling for tool calls
-  parse_tool_calls: true,  // Enable tool call parsing (auto-enabled with use_jinja)
-  parallel_tool_calls: false  // Disable parallel tool calls for compatibility
-});
-```
-
 ### Thinking and Reasoning Models
 
-For models that support reasoning and thinking, you can enable advanced thinking functionality:
-
 ```js
-import { initLlama } from '@novastera-oss/llamarn';
-
-// Initialize a reasoning model with thinking capabilities
 const context = await initLlama({
-  model: 'path/to/reasoning-model.gguf',
+  model: '/path/to/reasoning-model.gguf',
   n_ctx: 4096,
-  n_batch: 512,
   use_jinja: true,
-  
-  // Thinking and reasoning options
-  reasoning_budget: -1,           // -1 = unlimited thinking, 0 = disabled, >0 = limited
-  reasoning_format: 'deepseek',   // Use DeepSeek reasoning format
-  thinking_forced_open: true,     // Force the model to always output thinking
-  parse_tool_calls: true,         // Enable tool call parsing
-  parallel_tool_calls: false      // Disable parallel tool calls for compatibility
+  reasoning_budget: -1,          // -1 = unlimited, 0 = disabled, >0 = token limit
+  reasoning_format: 'deepseek',  // 'none' | 'auto' | 'deepseek' | 'deepseek-legacy'
+  thinking_forced_open: true,
 });
 
-// Chat completion with thinking enabled
 const result = await context.completion({
-  messages: [
-    { role: 'system', content: 'You are a helpful assistant. Think through problems step by step.' },
-    { role: 'user', content: 'Solve this math problem: What is 15% of 240?' }
-  ],
-  temperature: 0.7
+  messages: [{ role: 'user', content: 'Solve: what is 15% of 240?' }],
 });
 
-console.log('Response:', result.text);
-// The response may include thinking tags like <think>...</think> depending on the model
+// result.text may include <think>…</think> depending on the model
 ```
 
-### Thinking / tools / templates (breaking changes)
+See **[BREAKING.md](./BREAKING.md)** for multi-turn thinking, KV cache, and tool-calling pitfalls.
 
-Multi-turn **thinking** conversations, **KV cache** behavior, **GGUF + Jinja + tools** pitfalls, and the **v0.7.0** migration summary are documented in **[BREAKING.md](./BREAKING.md)**.
+### Tool Calling
 
 ```js
-// Create a chat with tool calling
-const response = await context.completion({
-  messages: [
-    { role: 'system', content: 'You are a helpful assistant that can access weather data.' },
-    { role: 'user', content: 'What\'s the weather like in Paris?' }
-  ],
-  tools: [
-    {
-      type: 'function',
-      function: {
-        name: 'get_weather',
-        description: 'Get the current weather in a location',
-        parameters: {
-          type: 'object',
-          properties: {
-            location: {
-              type: 'string',
-              description: 'The city and state, e.g. San Francisco, CA'
-            },
-            unit: {
-              type: 'string',
-              enum: ['celsius', 'fahrenheit'],
-              description: 'The unit of temperature to use'
-            }
-          },
-          required: ['location']
-        }
-      }
-    }
-  ],
-  tool_choice: 'auto',
-  temperature: 0.7
+const context = await initLlama({
+  model: '/path/to/model.gguf',
+  n_ctx: 2048,
+  use_jinja: true,          // parse_tool_calls enabled automatically
+  parallel_tool_calls: false,
 });
 
-// Check if the model wants to call a tool
-if (response.choices?.[0]?.finish_reason === 'tool_calls' || response.tool_calls?.length > 0) {
-  const toolCalls = response.choices?.[0]?.message?.tool_calls || response.tool_calls;
-  
-  // Process each tool call
-  if (toolCalls && toolCalls.length > 0) {
-    console.log('Function call:', toolCalls[0].function.name);
-    console.log('Arguments:', toolCalls[0].function.arguments);
-    
-    // Here you would handle the tool call and then pass the result back in a follow-up completion
-  }
+const response = await context.completion({
+  messages: [
+    { role: 'system', content: 'You are a helpful assistant.' },
+    { role: 'user',   content: "What's the weather in Paris?" },
+  ],
+  tools: [{
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: 'Get the current weather in a location',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' },
+          unit:     { type: 'string', enum: ['celsius', 'fahrenheit'] },
+        },
+        required: ['location'],
+      },
+    },
+  }],
+  tool_choice: 'auto',
+});
+
+if (response.choices?.[0]?.finish_reason === 'tool_calls') {
+  const call = response.choices[0].message.tool_calls[0];
+  console.log(call.function.name, call.function.arguments);
 }
 ```
 
-### Generating Embeddings
+### Embeddings
 
 ```js
-import { initLlama } from '@novastera-oss/llamarn';
-
-// Initialize the model in embedding mode
 const context = await initLlama({
-  model: 'path/to/embedding-model.gguf',
+  model: '/path/to/embedding-model.gguf',
   embedding: true,
-  n_ctx: 2048
+  n_ctx: 2048,
 });
 
-// Generate embeddings
-const embeddingResponse = await context.embedding({
-  input: "This is a sample text to embed"
-});
-
-console.log('Embedding:', embeddingResponse.data[0].embedding);
+const { data } = await context.embedding({ input: 'Text to embed' });
+console.log(data[0].embedding); // Float32 array
 ```
 
-## Advanced Configuration Options
-
-### Thinking and Reasoning Parameters
-
-The library supports advanced thinking and reasoning capabilities for models that support them:
-
-- **`reasoning_budget`**: Controls the amount of thinking allowed
-  - `-1`: Unlimited thinking (default)
-  - `0`: Disabled thinking
-  - `>0`: Limited thinking with the specified budget
-
-- **`reasoning_format`**: Controls how thinking is parsed and returned
-  - `'none'`: Leave thoughts unparsed in message content
-  - `'auto'`: Same as deepseek (default)
-  - `'deepseek'`: Extract thinking into `message.reasoning_content`
-  - `'deepseek-legacy'`: Extract thinking with streaming behavior
-
-- **`thinking_forced_open`**: Forces reasoning models to always output thinking
-  - `false`: Normal thinking behavior (default)
-  - `true`: Always include thinking tags in output
-
-- **`parse_tool_calls`**: Enables tool call parsing
-  - `true`: Parse and extract tool calls (default)
-  - `false`: Disable tool call parsing
-  - **Note**: Automatically enabled when `use_jinja` is true
-
-- **`parallel_tool_calls`**: Enables multiple tool calls in a single response
-  - `false`: Single tool calls only (default, for compatibility)
-  - `true`: Allow parallel tool calls (only supported by some models)
-
-### Automatic Tool Call Enhancement
-
-When `use_jinja` is enabled, `parse_tool_calls` is automatically enabled because Jinja templates provide better tool calling capabilities. This ensures optimal tool support when using advanced templates.
+---
 
 ## Multimodal / Vision
 
 llamarn supports image and audio input for compatible models (LLaVA, Qwen-VL, Whisper) via a separate **multimodal projection model** (`mmproj` `.gguf`).
 
-### Initialise with capabilities
+### Init with capabilities
 
 ```typescript
 const model = await initLlama({
@@ -409,6 +226,15 @@ const enabled = await model.isMultimodalEnabled();
 // true
 ```
 
+**Supported capabilities:**
+
+| Value | Description |
+|-------|-------------|
+| `vision-chat` | Image-in-prompt chat completions (LLaVA, Qwen-VL) |
+| `image-encode` | CLIP-style image embeddings |
+| `audio-transcribe` | Whisper-style audio → text |
+| `vision-reasoning` | Open-ended image analysis returning raw model text |
+
 ### Vision Chat
 
 ```typescript
@@ -416,28 +242,29 @@ const result = await model.completion({
   messages: [{
     role: 'user',
     content: [
-      { type: 'text', text: 'What is in this image?' },
+      { type: 'text',      text: 'What is in this image?' },
       { type: 'image_url', image_url: { url: 'file:///path/to/image.jpg' } },
     ],
   }],
   n_predict: 256,
 });
-// result.text contains the model's description
+
+console.log(result.text);
 ```
 
-Multiple images per message are supported. `file://` URIs and `data:image/...;base64,...` strings are both accepted.
+Multiple images per message are supported. `file://` URIs and `data:image/...;base64,...` strings are both accepted. KV cache prefix reuse is automatically disabled when messages contain images.
 
-### Image Embeddings (CLIP-style)
+### Image Embeddings
 
 ```typescript
 const { embedding, n_tokens, n_embd } = await model.embedImage(
   'file:///path/to/image.jpg',
   { normalize: true },
 );
-// embedding: Float32 array of length n_tokens * n_embd
+// embedding: flat Float32 array, length = n_tokens * n_embd
 ```
 
-### Audio Transcription (Whisper-style)
+### Audio Transcription
 
 ```typescript
 const { text } = await model.transcribeAudio('file:///path/to/audio.wav');
@@ -454,63 +281,117 @@ const { raw_text } = await model.visionReasoning(
 
 ### Camera Frame (zero-copy)
 
-Works with [VisionCamera](https://github.com/mrousavy/react-native-vision-camera) NativeBuffer frames — no disk I/O.
+Works with [VisionCamera](https://github.com/mrousavy/react-native-vision-camera) NativeBuffer frames — no disk I/O required.
 
 ```typescript
-import { useCameraDevice, useFrameProcessor, runAsync } from 'react-native-vision-camera';
+import { useFrameProcessor, runAsync } from 'react-native-vision-camera';
 
 const frameProcessor = useFrameProcessor((frame) => {
   'worklet';
   runAsync(frame, async () => {
-    // maxSize: 336 downsamples during the pixel copy (~330 KB vs ~8 MB for 1080p).
-    // Omit maxSize (or 0) for full-resolution OCR / complex scene analysis.
+    // maxSize: 336 downsamples to ~330 KB during the pixel copy (recommended for LLaVA/CLIP)
+    // Omit maxSize (or 0) for full-resolution analysis (OCR, detailed scenes)
     const result = await model.runOnFrame(
       frame, frame.width, frame.height, 'image-encode', { maxSize: 336 });
+
     if (result) {
-      // Frame was processed successfully
-      console.log('Embeddings:', result.n_tokens, 'tokens');
+      // result.embedding — Float32 array (n_tokens × n_embd)
+      console.log('Tokens:', result.n_tokens);
     }
     // null means the encoder was busy with the previous frame — dropped automatically
   });
 }, [model]);
 ```
 
-Frame dropping is handled automatically in C++ via an atomic flag — no JS-side throttle needed. KV cache prefix reuse is disabled when messages contain images.
+Frame dropping is handled automatically in C++ via an atomic flag — no JS-side throttle needed.
+
+**Supported model families:**
+
+| Model | Capability |
+|-------|-----------|
+| LLaVA 1.5 / 1.6 | vision-chat |
+| Qwen2-VL / Qwen3-VL | vision-chat |
+| LLaMA 4 Scout | vision-chat |
+| MiniCPM-V | vision-chat |
+| Whisper | audio-transcribe |
+| CLIP | image-encode |
+
+---
+
+## Model Info
+
+Query a model's properties without fully loading it:
+
+```typescript
+import { loadLlamaModelInfo } from '@novastera-oss/llamarn';
+
+const info = await loadLlamaModelInfo('/path/to/model.gguf');
+
+console.log(info.description);       // human-readable model name + quant
+console.log(info.n_params);          // parameter count
+console.log(info.n_layers);          // total layer count
+console.log(info.model_size_bytes);  // quantized on-disk size
+console.log(info.optimalGpuLayers);  // recommended n_gpu_layers for this device
+console.log(info.availableMemoryMB); // current free device RAM in MB
+console.log(info.estimatedVramMB);   // estimated VRAM needed for optimalGpuLayers
+console.log(info.architecture);      // e.g. "llama", "qwen2", "mistral"
+console.log(info.gpuSupported);      // true if GPU offload is available
+```
+
+---
+
+## Advanced Configuration
+
+### GPU and Memory Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `n_gpu_layers` | `0` | Layers to offload to GPU (use `optimalGpuLayers` from `loadLlamaModelInfo`) |
+| `n_ctx` | `2048` | Context window size |
+| `n_batch` | `512` | Prompt processing batch size |
+| `use_mmap` | `true` | Memory-mapped loading (faster startup) |
+| `use_mlock` | `false` | Lock model in RAM (prevents swapping) |
+
+### Thinking and Reasoning Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `reasoning_budget` | `-1` | Token budget for thinking: `-1` unlimited, `0` disabled, `>0` limited |
+| `reasoning_format` | `'auto'` | `'none'` \| `'auto'` \| `'deepseek'` \| `'deepseek-legacy'` |
+| `thinking_forced_open` | `false` | Force thinking tags in every response |
+| `parse_tool_calls` | `true` | Parse tool call JSON from output (auto-enabled with `use_jinja`) |
+| `parallel_tool_calls` | `false` | Allow multiple tool calls per response |
+
+---
 
 ## Model Path Handling
 
-The module accepts different path formats depending on the platform:
-
 ### iOS
 
-* Bundle path: `models/model.gguf` (if added to Xcode project)
-* Absolute path: `/path/to/model.gguf`
+- Bundle path (Xcode resource): `${RNFS.MainBundlePath}/model.gguf`
+- Absolute path: `/var/mobile/…/model.gguf`
 
 ### Android
 
-* Asset path: `asset:/models/model.gguf`
-* File path: `file:///path/to/model.gguf`
+- Cache directory: `${RNFS.CachesDirectoryPath}/model.gguf`
+- App assets (copied to cache first): `RNFS.copyFileAssets('model.gguf', dest)`
+
+---
 
 ## Documentation
 
-* [Interface Documentation](INTERFACE.md) - Detailed API interfaces
-* [Example App](example/) - Working example with common use cases
-* [Contributing Guide](CONTRIBUTING.md) - How to help improve the library
+- [Interface Documentation](INTERFACE.md) — Detailed API interfaces
+- [Breaking Changes](BREAKING.md) — Migration notes
+- [Example App](example/) — Working example with text chat and vision demo
+- [Contributing Guide](CONTRIBUTING.md)
+
+---
 
 ## About Novastera
 
-**LlamaRN** is part of the **Novastera** open-source ecosystem, a modern CRM/ERP platform designed for the next generation of business applications. Novastera combines cutting-edge AI capabilities with comprehensive business management tools, enabling organizations to leverage on-device AI for enhanced productivity and data privacy.
+**LlamaRN** is part of the **Novastera** open-source ecosystem. This library powers on-device LLM inference in [Novastera's](https://novastera.com) mobile applications — no data leaves the user's device.
 
-### Key Features of Novastera Platform
-
-- **Modern CRM/ERP System**: Comprehensive business management with AI-powered insights
-- **On-Device AI**: Privacy-first approach with local LLM inference - no data leaves your device
-- **Mobile-First**: Native iOS and Android applications built with React Native
-- **Open Source**: Part of Novastera's commitment to open-source innovation
-
-This library is currently being used in [Novastera's](https://novastera.com) mobile application, demonstrating its capabilities in production environments. We're committed to enabling on-device LLM inference with no data leaving the user's device, helping developers build AI-powered applications that respect user privacy.
-
-Learn more about Novastera: [https://novastera.com/resources](https://novastera.com/resources)
+Learn more: [https://novastera.com/resources](https://novastera.com/resources)
 
 ## License
 
@@ -518,12 +399,6 @@ Apache 2.0
 
 ## Acknowledgments
 
-We acknowledge the following projects and communities that have contributed to the development of this library:
-
-* **[mybigday/llama.rn](https://github.com/mybigday/llama.rn)** - A foundational React Native binding for llama.cpp that demonstrated the viability of on-device LLM inference in mobile applications.
-
-* **[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** - The core C++ library that enables efficient LLM inference, serving as the foundation for this project.
-
-* The test implementation of the Android Turbo Module ([react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)) provided valuable insights for our C++ integration.
-
-These projects have significantly contributed to the open-source ecosystem, and we are committed to building upon their work while maintaining the same spirit of collaboration and innovation.
+- **[mybigday/llama.rn](https://github.com/mybigday/llama.rn)** — foundational React Native binding for llama.cpp
+- **[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)** — the core C++ inference library
+- **[react-native-pure-cpp-turbo-module-library](https://github.com/Zach-Dean-Attractions-io/react-native-pure-cpp-turbo-module-library)** — reference for the Android C++ Turbo Module pattern

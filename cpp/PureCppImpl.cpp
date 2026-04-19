@@ -292,8 +292,9 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Check if GPU is supported
           bool gpuSupported = llama_supports_gpu_offload();
 
-          // Calculate optimal GPU layers if GPU is supported
+          // Calculate optimal GPU layers and memory estimates
           int optimalGpuLayers = 0;
+          int64_t available_memory_bytes = SystemUtils::getAvailableMemoryBytes();
           if (gpuSupported) {
             optimalGpuLayers = SystemUtils::getOptimalGpuLayers(model);
           }
@@ -314,6 +315,12 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Layer count, actual model size, and architecture from GGUF metadata
           int32_t n_layers = llama_model_n_layer(model);
           double model_size_bytes = static_cast<double>(llama_model_size(model));
+          // Per-layer VRAM estimate and total estimated VRAM for optimal GPU layers
+          int64_t bytes_per_layer = n_layers > 0 ? static_cast<int64_t>(model_size_bytes) / n_layers : 0;
+          double available_memory_mb = static_cast<double>(available_memory_bytes) / (1024.0 * 1024.0);
+          double estimated_vram_mb   = optimalGpuLayers > 0 && bytes_per_layer > 0
+              ? static_cast<double>(optimalGpuLayers * bytes_per_layer) / (1024.0 * 1024.0)
+              : 0.0;
 
           std::array<char, 128> arch_buf{"unknown"};
           llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
@@ -324,20 +331,23 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
 
           safe_invoke(invoker, [resolve, reject, n_params, n_vocab, n_context, n_embd, description,
                                 gpuSupported, optimalGpuLayers, quantType, n_layers,
-                                model_size_bytes, architecture, runtimePtr]() {
+                                model_size_bytes, architecture,
+                                available_memory_mb, estimated_vram_mb, runtimePtr]() {
             try {
               jsi::Object result(*runtimePtr);
-              result.setProperty(*runtimePtr, "n_params",          jsi::Value(n_params));
-              result.setProperty(*runtimePtr, "n_vocab",           jsi::Value(n_vocab));
-              result.setProperty(*runtimePtr, "n_context",         jsi::Value(n_context));
-              result.setProperty(*runtimePtr, "n_embd",            jsi::Value(n_embd));
-              result.setProperty(*runtimePtr, "n_layers",          jsi::Value(static_cast<double>(n_layers)));
-              result.setProperty(*runtimePtr, "model_size_bytes",  jsi::Value(model_size_bytes));
-              result.setProperty(*runtimePtr, "description",       jsi::String::createFromUtf8(*runtimePtr, description));
-              result.setProperty(*runtimePtr, "gpuSupported",      jsi::Value(gpuSupported));
-              result.setProperty(*runtimePtr, "optimalGpuLayers",  jsi::Value(optimalGpuLayers));
-              result.setProperty(*runtimePtr, "quant_type",        jsi::String::createFromUtf8(*runtimePtr, quantType));
-              result.setProperty(*runtimePtr, "architecture",      jsi::String::createFromUtf8(*runtimePtr, architecture));
+              result.setProperty(*runtimePtr, "n_params",            jsi::Value(n_params));
+              result.setProperty(*runtimePtr, "n_vocab",             jsi::Value(n_vocab));
+              result.setProperty(*runtimePtr, "n_context",           jsi::Value(n_context));
+              result.setProperty(*runtimePtr, "n_embd",              jsi::Value(n_embd));
+              result.setProperty(*runtimePtr, "n_layers",            jsi::Value(static_cast<double>(n_layers)));
+              result.setProperty(*runtimePtr, "model_size_bytes",    jsi::Value(model_size_bytes));
+              result.setProperty(*runtimePtr, "description",         jsi::String::createFromUtf8(*runtimePtr, description));
+              result.setProperty(*runtimePtr, "gpuSupported",        jsi::Value(gpuSupported));
+              result.setProperty(*runtimePtr, "optimalGpuLayers",    jsi::Value(optimalGpuLayers));
+              result.setProperty(*runtimePtr, "quant_type",          jsi::String::createFromUtf8(*runtimePtr, quantType));
+              result.setProperty(*runtimePtr, "architecture",        jsi::String::createFromUtf8(*runtimePtr, architecture));
+              result.setProperty(*runtimePtr, "availableMemoryMB",   jsi::Value(available_memory_mb));
+              result.setProperty(*runtimePtr, "estimatedVramMB",     jsi::Value(estimated_vram_mb));
               resolve->call(*runtimePtr, result);
             } catch (const std::exception& e) {
               // JSI object creation failed — reject (not resolve) so JS catch() sees it

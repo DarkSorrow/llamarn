@@ -52,7 +52,7 @@
     "example": "npm --workspace=example",
     "test": "jest",
     "typecheck": "tsc",
-    "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
+    "clean": "rm -rf android/build example/android/build example/android/app/build example/ios/build lib",
     "clean-llama": "node scripts/setup-llama-cpp.js clean",
     "clean-android": "rm -rf android/.cxx android/build android/src/main/jniLibs/x86 android/src/main/jniLibs/armeabi-v7a && find android/src/main/jniLibs -name '*.dylib' -delete 2>/dev/null || true",
     "clean-prebuilt": "rm -rf prebuilt/build-android prebuilt/gpu",

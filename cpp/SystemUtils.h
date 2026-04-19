@@ -41,6 +41,12 @@ public:
   static int getOptimalGpuLayers(struct llama_model* model);
 
   /**
+   * Returns the number of bytes of memory currently available to the process.
+   * Uses MemAvailable on Android and vm_statistics on iOS for accuracy.
+   */
+  static int64_t getAvailableMemoryBytes();
+
+  /**
    * Helper functions to easily set values from a JSI object if the property exists.
    * Returns true if the property was found and the value was set.
    */

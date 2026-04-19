@@ -92,6 +92,36 @@ int64_t getTotalPhysicalMemory() {
     return total_memory;
 }
 
+int64_t SystemUtils::getAvailableMemoryBytes() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    mach_port_t host = mach_host_self();
+    vm_size_t page_size = 0;
+    host_page_size(host, &page_size);
+    vm_statistics64_data_t vm_stats{};
+    mach_msg_type_number_t info_count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(host, HOST_VM_INFO64,
+                          reinterpret_cast<host_info64_t>(&vm_stats),
+                          &info_count) == KERN_SUCCESS) {
+        return static_cast<int64_t>(vm_stats.free_count) * page_size;
+    }
+    return 512LL * 1024 * 1024; // 512 MB fallback
+#elif defined(__ANDROID__)
+    std::ifstream meminfo("/proc/meminfo");
+    std::string line;
+    while (std::getline(meminfo, line)) {
+        if (line.compare(0, 13, "MemAvailable:") == 0) {
+            int64_t kb = 0;
+            std::istringstream iss(line.substr(13));
+            iss >> kb;
+            return kb * 1024;
+        }
+    }
+    return 512LL * 1024 * 1024; // 512 MB fallback
+#else
+    return 512LL * 1024 * 1024;
+#endif
+}
+
 int SystemUtils::getOptimalGpuLayers(struct llama_model* model) {
     // Get model parameters
     const int n_layer = llama_model_n_layer(model);

@@ -317,6 +317,8 @@ export interface Spec extends TurboModule {
     quant_type?: string;
     architecture: string;
     model_size_bytes: number;
+    availableMemoryMB: number;
+    estimatedVramMB: number;
   }>;
 }
 
@@ -348,6 +350,8 @@ export function loadLlamaModelInfo(
   optimalGpuLayers?: number;
   quant_type?: string;
   architecture?: string;
+  availableMemoryMB?: number;
+  estimatedVramMB?: number;
 }> {
   return LlamaCppRn.loadLlamaModelInfo(modelPath);
 }

@@ -14,25 +14,68 @@ import RNFS from 'react-native-fs';
 import { initLlama } from '@novastera-oss/llamarn';
 import type { LlamaModel } from '@novastera-oss/llamarn';
 
-// Update these paths to your local model files
-const MODEL_FILE  = '/path/to/llava-v1.5-7b-q4_k.gguf';
-const MMPROJ_FILE = '/path/to/mmproj-model-f16.gguf';
+const MODEL_FILENAME  = Platform.OS === 'android' ? 'Qwen3.5-0.8B-Q4_K_M.gguf' : 'Qwen3.5-2B-Q4_K_M.gguf';
+const MMPROJ_FILENAME = 'mmproj-F16.gguf';
+
+function getDefaultModelPath(): string {
+  if (Platform.OS === 'ios') return `${RNFS.MainBundlePath}/${MODEL_FILENAME}`;
+  return `${RNFS.CachesDirectoryPath}/${MODEL_FILENAME}`;
+}
+
+function getDefaultMmprojPath(): string {
+  if (Platform.OS === 'ios') return `${RNFS.MainBundlePath}/${MMPROJ_FILENAME}`;
+  return `${RNFS.CachesDirectoryPath}/${MMPROJ_FILENAME}`;
+}
 
 export default function VisionChatScreen() {
-  const [model, setModel]     = useState<LlamaModel | null>(null);
-  const [imagePath, setImage] = useState('');
-  const [response, setResp]   = useState('');
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus]   = useState('');
+  const [model, setModel]         = useState<LlamaModel | null>(null);
+  const [modelPath, setModelPath] = useState(getDefaultModelPath());
+  const [mmprojPath, setMmprojPath] = useState(getDefaultMmprojPath());
+  const [imagePath, setImage]     = useState('');
+  const [response, setResp]       = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [status, setStatus]       = useState('');
+
+  async function ensureModel(): Promise<LlamaModel> {
+    if (model) return model;
+    const mp = modelPath.trim();
+    if (!mp) throw new Error('Enter a model path first');
+    setStatus('Loading model…');
+
+    // Android: copy assets to cache on first run (same pattern as ModelChatTestScreen)
+    let resolvedMmproj = mmprojPath.trim();
+    if (Platform.OS === 'android' && resolvedMmproj) {
+      const cached = `${RNFS.CachesDirectoryPath}/${MMPROJ_FILENAME}`;
+      if (!(await RNFS.exists(cached))) {
+        setStatus('Copying mmproj to cache…');
+        await RNFS.copyFileAssets(MMPROJ_FILENAME, cached);
+      }
+      resolvedMmproj = cached;
+    }
+
+    const params: Parameters<typeof initLlama>[0] = { model: mp, n_ctx: 2048, use_jinja: true };
+    const mmproj = resolvedMmproj;
+    if (mmproj) {
+      params.mmproj       = mmproj;
+      params.capabilities = ['vision-chat', 'image-encode'];
+    }
+    const ctx = await initLlama(params);
+    setModel(ctx);
+    if (mmproj) {
+      const mods = await ctx.getSupportedModalities();
+      setStatus(`Model ready — vision: ${mods.vision}`);
+    } else {
+      setStatus('Model ready (text-only, no mmproj)');
+    }
+    return ctx;
+  }
 
   async function useTestImage() {
     try {
       const dest = `${RNFS.CachesDirectoryPath}/dataset.png`;
       if (Platform.OS === 'android') {
-        // dataset.png is in android/app/src/main/assets/
         await RNFS.copyFileAssets('dataset.png', dest);
       } else {
-        // resolveAssetSource returns file:// in release, http:// from Metro in dev
         const { uri } = Image.resolveAssetSource(require('../assets/dataset.png'));
         if (uri.startsWith('http')) {
           await RNFS.downloadFile({ fromUrl: uri, toFile: dest }).promise;
@@ -47,38 +90,14 @@ export default function VisionChatScreen() {
     }
   }
 
-  async function loadModel() {
-    if (MODEL_FILE.startsWith('/path/to/') || MMPROJ_FILE.startsWith('/path/to/')) {
-      setStatus('Update MODEL_FILE and MMPROJ_FILE at the top of VisionChatScreen.tsx with real paths to a LLaVA-compatible model + mmproj.');
-      return;
-    }
-    setLoading(true);
-    setStatus('Loading model...');
-    try {
-      const ctx = await initLlama({
-        model:        MODEL_FILE,
-        mmproj:       MMPROJ_FILE,
-        n_ctx:        2048,
-        use_jinja:    true,
-        capabilities: ['vision-chat'],
-      });
-      setModel(ctx);
-      const mods = await ctx.getSupportedModalities();
-      setStatus(`Ready — vision: ${mods.vision}, audio: ${mods.audio}`);
-    } catch (e: any) {
-      setStatus(`Error loading: ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function describe() {
-    if (!model || !imagePath.trim()) return;
+    if (!imagePath.trim()) { setStatus('Load an image first'); return; }
     setLoading(true);
     setResp('');
-    setStatus('Running...');
     try {
-      const r = await model.completion({
+      const ctx = await ensureModel();
+      setStatus('Running…');
+      const r = await ctx.completion({
         messages: [{
           role: 'user',
           content: [
@@ -98,12 +117,16 @@ export default function VisionChatScreen() {
   }
 
   async function embedImage() {
-    if (!model || !imagePath.trim()) return;
+    if (!imagePath.trim()) { setStatus('Load an image first'); return; }
     setLoading(true);
-    setStatus('Embedding...');
     try {
-      const r = await (model as any).embedImage(imagePath.trim(), { normalize: true });
-      setResp(`Embedding: ${r.n_tokens} tokens × ${r.n_embd} dims\nFirst 5: ${r.embedding.slice(0, 5).map((v: number) => v.toFixed(4)).join(', ')}...`);
+      const ctx = await ensureModel();
+      setStatus('Embedding…');
+      const r = await (ctx as any).embedImage(imagePath.trim(), { normalize: true });
+      setResp(
+        `Embedding: ${r.n_tokens} tokens × ${r.n_embd} dims\n` +
+        `First 5: ${(r.embedding as number[]).slice(0, 5).map((v) => v.toFixed(4)).join(', ')}…`
+      );
       setStatus('Done');
     } catch (e: any) {
       setStatus(`Error: ${e.message}`);
@@ -123,9 +146,34 @@ export default function VisionChatScreen() {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Vision Chat Demo</Text>
 
+      <Text style={styles.label}>Model path</Text>
+      <TextInput
+        style={styles.input}
+        value={modelPath}
+        onChangeText={setModelPath}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!model && !loading}
+      />
+
+      <Text style={styles.label}>Mmproj path (optional — vision models only)</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="leave blank for text-only test"
+        value={mmprojPath}
+        onChangeText={setMmprojPath}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!model && !loading}
+      />
+
+      <Text style={model ? styles.badgeOk : styles.badgeOff}>
+        {model ? '● Model loaded' : '○ Model not loaded — loads automatically on first use'}
+      </Text>
+
       <View style={styles.row}>
-        <Button title="Load Model" onPress={loadModel} disabled={loading || !!model} />
-        <Button title="Release" onPress={releaseModel} disabled={!model || loading} />
+        <Button title="Pre-load Model" onPress={async () => { setLoading(true); try { await ensureModel(); } catch(e:any) { setStatus(`Error: ${e.message}`); } finally { setLoading(false); }}} disabled={loading || !!model} />
+        <Button title="Release"        onPress={releaseModel} disabled={!model || loading} />
       </View>
 
       {!!status && <Text style={styles.status}>{status}</Text>}
@@ -137,7 +185,7 @@ export default function VisionChatScreen() {
 
       <TextInput
         style={styles.input}
-        placeholder="file:///path/to/image.jpg or data:image/...;base64,..."
+        placeholder="or paste file:///path/to/image.jpg"
         value={imagePath}
         onChangeText={setImage}
         autoCapitalize="none"
@@ -149,8 +197,8 @@ export default function VisionChatScreen() {
       )}
 
       <View style={styles.row}>
-        <Button title="Describe" onPress={describe} disabled={!model || !imagePath.trim() || loading} />
-        <Button title="Embed" onPress={embedImage} disabled={!model || !imagePath.trim() || loading} />
+        <Button title="Describe" onPress={describe} disabled={!imagePath.trim() || loading} />
+        <Button title="Embed"    onPress={embedImage} disabled={!imagePath.trim() || loading} />
       </View>
 
       {!!response && (
@@ -165,10 +213,13 @@ export default function VisionChatScreen() {
 const styles = StyleSheet.create({
   container:    { padding: 16, flexGrow: 1 },
   title:        { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
+  label:        { fontSize: 12, color: '#666', marginBottom: 2 },
   row:          { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
   status:       { fontSize: 13, color: '#555', marginBottom: 4 },
+  badgeOk:      { fontSize: 12, color: '#2a8a2a', fontWeight: '600', marginBottom: 6 },
+  badgeOff:     { fontSize: 12, color: '#999',    marginBottom: 6 },
   spinner:      { marginVertical: 8 },
-  input:        { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 10, fontSize: 12 },
+  input:        { borderWidth: 1, borderColor: '#ccc', borderRadius: 6, padding: 8, marginBottom: 10, fontSize: 11 },
   preview:      { width: '100%', height: 180, marginBottom: 10, borderRadius: 6, backgroundColor: '#eee' },
   responseBox:  { marginTop: 8, padding: 8, backgroundColor: '#f5f5f5', borderRadius: 6 },
   responseText: { fontSize: 13, lineHeight: 20 },
