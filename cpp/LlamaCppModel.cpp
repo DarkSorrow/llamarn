@@ -950,6 +950,127 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
   }
 }
 
+jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  if (count < 4)
+    throw jsi::JSError(rt, "runOnFrame requires 4 arguments: buffer, width, height, capability");
+  if (!args[0].isObject())
+    throw jsi::JSError(rt, "runOnFrame arg[0] must be a NativeBuffer object");
+  if (!rn_ctx_ || !rn_ctx_->mtmd_ctx)
+    throw jsi::JSError(rt, "No multimodal context loaded");
+
+  // Atomic frame drop: if still encoding the previous frame, return null immediately.
+  // This avoids queuing frames behind the mutex at 30fps.
+  if (is_processing_frame_.exchange(true)) {
+    return jsi::Value::null();
+  }
+
+  // Extract the native pointer from the VisionCamera NativeBuffer JSI host object.
+  auto bufObj = args[0].getObject(rt);
+  void* nativePtr = nullptr;
+  if (bufObj.hasNativeState(rt)) {
+    auto state = bufObj.getNativeState(rt);
+    if (state) nativePtr = reinterpret_cast<void*>(state.get());
+  }
+  if (!nativePtr) {
+    is_processing_frame_ = false;
+    throw jsi::JSError(rt, "Could not extract native buffer pointer from NativeBuffer");
+  }
+
+  uint32_t width  = static_cast<uint32_t>(args[1].asNumber());
+  uint32_t height = static_cast<uint32_t>(args[2].asNumber());
+
+  float max_size = 0.0f;
+  if (count > 4 && args[4].isObject()) {
+    auto opts = args[4].getObject(rt);
+    if (opts.hasProperty(rt, "maxSize") && opts.getProperty(rt, "maxSize").isNumber())
+      max_size = static_cast<float>(opts.getProperty(rt, "maxSize").asNumber());
+  }
+
+  // Convert platform frame to mtmd_bitmap SYNCHRONOUSLY here on the JSI thread.
+  // VisionCamera recycles the hardware buffer once the frame processor returns, so
+  // the pixel copy must complete before we spawn the background thread.
+#if defined(__ANDROID__)
+  constexpr bool is_android = true;
+#else
+  constexpr bool is_android = false;
+#endif
+  auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
+  std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)> bm(
+      bitmap_from_native_frame(nativePtr, width, height, is_android, max_size),
+      bm_deleter);
+  if (!bm) {
+    is_processing_frame_ = false;
+    throw jsi::JSError(rt, "Failed to convert camera frame to bitmap (unsupported platform?)");
+  }
+
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto invoker = jsInvoker_;
+  auto selfPtr = shared_from_this();
+  auto* raw_bm = bm.release(); // ownership transferred to the lambda
+
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [selfPtr, raw_bm, invoker](
+        jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      auto resolve = std::make_shared<jsi::Function>(a[0].asObject(runtime).asFunction(runtime));
+      auto reject  = std::make_shared<jsi::Function>(a[1].asObject(runtime).asFunction(runtime));
+      auto rtPtr   = &runtime;
+
+      std::thread([selfPtr, raw_bm, resolve, reject, invoker, rtPtr]() {
+        auto bm_del2 = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
+        std::unique_ptr<mtmd_bitmap, decltype(bm_del2)> bm2(raw_bm, bm_del2);
+
+        if (selfPtr->is_released_) {
+          selfPtr->is_processing_frame_ = false;
+          return;
+        }
+
+        EmbedResult emb;
+        {
+          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+          if (selfPtr->is_released_) {
+            selfPtr->is_processing_frame_ = false;
+            return;
+          }
+          emb = encode_image_to_embeddings(
+              selfPtr->rn_ctx_->mtmd_ctx,
+              selfPtr->rn_ctx_->ctx,
+              bm2.get(),
+              selfPtr->rn_ctx_->params.n_batch);
+        }
+        bm2.reset();
+        selfPtr->is_processing_frame_ = false;
+
+        if (selfPtr->is_released_) return;
+        if (!emb.success) {
+          std::string err = emb.error_msg;
+          invoker->invokeAsync([reject, err, rtPtr]() {
+            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
+          });
+          return;
+        }
+
+        size_t n_embd = static_cast<size_t>(
+            llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
+        size_t n_tok  = n_embd > 0 ? (emb.embedding.size() / n_embd) : 0;
+        auto embCopy  = std::move(emb.embedding);
+        if (selfPtr->is_released_) return;
+        invoker->invokeAsync([resolve, embCopy, n_tok, n_embd, rtPtr]() {
+          jsi::Array arr(*rtPtr, embCopy.size());
+          for (size_t i = 0; i < embCopy.size(); ++i)
+            arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(embCopy[i])));
+          jsi::Object result(*rtPtr);
+          result.setProperty(*rtPtr, "embedding", std::move(arr));
+          result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
+          result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
+          resolve->call(*rtPtr, std::move(result));
+        });
+      }).detach();
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
 jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
   if (count < 1 || !args[0].isString())
     throw jsi::JSError(rt, "embedImage requires a string path argument");
