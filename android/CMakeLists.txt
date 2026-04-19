@@ -89,6 +89,61 @@ add_library(
     ${CPP_DIR}/llama.cpp/common/llguidance.cpp
 )
 
+# MTMD (Multimodal Toolkit) — vision and audio encoding
+set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
+add_library(
+    mtmd
+    STATIC
+    ${MTMD_DIR}/clip.cpp
+    ${MTMD_DIR}/mtmd.cpp
+    ${MTMD_DIR}/mtmd-helper.cpp
+    ${MTMD_DIR}/mtmd-audio.cpp
+    ${MTMD_DIR}/mtmd-image.cpp
+    ${MTMD_DIR}/deprecation-warning.cpp
+    ${MTMD_DIR}/models/cogvlm.cpp
+    ${MTMD_DIR}/models/conformer.cpp
+    ${MTMD_DIR}/models/deepseekocr.cpp
+    ${MTMD_DIR}/models/dotsocr.cpp
+    ${MTMD_DIR}/models/gemma4a.cpp
+    ${MTMD_DIR}/models/gemma4v.cpp
+    ${MTMD_DIR}/models/glm4v.cpp
+    ${MTMD_DIR}/models/hunyuanocr.cpp
+    ${MTMD_DIR}/models/internvl.cpp
+    ${MTMD_DIR}/models/kimik25.cpp
+    ${MTMD_DIR}/models/kimivl.cpp
+    ${MTMD_DIR}/models/llama4.cpp
+    ${MTMD_DIR}/models/llava.cpp
+    ${MTMD_DIR}/models/minicpmv.cpp
+    ${MTMD_DIR}/models/mobilenetv5.cpp
+    ${MTMD_DIR}/models/nemotron-v2-vl.cpp
+    ${MTMD_DIR}/models/paddleocr.cpp
+    ${MTMD_DIR}/models/pixtral.cpp
+    ${MTMD_DIR}/models/qwen2vl.cpp
+    ${MTMD_DIR}/models/qwen3a.cpp
+    ${MTMD_DIR}/models/qwen3vl.cpp
+    ${MTMD_DIR}/models/siglip.cpp
+    ${MTMD_DIR}/models/step3vl.cpp
+    ${MTMD_DIR}/models/whisper-enc.cpp
+    ${MTMD_DIR}/models/youtuvl.cpp
+    # Our multimodal bridge helpers
+    ${CPP_DIR}/rn-multimodal.cpp
+)
+
+target_include_directories(mtmd PRIVATE
+    ${LLAMA_CPP_DIR}/ggml/include
+    ${LLAMA_CPP_DIR}/include
+    ${LLAMA_CPP_DIR}/common
+    ${LLAMA_CPP_DIR}/vendor
+    ${LLAMA_CPP_DIR}/src
+    ${MTMD_DIR}
+    ${CPP_DIR}
+)
+
+target_compile_definitions(mtmd PRIVATE
+    -DGGML_BACKEND_DL=1
+    -DGGML_CPU=1
+)
+
 add_library(
     RNLlamaCpp
     SHARED
@@ -197,6 +252,7 @@ target_include_directories(RNLlamaCpp PRIVATE
     ${LLAMA_CPP_DIR}/common
     ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
+    ${MTMD_DIR}
     # Add the generated headers path
     ${MODULE_ROOT}/android/generated/jni
     ${MODULE_ROOT}/android/generated/jni/react/renderer/components/RNLlamaCppSpec
@@ -205,6 +261,7 @@ target_include_directories(RNLlamaCpp PRIVATE
 # Link libraries with proper dependencies
 target_link_libraries(
     RNLlamaCpp
+    mtmd
     common
     react_codegen_RNLlamaCppSpec  # Link against the generated TurboModule code
     llama       # Link against the imported prebuilt core llama library
@@ -337,4 +394,5 @@ target_include_directories(RNLlamaCpp INTERFACE
     ${LLAMA_CPP_DIR}/vendor/minja
     ${LLAMA_CPP_DIR}/vendor
     ${LLAMA_CPP_DIR}/src
+    ${MTMD_DIR}
 )
