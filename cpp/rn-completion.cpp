@@ -2,12 +2,16 @@
 // Suppress unused function warnings from llama.cpp headers
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #include "common.h"
 #include "chat.h"
 #include "llama.h"
 #include "sampling.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 #pragma GCC diagnostic pop
 #include "rn-utils.h"
+#include "rn-multimodal.h"
 
 #include <string>
 #include <vector>
@@ -198,6 +202,16 @@ CompletionResult run_completion(
         // Stop words
         state.antiprompt = options.stop;
 
+        if (options.mtmd_encoded_n_past >= 0) {
+            // Multimodal fast path: images + text were already encoded by run_chat_completion
+            // via mtmd_helper_eval_chunks. Logits are ready; skip tokenize and KV encode.
+            state.n_past      = options.mtmd_encoded_n_past;
+            state.n_ctx       = llama_n_ctx(rn_ctx->ctx);
+            state.n_predict   = options.n_predict > 0 ? options.n_predict : params.n_predict;
+            state.n_remaining = state.n_predict;
+            result.n_prompt_tokens = 0;
+        } else {
+
         // Tokenize the prompt directly — always a string in this path
         if (options.prompt.empty()) {
             result.success = false;
@@ -316,6 +330,8 @@ CompletionResult run_completion(
             state.sampler = common_sampler_init(rn_ctx->model, sampling_params);
         }
 
+        } // end: normal tokenize + encode path (mtmd_encoded_n_past < 0)
+
         // Allocate a single-token batch once and reuse it across the entire generation loop.
         llama_batch gen_batch = llama_batch_init(1, 0, 1);
 
@@ -429,10 +445,22 @@ CompletionResult run_chat_completion(
     }
 
     try {
+        // Extract media (image_url/audio_url content parts) before template rendering.
+        // extract_media_from_messages replaces media parts with marker strings in-place.
+        json messages_json = options.messages;
+        std::vector<MediaItem> media_items;
+        bool has_media = false;
+        if (rn_ctx->multimodal_loaded && rn_ctx->mtmd_ctx &&
+            !messages_json.is_null() && messages_json.is_array()) {
+            media_items = extract_media_from_messages(messages_json);
+            has_media = !media_items.empty();
+        }
+        const json& effective_messages = has_media ? messages_json : options.messages;
+
         // Parse messages directly from options
         std::vector<common_chat_msg> chat_msgs;
-        if (!options.messages.is_null() && !options.messages.empty()) {
-            chat_msgs = common_chat_msgs_parse_oaicompat(options.messages);
+        if (!effective_messages.is_null() && !effective_messages.empty()) {
+            chat_msgs = common_chat_msgs_parse_oaicompat(effective_messages);
         }
 
         // --- Per-message KV cache prefix reuse ---
@@ -441,8 +469,8 @@ CompletionResult run_chat_completion(
         // they let the native layer skip re-encoding messages that haven't changed
         // without doing a full token-by-token comparison.
         std::vector<std::string> msg_ids;
-        if (!options.messages.is_null() && options.messages.is_array()) {
-            for (const auto& msg : options.messages) {
+        if (!effective_messages.is_null() && effective_messages.is_array()) {
+            for (const auto& msg : effective_messages) {
                 if (msg.is_object() && msg.contains("id") && msg["id"].is_string()) {
                     msg_ids.push_back(msg["id"].get<std::string>());
                 } else {
@@ -454,7 +482,7 @@ CompletionResult run_chat_completion(
         // Find how many leading messages have IDs that match the cached sequence.
         // A message with an empty ID never matches (we can't trust it's unchanged).
         size_t kv_match_count = 0;
-        if (!msg_ids.empty() && rn_ctx->kv_has_messages && !options.reset_kv_cache) {
+        if (!has_media && !msg_ids.empty() && rn_ctx->kv_has_messages && !options.reset_kv_cache) {
             const auto& cached = rn_ctx->kv_messages;
             while (kv_match_count < msg_ids.size()
                    && kv_match_count < cached.size()
@@ -466,7 +494,10 @@ CompletionResult run_chat_completion(
 
         // Decide the KV common position and evict stale entries.
         int32_t kv_hint_pos = 0; // default: full encode from position 0
-        if (kv_match_count > 0) {
+        if (has_media) {
+            // Images invalidate KV prefix reuse — always do a full clear.
+            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+        } else if (kv_match_count > 0) {
             const int32_t kv_common_len = rn_ctx->kv_messages[kv_match_count - 1].token_end;
             if (kv_match_count < rn_ctx->kv_messages.size()) {
                 // Some cached messages are no longer present — evict beyond the common prefix.
@@ -583,6 +614,58 @@ CompletionResult run_chat_completion(
             cmpl_options.grammar_triggers = chat_params.grammar_triggers;
 
             // Note: Debug logging removed as it was not being used
+        }
+
+        // Multimodal: tokenize + eval the full prompt (text + images) via mtmd.
+        // On success, sets cmpl_options.mtmd_encoded_n_past so run_completion skips
+        // its own tokenize+encode and jumps straight to the generation loop.
+        if (has_media) {
+            auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
+            using BitmapPtr = std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)>;
+            std::vector<BitmapPtr> bitmaps;
+            for (const auto& item : media_items) {
+                BitmapPtr bm(load_bitmap_from_uri(rn_ctx->mtmd_ctx, item.url), bm_deleter);
+                if (!bm) {
+                    result.success = false;
+                    result.error_msg = "Failed to load media: " + item.url;
+                    result.error_type = RN_ERROR_INVALID_PARAM;
+                    return result;
+                }
+                bitmaps.push_back(std::move(bm));
+            }
+
+            std::vector<const mtmd_bitmap*> bm_ptrs;
+            bm_ptrs.reserve(bitmaps.size());
+            for (const auto& bm : bitmaps) bm_ptrs.push_back(bm.get());
+
+            mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+            mtmd_input_text input_text;
+            input_text.text          = cmpl_options.prompt.c_str();
+            input_text.add_special   = true;
+            input_text.parse_special = true;
+            int32_t tok_res = mtmd_tokenize(
+                rn_ctx->mtmd_ctx, chunks, &input_text, bm_ptrs.data(), bm_ptrs.size());
+            if (tok_res != 0) {
+                mtmd_input_chunks_free(chunks);
+                result.success = false;
+                result.error_msg = "mtmd_tokenize failed (" + std::to_string(tok_res) + ")";
+                result.error_type = RN_ERROR_INFERENCE;
+                return result;
+            }
+
+            llama_pos new_n_past = 0;
+            int32_t eval_res = mtmd_helper_eval_chunks(
+                rn_ctx->mtmd_ctx, rn_ctx->ctx, chunks,
+                0, 0, rn_ctx->params.n_batch, true, &new_n_past);
+            mtmd_input_chunks_free(chunks);
+            if (eval_res != 0) {
+                result.success = false;
+                result.error_msg = "mtmd eval failed (" + std::to_string(eval_res) + ")";
+                result.error_type = RN_ERROR_INFERENCE;
+                return result;
+            }
+            cmpl_options.mtmd_encoded_n_past = static_cast<int32_t>(new_n_past);
+            cmpl_options.kv_hint_pos = -1;
         }
 
         // Run standard completion with the processed prompt
