@@ -950,6 +950,223 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
   }
 }
 
+jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  if (count < 1 || !args[0].isString())
+    throw jsi::JSError(rt, "embedImage requires a string path argument");
+  if (!rn_ctx_ || !rn_ctx_->mtmd_ctx)
+    throw jsi::JSError(rt, "No multimodal context loaded");
+  if (!has_capability(rn_ctx_->declared_capabilities, ModelCapability::ImageEncode))
+    throw jsi::JSError(rt, "Model was not initialised with image-encode capability");
+
+  std::string path = args[0].asString(rt).utf8(rt);
+  bool normalize = false;
+  if (count > 1 && args[1].isObject()) {
+    auto opts = args[1].getObject(rt);
+    if (opts.hasProperty(rt, "normalize") && opts.getProperty(rt, "normalize").isBool())
+      normalize = opts.getProperty(rt, "normalize").asBool();
+  }
+
+  auto Promise  = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto invoker  = jsInvoker_;
+  auto selfPtr  = shared_from_this();
+
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [selfPtr, path, normalize, invoker](
+        jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      auto resolve = std::make_shared<jsi::Function>(a[0].asObject(runtime).asFunction(runtime));
+      auto reject  = std::make_shared<jsi::Function>(a[1].asObject(runtime).asFunction(runtime));
+      auto rtPtr   = &runtime;
+
+      std::thread([selfPtr, path, normalize, resolve, reject, invoker, rtPtr]() {
+        if (selfPtr->is_released_) return;
+
+        auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
+        std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)> bm(
+            load_bitmap_from_uri(selfPtr->rn_ctx_->mtmd_ctx, path), bm_deleter);
+        if (!bm) {
+          if (selfPtr->is_released_) return;
+          std::string err = "Failed to load image: " + path;
+          invoker->invokeAsync([reject, err, rtPtr]() {
+            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
+          });
+          return;
+        }
+
+        EmbedResult res;
+        {
+          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+          if (selfPtr->is_released_) return;
+          res = encode_image_to_embeddings(
+              selfPtr->rn_ctx_->mtmd_ctx,
+              selfPtr->rn_ctx_->ctx,
+              bm.get(),
+              selfPtr->rn_ctx_->params.n_batch);
+        }
+
+        if (!res.success) {
+          std::string err = res.error_msg;
+          invoker->invokeAsync([reject, err, rtPtr]() {
+            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err));
+          });
+          return;
+        }
+
+        if (normalize && !res.embedding.empty()) {
+          float norm = 0.0f;
+          for (float v : res.embedding) norm += v * v;
+          norm = std::sqrt(norm);
+          if (norm > 1e-6f) for (float& v : res.embedding) v /= norm;
+        }
+
+        size_t n_embd = static_cast<size_t>(
+            llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
+        size_t n_tok  = n_embd > 0 ? (res.embedding.size() / n_embd) : 0;
+        auto emb      = std::move(res.embedding);
+        if (selfPtr->is_released_) return;
+        invoker->invokeAsync([resolve, emb, n_tok, n_embd, rtPtr]() {
+          jsi::Array arr(*rtPtr, emb.size());
+          for (size_t i = 0; i < emb.size(); ++i)
+            arr.setValueAtIndex(*rtPtr, i, jsi::Value(static_cast<double>(emb[i])));
+          jsi::Object result(*rtPtr);
+          result.setProperty(*rtPtr, "embedding", std::move(arr));
+          result.setProperty(*rtPtr, "n_tokens",  jsi::Value(static_cast<int>(n_tok)));
+          result.setProperty(*rtPtr, "n_embd",    jsi::Value(static_cast<int>(n_embd)));
+          resolve->call(*rtPtr, std::move(result));
+        });
+      }).detach();
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
+jsi::Value LlamaCppModel::transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  if (count < 1 || !args[0].isString())
+    throw jsi::JSError(rt, "transcribeAudio requires a string path argument");
+  if (!rn_ctx_ || !rn_ctx_->mtmd_ctx)
+    throw jsi::JSError(rt, "No multimodal context loaded");
+  if (!has_capability(rn_ctx_->declared_capabilities, ModelCapability::AudioTranscribe))
+    throw jsi::JSError(rt, "Model was not initialised with audio-transcribe capability");
+  if (!mtmd_support_audio(rn_ctx_->mtmd_ctx))
+    throw jsi::JSError(rt, "Loaded mmproj does not support audio");
+
+  std::string path = args[0].asString(rt).utf8(rt);
+
+  // Use run_chat_completion with a synthetic audio_url message.
+  // mtmd routes audio_url content to the audio encoder via extract_media_from_messages.
+  CompletionOptions opts;
+  opts.messages = json::array({{
+    {"role", "user"},
+    {"content", json::array({{
+      {"type", "audio_url"},
+      {"audio_url", {{"url", path}}}
+    }})}
+  }});
+  opts.n_predict = 512;
+
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto invoker = jsInvoker_;
+  auto selfPtr = shared_from_this();
+
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [selfPtr, opts, invoker](
+        jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      auto resolve = std::make_shared<jsi::Function>(a[0].asObject(runtime).asFunction(runtime));
+      auto reject  = std::make_shared<jsi::Function>(a[1].asObject(runtime).asFunction(runtime));
+      auto rtPtr   = &runtime;
+
+      std::thread([selfPtr, opts, resolve, reject, invoker, rtPtr]() {
+        if (selfPtr->is_released_) return;
+        CompletionResult res;
+        {
+          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+          if (selfPtr->is_released_) return;
+          res = run_chat_completion(selfPtr->rn_ctx_, opts,
+              [](const std::string&, bool) { return false; });
+        }
+        if (selfPtr->is_released_) return;
+        invoker->invokeAsync([resolve, reject, res, rtPtr]() {
+          if (!res.success) {
+            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
+            return;
+          }
+          jsi::Object result(*rtPtr);
+          result.setProperty(*rtPtr, "text",
+              jsi::String::createFromUtf8(*rtPtr, res.content));
+          result.setProperty(*rtPtr, "segments", jsi::Array(*rtPtr, 0));
+          resolve->call(*rtPtr, std::move(result));
+        });
+      }).detach();
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
+jsi::Value LlamaCppModel::visionReasoningJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  if (count < 1 || !args[0].isString())
+    throw jsi::JSError(rt, "visionReasoning requires a string path argument");
+  if (!rn_ctx_ || !rn_ctx_->mtmd_ctx)
+    throw jsi::JSError(rt, "No multimodal context loaded");
+  if (!has_capability(rn_ctx_->declared_capabilities, ModelCapability::VisionReasoning))
+    throw jsi::JSError(rt, "Model was not initialised with vision-reasoning capability");
+
+  std::string path = args[0].asString(rt).utf8(rt);
+  std::string prompt = "Describe what you see in this image in detail.";
+  if (count > 1 && args[1].isObject()) {
+    auto opts = args[1].getObject(rt);
+    if (opts.hasProperty(rt, "prompt") && opts.getProperty(rt, "prompt").isString())
+      prompt = opts.getProperty(rt, "prompt").asString(rt).utf8(rt);
+  }
+
+  CompletionOptions cmpl_opts;
+  cmpl_opts.messages = json::array({{
+    {"role", "user"},
+    {"content", json::array({
+      {{"type", "text"}, {"text", prompt}},
+      {{"type", "image_url"}, {"image_url", {{"url", path}}}}
+    })}
+  }});
+  cmpl_opts.n_predict = 512;
+
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto invoker = jsInvoker_;
+  auto selfPtr = shared_from_this();
+
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [selfPtr, cmpl_opts, invoker](
+        jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      auto resolve = std::make_shared<jsi::Function>(a[0].asObject(runtime).asFunction(runtime));
+      auto reject  = std::make_shared<jsi::Function>(a[1].asObject(runtime).asFunction(runtime));
+      auto rtPtr   = &runtime;
+
+      std::thread([selfPtr, cmpl_opts, resolve, reject, invoker, rtPtr]() {
+        if (selfPtr->is_released_) return;
+        CompletionResult res;
+        {
+          std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
+          if (selfPtr->is_released_) return;
+          res = run_chat_completion(selfPtr->rn_ctx_, cmpl_opts,
+              [](const std::string&, bool) { return false; });
+        }
+        if (selfPtr->is_released_) return;
+        invoker->invokeAsync([resolve, reject, res, rtPtr]() {
+          if (!res.success) {
+            reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, res.error_msg));
+            return;
+          }
+          jsi::Object result(*rtPtr);
+          result.setProperty(*rtPtr, "raw_text",
+              jsi::String::createFromUtf8(*rtPtr, res.content));
+          resolve->call(*rtPtr, std::move(result));
+        });
+      }).detach();
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
 jsi::Value LlamaCppModel::isMultimodalEnabledJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
   bool enabled = rn_ctx_ && rn_ctx_->multimodal_loaded;
   auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
