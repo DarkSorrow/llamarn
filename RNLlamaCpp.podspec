@@ -59,7 +59,10 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/tools/mtmd/clip-graph.h",
                    "cpp/llama.cpp/tools/mtmd/mtmd.{h,cpp}",
                    "cpp/llama.cpp/tools/mtmd/mtmd-helper.{h,cpp}",
-                   "cpp/llama.cpp/tools/mtmd/mtmd-audio.{h,cpp}",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-audio.h",
+                   # mtmd-audio.cpp uses `constexpr bool DEBUG = false;` which conflicts with
+                   # Xcode's -DDEBUG=1 macro. Use a wrapper that #undef's DEBUG first.
+                   "cpp/rn-mtmd-audio-wrap.cpp",
                    "cpp/llama.cpp/tools/mtmd/mtmd-image.{h,cpp}",
                    "cpp/llama.cpp/tools/mtmd/deprecation-warning.cpp",
                    "cpp/llama.cpp/tools/mtmd/models/*.{h,cpp}",
@@ -79,7 +82,23 @@ Pod::Spec.new do |s|
   # Compiler settings
   s.pod_target_xcconfig = {
     "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/tools/mtmd\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
-    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_CFG_NO_COROUTINES=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1",
+    "CLANG_ENABLE_MODULES" => "NO",
+    # USE_HEADERMAP=NO: Xcode's hmap system maps "ggml.h" to the xcframework Headers path (since the
+    # xcframework is a vendored_framework and its headers land in all-target-headers.hmap). But
+    # ggml-cpp.h finds ggml.h via current-directory search (same directory as ggml-cpp.h itself),
+    # resolving to the source-tree path. Two different physical paths → #pragma once cannot
+    # deduplicate → "redefinition of ggml_status" errors. Disabling hmaps forces ALL includes
+    # through HEADER_SEARCH_PATHS with consistent current-dir-first resolution.
+    "USE_HEADERMAP" => "NO",
+    # -fno-implicit-module-maps: The xcframework ships with a module.modulemap that exports ggml.h.
+    # Clang finds this map via the -F framework search path (implicit module map discovery), redirecting
+    # "#include ggml.h" to the xcframework Headers path. But ggml-cpp.h then re-includes ggml.h via
+    # HEADER_SEARCH_PATHS at the source-tree path — two different physical paths, so #pragma once
+    # cannot deduplicate → "redefinition of ggml_status/ggml_type/..." errors.
+    # This flag prevents implicit discovery of module maps from -F directories, leaving all ggml.h
+    # includes to resolve through HEADER_SEARCH_PATHS only (one canonical path, #pragma once works).
+    # Explicit -fmodule-map-file= flags from React Native pods are unaffected.
+    "OTHER_CPLUSPLUSFLAGS" => "-DFOLLY_NO_CONFIG -DFOLLY_MOBILE=1 -DFOLLY_USE_LIBCPP=1 -DFOLLY_CFG_NO_COROUTINES=1 -DLLAMA_METAL -DRCT_NEW_ARCH_ENABLED=1 -DFBJSRT_EXPORTED=1 -fno-implicit-module-maps",
     "CLANG_CXX_LANGUAGE_STANDARD" => "c++20",
     "GCC_OPTIMIZATION_LEVEL" => "3", # Maximum optimization
     "SWIFT_OPTIMIZATION_LEVEL" => "-O",
