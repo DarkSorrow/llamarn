@@ -387,6 +387,96 @@ The library supports advanced thinking and reasoning capabilities for models tha
 
 When `use_jinja` is enabled, `parse_tool_calls` is automatically enabled because Jinja templates provide better tool calling capabilities. This ensures optimal tool support when using advanced templates.
 
+## Multimodal / Vision
+
+llamarn supports image and audio input for compatible models (LLaVA, Qwen-VL, Whisper) via a separate **multimodal projection model** (`mmproj` `.gguf`).
+
+### Initialise with capabilities
+
+```typescript
+const model = await initLlama({
+  model:        '/path/to/model.gguf',
+  mmproj:       '/path/to/mmproj.gguf',
+  capabilities: ['vision-chat'],  // 'image-encode' | 'audio-transcribe' | 'vision-reasoning'
+  n_ctx: 4096,
+  use_jinja: true,
+});
+
+const mods = await model.getSupportedModalities();
+// { vision: true, audio: false }
+
+const enabled = await model.isMultimodalEnabled();
+// true
+```
+
+### Vision Chat
+
+```typescript
+const result = await model.completion({
+  messages: [{
+    role: 'user',
+    content: [
+      { type: 'text', text: 'What is in this image?' },
+      { type: 'image_url', image_url: { url: 'file:///path/to/image.jpg' } },
+    ],
+  }],
+  n_predict: 256,
+});
+// result.text contains the model's description
+```
+
+Multiple images per message are supported. `file://` URIs and `data:image/...;base64,...` strings are both accepted.
+
+### Image Embeddings (CLIP-style)
+
+```typescript
+const { embedding, n_tokens, n_embd } = await model.embedImage(
+  'file:///path/to/image.jpg',
+  { normalize: true },
+);
+// embedding: Float32 array of length n_tokens * n_embd
+```
+
+### Audio Transcription (Whisper-style)
+
+```typescript
+const { text } = await model.transcribeAudio('file:///path/to/audio.wav');
+```
+
+### Open-ended Vision Reasoning
+
+```typescript
+const { raw_text } = await model.visionReasoning(
+  'file:///path/to/image.jpg',
+  { prompt: 'List all objects you see.' },
+);
+```
+
+### Camera Frame (zero-copy)
+
+Works with [VisionCamera](https://github.com/mrousavy/react-native-vision-camera) NativeBuffer frames — no disk I/O.
+
+```typescript
+import { useCameraDevice, useFrameProcessor, runAsync } from 'react-native-vision-camera';
+
+const frameProcessor = useFrameProcessor((frame) => {
+  'worklet';
+  runAsync(frame, async () => {
+    // maxSize: 336 downsamples during the pixel copy (~330 KB vs ~8 MB for 1080p).
+    // Omit maxSize (or 0) for full-resolution OCR / complex scene analysis.
+    const result = await model.runOnFrame(
+      frame, frame.width, frame.height, 'image-encode', { maxSize: 336 });
+    if (result) {
+      // Frame was processed successfully
+      console.log('Embeddings:', result.n_tokens, 'tokens');
+    }
+    // null means the encoder was busy with the previous frame — dropped automatically
+  });
+}, [model]);
+```
+
+Frame dropping is handled automatically in C++ via an atomic flag — no JS-side throttle needed. KV cache prefix reuse is disabled when messages contain images.
+
 ## Model Path Handling
 
 The module accepts different path formats depending on the platform:
