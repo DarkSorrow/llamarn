@@ -144,6 +144,10 @@ target_compile_definitions(mtmd PRIVATE
     -DGGML_CPU=1
 )
 
+# Suppress upstream deprecation warning about mixing ggml_scale_mode and ggml_scale_flag
+# enums via bitwise OR in clip-graph.h DEFAULT_INTERPOLATION_MODE macro.
+target_compile_options(mtmd PRIVATE -Wno-deprecated-enum-enum-conversion)
+
 add_library(
     RNLlamaCpp
     SHARED
