@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import ConsolidatedTestScreen from './ConsolidatedTestScreen';
 import ModelChatTestScreen from './ModelChatTestScreen';
+import VisionChatScreen from './VisionChatScreen';
 
 // Placeholder for the actual test components we will create later
 // const ConsolidatedTestScreen = () => ( <--- THIS LINE AND ITS BODY NEED TO BE DELETED
@@ -19,12 +20,12 @@ import ModelChatTestScreen from './ModelChatTestScreen';
 // </View>
 // );
 
-type Screen = 'menu' | 'consolidatedTest' | 'modelChatTest';
+type Screen = 'menu' | 'consolidatedTest' | 'modelChatTest' | 'visionChat';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('menu');
 
-  if (currentScreen === 'consolidatedTest' || currentScreen === 'modelChatTest') {
+  if (currentScreen === 'consolidatedTest' || currentScreen === 'modelChatTest' || currentScreen === 'visionChat') {
     return (
       <View style={styles.screenContainer}>
         <SafeAreaView style={styles.safeArea}>
@@ -34,6 +35,8 @@ export default function App() {
           <View style={styles.content}>
             {currentScreen === 'consolidatedTest' ? (
               <ConsolidatedTestScreen />
+            ) : currentScreen === 'visionChat' ? (
+              <VisionChatScreen />
             ) : (
               <ModelChatTestScreen />
             )}
@@ -58,6 +61,12 @@ export default function App() {
             <Button
               title="Go to Model Chat Test"
               onPress={() => setCurrentScreen('modelChatTest')}
+            />
+          </View>
+          <View style={styles.buttonWrapper}>
+            <Button
+              title="Vision Chat Demo"
+              onPress={() => setCurrentScreen('visionChat')}
             />
           </View>
         </View>
