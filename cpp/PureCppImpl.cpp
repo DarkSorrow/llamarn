@@ -375,6 +375,10 @@ struct InitLlamaParams {
   int reasoning_budget;
   common_reasoning_format reasoning_format;
   bool thinking_forced_open, parse_tool_calls, parallel_tool_calls;
+  // Multimodal
+  std::string mmproj_path;
+  std::string image_marker;
+  uint32_t    declared_capabilities = 0;
 };
 
 jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
@@ -501,6 +505,33 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
     }
   }
 
+  std::string mmproj_path;
+  std::string image_marker;
+  uint32_t declared_capabilities = 0;
+
+  if (options.hasProperty(runtime, "mmproj") &&
+      options.getProperty(runtime, "mmproj").isString()) {
+    mmproj_path = options.getProperty(runtime, "mmproj").asString(runtime).utf8(runtime);
+    SystemUtils::normalizeFilePath(mmproj_path);
+  }
+  if (options.hasProperty(runtime, "image_marker") &&
+      options.getProperty(runtime, "image_marker").isString()) {
+    image_marker = options.getProperty(runtime, "image_marker").asString(runtime).utf8(runtime);
+  }
+  if (options.hasProperty(runtime, "capabilities") &&
+      options.getProperty(runtime, "capabilities").isObject()) {
+    jsi::Object caps_obj = options.getProperty(runtime, "capabilities").asObject(runtime);
+    if (caps_obj.isArray(runtime)) {
+      jsi::Array caps_arr = caps_obj.asArray(runtime);
+      std::vector<std::string> cap_names;
+      for (size_t i = 0; i < caps_arr.size(runtime); ++i) {
+        auto v = caps_arr.getValueAtIndex(runtime, i);
+        if (v.isString()) cap_names.push_back(v.asString(runtime).utf8(runtime));
+      }
+      declared_capabilities = capabilities_from_strings(cap_names);
+    }
+  }
+
   // Pack all parsed values into a shared struct so the lambda captures stay minimal.
   auto p = std::make_shared<InitLlamaParams>();
   p->model_path           = model_path;
@@ -530,6 +561,9 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   p->thinking_forced_open = thinking_forced_open;
   p->parse_tool_calls     = parse_tool_calls;
   p->parallel_tool_calls  = parallel_tool_calls;
+  p->mmproj_path           = mmproj_path;
+  p->image_marker          = image_marker;
+  p->declared_capabilities = declared_capabilities;
 
   // Create Promise constructor
   auto Promise = runtime.global().getPropertyAsFunction(runtime, "Promise");
@@ -720,6 +754,23 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
               // Even chatml failed - this should never happen, but handle it gracefully
               // The model will still load, but chat templates won't work
             }
+          }
+
+          // Store declared capabilities and optionally init multimodal projection model
+          selfPtr->rn_ctx_->declared_capabilities = p->declared_capabilities;
+          if (!p->mmproj_path.empty()) {
+            mtmd_context_params mparams = mtmd_context_params_default();
+            mparams.use_gpu       = (p->n_gpu_layers != 0);
+            mparams.n_threads     = p->n_threads;
+            mparams.print_timings = false;
+            mparams.warmup        = false;
+            if (!p->image_marker.empty()) {
+              mparams.media_marker = p->image_marker.c_str();
+            }
+            selfPtr->rn_ctx_->mtmd_ctx = mtmd_init_from_file(
+                p->mmproj_path.c_str(), selfPtr->rn_ctx_->model, mparams);
+            selfPtr->rn_ctx_->multimodal_loaded =
+                (selfPtr->rn_ctx_->mtmd_ctx != nullptr);
           }
 
           // Schedule success callback on JS thread to create JSI objects
