@@ -20,6 +20,7 @@
 // Include rn-completion integration
 #include "rn-utils.h"
 #include "rn-llama.h"
+#include "rn-multimodal.h"
 
 // Include llama.cpp headers
 #include "llama.h"
@@ -88,13 +89,23 @@ void LlamaCppModel::release() {
     rn_ctx_->vocab = nullptr; // This is owned by the model, so just null it
     rn_ctx_->chat_templates.reset(); // Clean up chat templates
     rn_ctx_->lora_adapters.clear(); // Clear LoRA adapters
-    
+
+    // Free multimodal projection model if loaded
+    if (rn_ctx_->mtmd_ctx) {
+      mtmd_free(rn_ctx_->mtmd_ctx);
+      rn_ctx_->mtmd_ctx = nullptr;
+      rn_ctx_->multimodal_loaded = false;
+    }
+
     // Reset state flags
     rn_ctx_->model_loaded = false;
 
     // Note: rn_ctx_ itself is owned by the module, so we don't delete it here
     rn_ctx_ = nullptr;
   }
+
+  // Mark as released so in-flight background threads can check before touching JSI runtime
+  is_released_ = true;
 
   // Reset our internal state
   should_stop_completion_ = false;
@@ -939,6 +950,41 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
   }
 }
 
+jsi::Value LlamaCppModel::isMultimodalEnabledJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  bool enabled = rn_ctx_ && rn_ctx_->multimodal_loaded;
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [enabled](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      a[0].asObject(runtime).asFunction(runtime).call(runtime, jsi::Value(enabled));
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
+jsi::Value LlamaCppModel::getSupportedModalitiesJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
+  bool vision = false, audio = false;
+  int audio_rate = -1;
+  if (rn_ctx_ && rn_ctx_->mtmd_ctx) {
+    vision = mtmd_support_vision(rn_ctx_->mtmd_ctx);
+    audio  = mtmd_support_audio(rn_ctx_->mtmd_ctx);
+    if (audio) audio_rate = mtmd_get_audio_sample_rate(rn_ctx_->mtmd_ctx);
+  }
+  auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
+  auto executor = jsi::Function::createFromHostFunction(
+    rt, jsi::PropNameID::forAscii(rt, "executor"), 2,
+    [vision, audio, audio_rate](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* a, size_t) -> jsi::Value {
+      jsi::Object result(runtime);
+      result.setProperty(runtime, "vision", jsi::Value(vision));
+      result.setProperty(runtime, "audio",  jsi::Value(audio));
+      if (audio && audio_rate > 0)
+        result.setProperty(runtime, "audioSampleRate", jsi::Value(audio_rate));
+      a[0].asObject(runtime).asFunction(runtime).call(runtime, std::move(result));
+      return jsi::Value::undefined();
+    });
+  return Promise.callAsConstructor(rt, std::move(executor));
+}
+
 jsi::Value LlamaCppModel::releaseJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count) {
   try {
     release();
@@ -1010,6 +1056,42 @@ jsi::Value LlamaCppModel::get(jsi::Runtime& rt, const jsi::PropNameID& name) {
         return this->releaseJsi(runtime, args, count);
       });
   }
+  else if (nameStr == "isMultimodalEnabled") {
+    return jsi::Function::createFromHostFunction(rt, name, 0,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->isMultimodalEnabledJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "getSupportedModalities") {
+    return jsi::Function::createFromHostFunction(rt, name, 0,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->getSupportedModalitiesJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "embedImage") {
+    return jsi::Function::createFromHostFunction(rt, name, 2,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->embedImageJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "transcribeAudio") {
+    return jsi::Function::createFromHostFunction(rt, name, 2,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->transcribeAudioJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "visionReasoning") {
+    return jsi::Function::createFromHostFunction(rt, name, 2,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->visionReasoningJsi(runtime, args, count);
+      });
+  }
+  else if (nameStr == "runOnFrame") {
+    return jsi::Function::createFromHostFunction(rt, name, 4,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->runOnFrameJsi(runtime, args, count);
+      });
+  }
   else if (nameStr == "n_vocab") {
     return jsi::Value(getVocabSize());
   }
@@ -1037,6 +1119,12 @@ std::vector<jsi::PropNameID> LlamaCppModel::getPropertyNames(jsi::Runtime& rt) {
   result.push_back(jsi::PropNameID::forAscii(rt, "stopCompletion"));
   result.push_back(jsi::PropNameID::forAscii(rt, "embedding"));
   result.push_back(jsi::PropNameID::forAscii(rt, "release"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "isMultimodalEnabled"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "getSupportedModalities"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "embedImage"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "transcribeAudio"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "visionReasoning"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "runOnFrame"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_vocab"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_ctx"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_embd"));

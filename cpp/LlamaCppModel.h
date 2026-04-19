@@ -137,6 +137,19 @@ private:
   std::condition_variable predicting_cv_;
   std::mutex              predicting_cv_mutex_;
 
+  // Multimodal / thread-safety guards (see plan: Thread Safety Architecture)
+  std::mutex        inference_mutex_;           // serializes ALL llama/mtmd inference calls
+  std::atomic<bool> is_processing_frame_{false}; // instant frame drop for runOnFrame
+  std::atomic<bool> is_released_{false};          // JSI teardown guard
+
+  // Multimodal JSI methods
+  jsi::Value isMultimodalEnabledJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value getSupportedModalitiesJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value embedImageJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value visionReasoningJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+
   static json jsiValueToJson(jsi::Runtime& rt, const jsi::Value& val); // Declaration of new helper
 };
 
