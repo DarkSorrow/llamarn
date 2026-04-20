@@ -14,7 +14,8 @@ LLAMA_CPP_TAG="b8850"  # Tag format for binary downloads
 # Note: Vulkan loader ships with the NDK, but ggml-vulkan needs the C++ headers (vulkan.hpp)
 VULKAN_SDK_VERSION="1.4.309"  # Reference only (Android uses NDK loader)
 VULKAN_HEADERS_TAG="v1.3.292"  # Same version CI installs inside the NDK sysroot
-SPIRV_HEADERS_TAG="sdk-1.3.290.0"  # Required by ggml-vulkan.cpp on Linux/Android
+# SPIRV-Headers are installed via system package (apt install spirv-headers on Linux,
+# brew install spirv-headers on macOS) per llama.cpp build.md recommendation.
 OPENCL_VERSION="3.0"
 # OpenCL Headers: Use stable tag compatible with OpenCL 3.0
 # v2025.07.22 aligns with OpenCL 3.0.19 spec (includes CL_ENABLE_BETA_EXTENSIONS)
@@ -33,7 +34,6 @@ ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
 # Export all variables
 export VULKAN_SDK_VERSION
 export VULKAN_HEADERS_TAG
-export SPIRV_HEADERS_TAG
 export OPENCL_VERSION
 export OPENCL_HEADERS_TAG
 export NDK_VERSION

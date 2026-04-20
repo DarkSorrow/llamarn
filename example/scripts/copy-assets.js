@@ -26,7 +26,7 @@ ggufFiles.forEach(file => {
   const fileStats = fs.statSync(sourcePath);
   const fileSizeGB = fileStats.size / (1024 * 1024 * 1024);
   
-  if (fileSizeGB > 1.0 || file.startsWith('mmproj')) {
+  if (fileSizeGB > 1.0) {
     console.log(`⚠ Skipping ${file} for Android (${fileSizeGB.toFixed(1)}GB - too large for Android build)`);
     console.log(`  Android has build size limitations that cause "Required array size too large" errors`);
   } else {

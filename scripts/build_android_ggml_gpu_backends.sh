@@ -88,7 +88,6 @@ PREBUILT_EXTERNAL_DIR="$PREBUILT_DIR/libs/external"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 THIRD_PARTY_DIR="$PREBUILT_DIR/third_party"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
-SPIRV_HEADERS_DIR="$THIRD_PARTY_DIR/SPIRV-Headers"
 
 # Try to use the user-provided NDK path first
 if [ -n "$CUSTOM_NDK_PATH" ]; then
@@ -173,7 +172,8 @@ fi
 # Check for Vulkan headers
 VULKAN_AVAILABLE=false
 VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
-SPIRV_INCLUDE_LOCAL="$SPIRV_HEADERS_DIR/include"
+# SPIRV-Headers: prefer path recorded by build_android_gpu_backend.sh, fall back to system
+SPIRV_INCLUDE_LOCAL=""
 if [ "$BUILD_VULKAN" = true ]; then
   if [ -f "$VULKAN_INCLUDE_LOCAL/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
@@ -182,11 +182,24 @@ if [ "$BUILD_VULKAN" = true ]; then
     echo -e "${YELLOW}Vulkan headers not found at $VULKAN_INCLUDE_LOCAL${NC}"
     echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
   fi
-  if [ -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
+
+  # Read SPIRV path from .vulkan_env if available, otherwise detect system headers
+  VULKAN_ENV_FILE="$PREBUILT_GPU_DIR/arm64-v8a/.vulkan_env"
+  if [ -f "$VULKAN_ENV_FILE" ]; then
+    SPIRV_INCLUDE_LOCAL=$(grep "^SPIRV_INCLUDE_PATH=" "$VULKAN_ENV_FILE" | cut -d'=' -f2)
+  fi
+  if [ -z "$SPIRV_INCLUDE_LOCAL" ] || [ ! -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
+    for candidate in "/usr/include" "/usr/local/include" "${VULKAN_SDK:-}/include"; do
+      if [ -f "$candidate/spirv/unified1/spirv.hpp" ]; then
+        SPIRV_INCLUDE_LOCAL="$candidate"
+        break
+      fi
+    done
+  fi
+  if [ -n "$SPIRV_INCLUDE_LOCAL" ] && [ -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
     echo -e "${GREEN}SPIRV headers found at $SPIRV_INCLUDE_LOCAL${NC}"
   else
-    echo -e "${YELLOW}SPIRV headers not found at $SPIRV_INCLUDE_LOCAL${NC}"
-    echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
+    echo -e "${RED}SPIRV headers not found. Install with: sudo apt-get install spirv-headers${NC}"
     VULKAN_AVAILABLE=false
   fi
 fi
