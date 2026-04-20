@@ -88,6 +88,7 @@ PREBUILT_EXTERNAL_DIR="$PREBUILT_DIR/libs/external"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 THIRD_PARTY_DIR="$PREBUILT_DIR/third_party"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
+SPIRV_HEADERS_DIR="$THIRD_PARTY_DIR/SPIRV-Headers"
 
 # Try to use the user-provided NDK path first
 if [ -n "$CUSTOM_NDK_PATH" ]; then
@@ -172,6 +173,7 @@ fi
 # Check for Vulkan headers
 VULKAN_AVAILABLE=false
 VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
+SPIRV_INCLUDE_LOCAL="$SPIRV_HEADERS_DIR/include"
 if [ "$BUILD_VULKAN" = true ]; then
   if [ -f "$VULKAN_INCLUDE_LOCAL/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
@@ -179,6 +181,13 @@ if [ "$BUILD_VULKAN" = true ]; then
   else
     echo -e "${YELLOW}Vulkan headers not found at $VULKAN_INCLUDE_LOCAL${NC}"
     echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
+  fi
+  if [ -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
+    echo -e "${GREEN}SPIRV headers found at $SPIRV_INCLUDE_LOCAL${NC}"
+  else
+    echo -e "${YELLOW}SPIRV headers not found at $SPIRV_INCLUDE_LOCAL${NC}"
+    echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
+    VULKAN_AVAILABLE=false
   fi
 fi
 
@@ -345,6 +354,8 @@ build_for_abi() {
     
     # Use the headers prepared by build_android_gpu_backend.sh
     GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_LOCAL")
+    # SPIRV-Headers are required by ggml-vulkan.cpp on Linux/Android
+    GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I${SPIRV_INCLUDE_LOCAL}")
     
     # Explicitly set Vulkan library path to use the correct API level
     # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)

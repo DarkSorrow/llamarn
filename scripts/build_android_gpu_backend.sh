@@ -84,6 +84,30 @@ OPENCL_LOADER_DIR="$THIRD_PARTY_DIR/OpenCL-ICD-Loader"
 OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
+SPIRV_HEADERS_DIR="$THIRD_PARTY_DIR/SPIRV-Headers"
+
+ensure_spirv_headers_installed() {
+  if [ ! -d "$SPIRV_HEADERS_DIR" ]; then
+    echo -e "${YELLOW}Cloning SPIRV-Headers (tag: $SPIRV_HEADERS_TAG)...${NC}"
+    git clone --depth 1 --branch "$SPIRV_HEADERS_TAG" https://github.com/KhronosGroup/SPIRV-Headers "$SPIRV_HEADERS_DIR" || {
+      echo -e "${RED}Failed to clone SPIRV-Headers tag $SPIRV_HEADERS_TAG${NC}"
+      exit 1
+    }
+  else
+    echo -e "${YELLOW}Updating SPIRV-Headers repository...${NC}"
+    pushd "$SPIRV_HEADERS_DIR" >/dev/null
+    git fetch --depth 1 origin tag "$SPIRV_HEADERS_TAG" >/dev/null 2>&1 || git fetch --depth 1 origin >/dev/null 2>&1
+    git checkout "$SPIRV_HEADERS_TAG" >/dev/null 2>&1 || true
+    popd >/dev/null
+  fi
+
+  local spirv_header="$SPIRV_HEADERS_DIR/include/spirv/unified1/spirv.hpp"
+  if [ ! -f "$spirv_header" ]; then
+    echo -e "${RED}SPIRV-Headers missing expected file: $spirv_header${NC}"
+    exit 1
+  fi
+  echo -e "${GREEN}SPIRV headers ready at: $SPIRV_HEADERS_DIR/include${NC}"
+}
 
 ensure_vulkan_headers_installed() {
   local local_header_dir="$VULKAN_HEADERS_DIR/include"
@@ -121,6 +145,7 @@ if [ "$CLEAN_BUILD" = true ]; then
     rm -rf "$OPENCL_HEADERS_DIR"
     rm -rf "$OPENCL_LOADER_DIR"
     rm -rf "$VULKAN_HEADERS_DIR"
+    rm -rf "$SPIRV_HEADERS_DIR"
     rm -rf "$OPENCL_INCLUDE_DIR"
     rm -rf "$OPENCL_LIB_DIR"
 fi
@@ -377,7 +402,9 @@ if [ "$BUILD_VULKAN" = true ]; then
   echo -e "${GREEN}=== Preparing Vulkan headers and environment ===${NC}"
   
   ensure_vulkan_headers_installed
+  ensure_spirv_headers_installed
   VULKAN_INCLUDE_PATH="$VULKAN_HEADERS_DIR/include"
+  SPIRV_INCLUDE_PATH="$SPIRV_HEADERS_DIR/include"
   
   # Install glslc compiler to our PATH if it's available
   GLSLC_PATH=""
@@ -420,6 +447,7 @@ if [ "$BUILD_VULKAN" = true ]; then
 # Vulkan environment for $ABI
 VULKAN_LIBRARY_PATH=$NDK_VULKAN_LIB
 VULKAN_INCLUDE_PATH=$VULKAN_INCLUDE_PATH
+SPIRV_INCLUDE_PATH=$SPIRV_INCLUDE_PATH
 GLSLC_EXECUTABLE=$GLSLC_PATH
 ANDROID_MIN_SDK=$ANDROID_MIN_SDK
 HOST_PLATFORM_DIR=$HOST_PLATFORM_DIR

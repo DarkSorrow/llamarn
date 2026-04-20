@@ -154,7 +154,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
-          key: android-ndk-gpu-${{ runner.os }}-v1
+          key: android-ndk-gpu-${{ runner.os }}-v2
           restore-keys: |
             android-ndk-gpu-
       
@@ -167,11 +167,13 @@ jobs:
           mkdir -p prebuilt/gpu
           mkdir -p prebuilt/libs/external/opencl
           mkdir -p prebuilt/third_party/Vulkan-Headers
+          mkdir -p prebuilt/third_party/SPIRV-Headers
           
           # Skip header preparation if we have a cache hit
           if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && \
              [ -d "prebuilt/libs/external/opencl/CL" ] && \
-             [ -d "prebuilt/third_party/Vulkan-Headers/include/vulkan" ]; then
+             [ -d "prebuilt/third_party/Vulkan-Headers/include/vulkan" ] && \
+             [ -f "prebuilt/third_party/SPIRV-Headers/include/spirv/unified1/spirv.hpp" ]; then
             echo "✅ Using cached GPU headers"
           else
             # Prepare GPU backend headers (OpenCL and Vulkan)
@@ -196,6 +198,13 @@ jobs:
             ls -la prebuilt/third_party/Vulkan-Headers/include/vulkan/ | head -5
           else
             echo "⚠️ Vulkan headers not found (may be disabled)"
+          fi
+
+          if [ -f "prebuilt/third_party/SPIRV-Headers/include/spirv/unified1/spirv.hpp" ]; then
+            echo "✅ SPIRV headers prepared"
+          else
+            echo "❌ SPIRV headers not found — ggml-vulkan.cpp will fail to compile"
+            exit 1
           fi
           
           # Check for Vulkan environment files
