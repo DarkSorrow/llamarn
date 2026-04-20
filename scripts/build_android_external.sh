@@ -139,6 +139,9 @@ OPENCL_INCLUDE_DIR="$PREBUILT_EXTERNAL_DIR/opencl/include"
 OPENCL_LIB_DIR="$PREBUILT_EXTERNAL_DIR/opencl/lib"
 VULKAN_HEADERS_DIR="$THIRD_PARTY_DIR/Vulkan-Headers"
 VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
+# Staged SPIRV headers (only spirv/ subdir copied here to avoid leaking host Linux headers
+# into the NDK cross-compiler — created by build_android_ggml_gpu_backends.sh)
+SPIRV_STAGED_DIR="$PREBUILT_DIR/third_party/spirv-staged-include"
 
 # Clean up Android directory if requested
 if [ "$CLEAN_BUILD" = true ] || [ "$CLEAN_PREBUILT" = true ]; then
@@ -691,6 +694,16 @@ build_for_abi() {
       ABI_GPU_FLAGS+=(-DVulkan_GLSLC_EXECUTABLE="$VK_GLSLC")
     fi
     
+    # SPIRV-Headers are needed at compile-time by ggml-vulkan.cpp.
+    # Use the pre-staged isolated directory (spirv/ subtree only) so we never pass
+    # /usr/include to the NDK cross-compiler (which would leak bits/wordsize.h etc.).
+    if [ -d "$SPIRV_STAGED_DIR/spirv" ]; then
+      ABI_GPU_FLAGS+=(-DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations -I${SPIRV_STAGED_DIR}")
+      echo -e "${GREEN}SPIRV headers added from staged dir: $SPIRV_STAGED_DIR${NC}"
+    else
+      echo -e "${RED}SPIRV staged headers not found at $SPIRV_STAGED_DIR — run build_android_ggml_gpu_backends.sh first${NC}"
+      return 1
+    fi
     echo -e "${GREEN}Vulkan backend configured for $ABI${NC}"
   elif [ "$ABI_SUPPORTS_GPU" = false ]; then
     echo -e "${YELLOW}Skipping GPU configuration for 32-bit ABI $ABI${NC}"
@@ -703,7 +716,7 @@ build_for_abi() {
     # Note: We append to existing CMAKE_CXX_FLAGS rather than replacing it
     # The flags are passed as a single quoted string to prevent CMake from parsing them as separate arguments
     HEXAGON_C_FLAGS='-march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
-    HEXAGON_CXX_FLAGS='-Wno-deprecated-declarations -march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE'
+    HEXAGON_CXX_FLAGS="-Wno-deprecated-declarations -march=armv8.7a+fp16 -fvectorize -ffp-model=fast -fno-finite-math-only -flto -D_GNU_SOURCE -I${SPIRV_STAGED_DIR}"
     ABI_GPU_FLAGS+=(
       -DCMAKE_C_FLAGS="${HEXAGON_C_FLAGS}"
       -DCMAKE_CXX_FLAGS="${HEXAGON_CXX_FLAGS}"
