@@ -172,8 +172,10 @@ fi
 # Check for Vulkan headers
 VULKAN_AVAILABLE=false
 VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
-# SPIRV-Headers: prefer path recorded by build_android_gpu_backend.sh, fall back to system
-SPIRV_INCLUDE_LOCAL=""
+# SPIRV-Headers: stage only the spirv/ subdirectory into an isolated directory so we
+# can pass it to the NDK cross-compiler without leaking host system headers (/usr/include
+# contains Linux-specific headers like bits/wordsize.h that break Android builds).
+SPIRV_STAGED_DIR="$PREBUILT_DIR/third_party/spirv-staged-include"
 if [ "$BUILD_VULKAN" = true ]; then
   if [ -f "$VULKAN_INCLUDE_LOCAL/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
@@ -183,21 +185,18 @@ if [ "$BUILD_VULKAN" = true ]; then
     echo -e "${YELLOW}Run build_android_gpu_backend.sh first to prepare headers${NC}"
   fi
 
-  # Read SPIRV path from .vulkan_env if available, otherwise detect system headers
-  VULKAN_ENV_FILE="$PREBUILT_GPU_DIR/arm64-v8a/.vulkan_env"
-  if [ -f "$VULKAN_ENV_FILE" ]; then
-    SPIRV_INCLUDE_LOCAL=$(grep "^SPIRV_INCLUDE_PATH=" "$VULKAN_ENV_FILE" | cut -d'=' -f2)
-  fi
-  if [ -z "$SPIRV_INCLUDE_LOCAL" ] || [ ! -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
-    for candidate in "/usr/include" "/usr/local/include" "${VULKAN_SDK:-}/include"; do
-      if [ -f "$candidate/spirv/unified1/spirv.hpp" ]; then
-        SPIRV_INCLUDE_LOCAL="$candidate"
-        break
-      fi
-    done
-  fi
-  if [ -n "$SPIRV_INCLUDE_LOCAL" ] && [ -f "$SPIRV_INCLUDE_LOCAL/spirv/unified1/spirv.hpp" ]; then
-    echo -e "${GREEN}SPIRV headers found at $SPIRV_INCLUDE_LOCAL${NC}"
+  # Find system SPIRV headers and copy only the spirv/ tree into an isolated dir
+  SPIRV_SRC=""
+  for candidate in "/usr/include" "/usr/local/include" "${VULKAN_SDK:-}/include"; do
+    if [ -f "$candidate/spirv/unified1/spirv.hpp" ]; then
+      SPIRV_SRC="$candidate/spirv"
+      break
+    fi
+  done
+  if [ -n "$SPIRV_SRC" ]; then
+    mkdir -p "$SPIRV_STAGED_DIR/spirv"
+    cp -r "$SPIRV_SRC/." "$SPIRV_STAGED_DIR/spirv/"
+    echo -e "${GREEN}SPIRV headers staged at $SPIRV_STAGED_DIR (source: $SPIRV_SRC)${NC}"
   else
     echo -e "${RED}SPIRV headers not found. Install with: sudo apt-get install spirv-headers${NC}"
     VULKAN_AVAILABLE=false
@@ -367,8 +366,9 @@ build_for_abi() {
     
     # Use the headers prepared by build_android_gpu_backend.sh
     GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_LOCAL")
-    # SPIRV-Headers are required by ggml-vulkan.cpp on Linux/Android
-    GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I${SPIRV_INCLUDE_LOCAL}")
+    # Pass only the isolated spirv/ tree — never /usr/include which leaks host headers
+    # into the NDK cross-compiler and breaks bits/wordsize.h resolution.
+    GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I${SPIRV_STAGED_DIR}")
     
     # Explicitly set Vulkan library path to use the correct API level
     # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)
