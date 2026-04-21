@@ -53,7 +53,15 @@ export default function VisionChatScreen() {
       resolvedMmproj = cached;
     }
 
-    const params: Parameters<typeof initLlama>[0] = { model: mp, n_ctx: 2048, use_jinja: true };
+    // Vision models need larger context: image tokens alone can be 256–784 for a 448px image.
+    // n_gpu_layers: 0 ensures CPU fallback on iOS simulator where Metal embedding-input
+    // compute paths may not be fully supported.
+    const params: Parameters<typeof initLlama>[0] = {
+      model: mp,
+      n_ctx: 4096,
+      use_jinja: true,
+      n_gpu_layers: 0,
+    };
     const mmproj = resolvedMmproj;
     if (mmproj) {
       params.mmproj       = mmproj;
@@ -107,7 +115,12 @@ export default function VisionChatScreen() {
         }],
         n_predict: 256,
       });
-      setResp(r.text ?? JSON.stringify(r));
+      // chat completion returns OpenAI format; fall through candidates in order
+      const text: string =
+        (r as any).text ??
+        (r as any).choices?.[0]?.message?.content ??
+        JSON.stringify(r);
+      setResp(text);
       setStatus('Done');
     } catch (e: any) {
       setStatus(`Error: ${e.message}`);

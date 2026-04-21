@@ -1,6 +1,7 @@
 #include "PureCppImpl.h"
 
 #include <jsi/jsi.h>
+#include <algorithm>
 #include <array>
 #include <functional>
 #include <future>
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdlib>  // for setenv
+#include <sys/stat.h>
 #include "SystemUtils.h"
 // Include our custom headers - this was missing!
 #include "rn-llama.h"
@@ -227,10 +229,18 @@ PureCppImpl::PureCppImpl(std::shared_ptr<CallInvoker> jsInvoker)
     : NativeRNLlamaCppCxxSpec(jsInvoker), jsInvoker_(jsInvoker) {
 }
 
-jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String modelPath) {
+jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String modelPath,
+                                            std::optional<jsi::String> mmprojPath) {
   // Parse JSI arguments to native types on JSI thread
   std::string path = modelPath.utf8(runtime);
   SystemUtils::normalizeFilePath(path);
+
+  // Resolve optional mmproj path on the JSI thread before entering the background thread.
+  std::string mmproj_path;
+  if (mmprojPath.has_value()) {
+    mmproj_path = mmprojPath->utf8(runtime);
+    SystemUtils::normalizeFilePath(mmproj_path);
+  }
 
   if (!jsInvoker_) {
     // Fallback to synchronous if no CallInvoker available - this should not happen normally
@@ -244,27 +254,29 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
     runtime,
     jsi::PropNameID::forAscii(runtime, "executor"),
     2,
-    [this, path](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
-      
+    [this, path, mmproj_path](jsi::Runtime& runtime, const jsi::Value& thisValue, const jsi::Value* args, size_t count) -> jsi::Value {
+
       auto resolve = std::make_shared<jsi::Function>(args[0].asObject(runtime).asFunction(runtime));
       auto reject = std::make_shared<jsi::Function>(args[1].asObject(runtime).asFunction(runtime));
-      
+
       // Create shared references to runtime and invoker for thread safety
       auto runtimePtr = &runtime;
       auto invoker = jsInvoker_;
       auto selfPtr = shared_from_this();
       
       // Launch background thread for model info loading
-      std::thread([selfPtr, path, resolve, reject, runtimePtr, invoker]() {
+      std::thread([selfPtr, path, mmproj_path, resolve, reject, runtimePtr, invoker]() {
         try {
-          // Set up logging callback to capture llama.cpp error messages
-          // llama_log_set([](enum ggml_log_level level, const char * text, void * /* user_data */) {
-          //   if (level >= GGML_LOG_LEVEL_ERROR) {
-          //     LOGE("llama.cpp: %s", text);
-          //   }
-          // }, nullptr);
-          
           ensure_backends_loaded();
+
+          // Read mmproj file size (stat only — no model load needed) for VRAM reservation.
+          int64_t mmproj_size_bytes = 0;
+          if (!mmproj_path.empty()) {
+            struct stat st{};
+            if (::stat(mmproj_path.c_str(), &st) == 0) {
+              mmproj_size_bytes = static_cast<int64_t>(st.st_size);
+            }
+          }
 
           // Create model params
           llama_model_params params = llama_model_default_params();
@@ -292,12 +304,16 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Check if GPU is supported
           bool gpuSupported = llama_supports_gpu_offload();
 
-          // Calculate optimal GPU layers and memory estimates
+          // Calculate optimal GPU layers, reserving VRAM for mmproj if provided.
           int optimalGpuLayers = 0;
           int64_t available_memory_bytes = SystemUtils::getAvailableMemoryBytes();
           if (gpuSupported) {
-            optimalGpuLayers = SystemUtils::getOptimalGpuLayers(model);
+            optimalGpuLayers = SystemUtils::getOptimalGpuLayers(model, mmproj_size_bytes);
           }
+
+          // Cooperative ingestion hints derived from GPU availability.
+          bool is_cpu_only   = (optimalGpuLayers == 0);
+          int  chunk_size    = is_cpu_only ? 32 : 128;
 
           // Extract quantization type from model description
           std::string desc(buf.data());
@@ -321,6 +337,9 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           double estimated_vram_mb   = optimalGpuLayers > 0 && bytes_per_layer > 0
               ? static_cast<double>(optimalGpuLayers * bytes_per_layer) / (1024.0 * 1024.0)
               : 0.0;
+          double mmproj_size_mb = mmproj_size_bytes > 0
+              ? static_cast<double>(mmproj_size_bytes) / (1024.0 * 1024.0)
+              : -1.0; // negative sentinel: mmprojPath was not provided
 
           std::array<char, 128> arch_buf{"unknown"};
           llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
@@ -332,7 +351,8 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           safe_invoke(invoker, [resolve, reject, n_params, n_vocab, n_context, n_embd, description,
                                 gpuSupported, optimalGpuLayers, quantType, n_layers,
                                 model_size_bytes, architecture,
-                                available_memory_mb, estimated_vram_mb, runtimePtr]() {
+                                available_memory_mb, estimated_vram_mb,
+                                mmproj_size_mb, is_cpu_only, chunk_size, runtimePtr]() {
             try {
               jsi::Object result(*runtimePtr);
               result.setProperty(*runtimePtr, "n_params",            jsi::Value(n_params));
@@ -348,6 +368,11 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               result.setProperty(*runtimePtr, "architecture",        jsi::String::createFromUtf8(*runtimePtr, architecture));
               result.setProperty(*runtimePtr, "availableMemoryMB",   jsi::Value(available_memory_mb));
               result.setProperty(*runtimePtr, "estimatedVramMB",     jsi::Value(estimated_vram_mb));
+              result.setProperty(*runtimePtr, "suggestedChunkSize",  jsi::Value(static_cast<double>(chunk_size)));
+              result.setProperty(*runtimePtr, "isCpuOnly",           jsi::Value(is_cpu_only));
+              if (mmproj_size_mb >= 0.0) {
+                result.setProperty(*runtimePtr, "mmprojSizeMB",      jsi::Value(mmproj_size_mb));
+              }
               resolve->call(*runtimePtr, result);
             } catch (const std::exception& e) {
               // JSI object creation failed — reject (not resolve) so JS catch() sees it
@@ -427,6 +452,9 @@ struct InitLlamaParams {
   std::string mmproj_path;
   std::string image_marker;
   uint32_t    declared_capabilities = 0;
+  // Cooperative ingestion loop
+  int  chunk_size  = 128;
+  bool is_cpu_only = false;
 };
 
 struct ModelInitResult {
@@ -488,6 +516,8 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     static_cast<common_params&>(rn_params) = params;
     rn_params.use_jinja        = p.use_jinja;
     rn_params.reasoning_format = p.reasoning_format;
+    rn_params.chunk_size       = p.chunk_size;
+    rn_params.is_cpu_only      = p.is_cpu_only;
 
     // ── 2. Model init with GPU→CPU fallback ────────────────────────────────
     auto init_result = try_init_with_gpu_fallback(params);
@@ -677,6 +707,12 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
     }
   }
 
+  // Cooperative ingestion loop settings
+  int  chunk_size  = 128;
+  bool is_cpu_only = false;
+  SystemUtils::setIfExists(runtime, options, "chunk_size",  chunk_size);
+  SystemUtils::setIfExists(runtime, options, "is_cpu_only", is_cpu_only);
+
   // Pack all parsed values into a shared struct so the lambda captures stay minimal.
   auto p = std::make_shared<InitLlamaParams>();
   p->model_path           = model_path;
@@ -709,6 +745,8 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   p->mmproj_path           = mmproj_path;
   p->image_marker          = image_marker;
   p->declared_capabilities = declared_capabilities;
+  p->chunk_size            = std::clamp(chunk_size, 8, 512);
+  p->is_cpu_only           = is_cpu_only;
 
   // Create Promise constructor
   auto Promise = runtime.global().getPropertyAsFunction(runtime, "Promise");

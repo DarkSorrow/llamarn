@@ -4,6 +4,67 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
+## Recommended model loading pattern
+
+**Always call `loadLlamaModelInfo` before `initLlama`.** The function returns three fields specifically designed to be passed directly to `initLlama`:
+
+| Field | Pass as | What it does |
+|-------|---------|--------------|
+| `optimalGpuLayers` | `n_gpu_layers` | GPU layer count computed from 15% of device RAM + 75% layer cap — prevents Android display fence timeouts |
+| `suggestedChunkSize` | `chunk_size` | Prompt-ingestion chunk size: 32 for CPU-only devices, 128 for GPU devices |
+| `isCpuOnly` | `is_cpu_only` | Controls OS yield mode during prompt encoding: `true` = 2 ms sleep/chunk; `false` = soft yield + 1 ms if a chunk exceeded 40 ms |
+
+```typescript
+// Text-only model
+const info = await loadLlamaModelInfo(modelPath);
+
+const model = await initLlama({
+  model:        modelPath,
+  n_ctx:        4096,
+  n_gpu_layers: info.optimalGpuLayers,
+  chunk_size:   info.suggestedChunkSize,
+  is_cpu_only:  info.isCpuOnly,
+  use_jinja:    true,
+});
+```
+
+```typescript
+// Vision model — pass mmprojPath so VRAM is split between LLM layers and projection model
+const info = await loadLlamaModelInfo(modelPath, mmprojPath);
+
+const model = await initLlama({
+  model:        modelPath,
+  mmproj:       mmprojPath,
+  capabilities: ['vision-chat'],
+  n_ctx:        4096,
+  n_gpu_layers: info.optimalGpuLayers,  // already accounts for mmproj VRAM reservation
+  chunk_size:   info.suggestedChunkSize,
+  is_cpu_only:  info.isCpuOnly,
+  use_jinja:    true,
+});
+// info.mmprojSizeMB tells you how many MB were reserved for the projection model
+```
+
+**All `initLlama` parameters remain fully overridable.** The values from `loadLlamaModelInfo` are starting points; explicit values in `initLlama` always win:
+
+```typescript
+// Override chunk_size for a specific use case, keep the rest from info
+const model = await initLlama({
+  ...baseParams,
+  chunk_size:   64,          // override suggested 128
+  n_gpu_layers: info.optimalGpuLayers,
+  is_cpu_only:  info.isCpuOnly,
+});
+```
+
+**Why `chunk_size` and `n_batch` are different:**
+- `n_batch` is the maximum batch allocation size passed to `llama_batch_init` — it controls the internal buffer.
+- `chunk_size` is the number of tokens actually sent to `llama_decode` per call during **prompt ingestion only** (generation is unaffected). Smaller chunks let the OS scheduler run between GPU submits, preventing SurfaceFlinger fence timeouts on Android (`mLastRetireFence not released during 40ms`) and keeping the UI runloop alive on CPU-only devices.
+
+---
+
+---
+
 ## Multi-turn conversations with thinking models
 
 **Breaking change**: The bridge returns the model's raw output in `content`, which for thinking models (Qwen3, DeepSeek-R1, etc.) includes `<think>…</think>` blocks. You **must** strip these and store the thinking separately in `reasoning_content` before feeding the message back as history. If you pass the raw content back unchanged, the chat template receives malformed input and the app crashes on the second turn.

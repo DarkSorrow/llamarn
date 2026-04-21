@@ -27,6 +27,12 @@ struct rn_common_params : common_params {
     common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
     bool use_jinja = false;
+
+    // Cooperative prompt-ingestion loop settings (set at initLlama time).
+    // chunk_size: tokens per llama_decode call during prompt encoding (distinct from n_batch).
+    // is_cpu_only: when true, sleep 2ms after each chunk; when false, yield + 1ms if >40ms.
+    int  chunk_size  = 128;
+    bool is_cpu_only = false;
 };
 
 // Main context structure for React Native integration

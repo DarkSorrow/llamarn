@@ -639,9 +639,14 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
           }
 
           // Schedule success callback on JS thread.
-          invoker->invokeAsync([selfPtr, resolve, result, runtimePtr]() {
-            // Change 2: skip if model was released while this lambda was queued.
-            if (selfPtr->is_released_.load()) return;
+          invoker->invokeAsync([selfPtr, resolve, reject, result, runtimePtr]() {
+            if (selfPtr->is_released_.load()) {
+              // Model was released while this lambda was queued — reject so the
+              // awaiting Promise settles and the JS state machine can continue.
+              try { reject->call(*runtimePtr,
+                  jsi::String::createFromUtf8(*runtimePtr, "model released")); } catch (...) {}
+              return;
+            }
             try {
               jsi::Object jsResult = selfPtr->completionResultToJsi(*runtimePtr, result);
               resolve->call(*runtimePtr, jsResult);

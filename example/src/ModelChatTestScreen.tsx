@@ -23,6 +23,8 @@ const modelFileName = Platform.OS === 'android'
 //const modelFileName = "Qwen3-1.7B-Q4_K_M.gguf";
 
 interface Message {
+  /** Stable ID used by the native KV cache to skip re-encoding unchanged messages. */
+  id?: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   /** Thinking/reasoning text extracted from <think>…</think> blocks (thinking models only). */
@@ -37,6 +39,10 @@ interface Message {
     function?: { name?: string; arguments?: string };
   }>;
 }
+
+/** Generates a short stable ID for KV cache message tracking. */
+const makeId = (): string =>
+  Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 type ModelMode = 'conversation' | 'tools' | 'embeddings';
 
@@ -98,6 +104,7 @@ const extractThinking = (content: string): { thinking: string | null; content: s
 const messageToApiPayload = (msg: Message): Record<string, unknown> => {
   const payload: Record<string, unknown> = {
     role: msg.role,
+    ...(msg.id ? { id: msg.id } : {}),
   };
   const hasTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
   // Always use a string for `content`. The GGUF chat template (e.g. Qwen3) runs in minimal Jinja and
@@ -360,7 +367,7 @@ export default function ModelChatTestScreen() {
   const [modelState, setModelState] = useState<ModelState | null>(null);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'system', content: 'You are a helpful AI assistant.' }
+    { id: makeId(), role: 'system', content: 'You are a helpful AI assistant.' }
   ]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -420,6 +427,7 @@ export default function ModelChatTestScreen() {
         // Send raw JSON — the Qwen3 template wraps it in <tool_response> tags and the model
         // expects structured JSON, not emoji-formatted display text.
         const toolMessage: Message = {
+          id: makeId(),
           role: 'tool',
           content: JSON.stringify(weatherData),
           name: functionName,
@@ -442,6 +450,7 @@ export default function ModelChatTestScreen() {
         
         // Send raw JSON — the model expects structured JSON in tool responses.
         const toolMessage: Message = {
+          id: makeId(),
           role: 'tool',
           content: JSON.stringify(locationData),
           name: functionName,
@@ -455,6 +464,7 @@ export default function ModelChatTestScreen() {
     } catch (err) {
       console.error('Error handling tool call:', err);
       const errorMessage: Message = {
+        id: makeId(),
         role: 'tool',
         content: JSON.stringify({ error: `Error processing tool call: ${err}` }),
         name: toolCall.function?.name || 'unknown',
@@ -473,13 +483,14 @@ export default function ModelChatTestScreen() {
     if (state.mode === 'tools') {
       // System message for the weather tool
       initialMessages = [{
+        id: makeId(),
         role: 'system',
-        content: 
+        content:
 `You are a helpful AI assistant with access to tools. Use tools only when necessary.
 
 Rules:
 1. For weather information: Use the get_weather tool
-2. For location information: Use the get_location tool  
+2. For location information: Use the get_location tool
 3. For general questions: Answer directly without tools
 4. Only call tools when necessary to answer the user's specific question
 5. Don't make multiple tool calls for the same information
@@ -488,6 +499,7 @@ Rules:
     } else {
       // Default system message with Qwen3 thinking mode
       initialMessages = [{
+        id: makeId(),
         role: 'system',
         content: 'You are a helpful AI assistant.'
       }];
@@ -504,7 +516,7 @@ Rules:
         await modelState.instance.release();
         console.log('Model unloaded successfully');
         setModelState(null);
-        setMessages([{ role: 'system', content: 'You are a helpful AI assistant.' }]);
+        setMessages([{ id: makeId(), role: 'system', content: 'You are a helpful AI assistant.' }]);
       } catch (err) {
         console.error('Failed to unload model:', err);
         setError(`Release Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -522,7 +534,7 @@ Rules:
   const sendMessage = async () => {
     if (!modelState?.instance || !input.trim()) return;
     
-    const userMessage: Message = { role: 'user', content: input.trim() };
+    const userMessage: Message = { id: makeId(), role: 'user', content: input.trim() };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setGenerating(true);
@@ -608,6 +620,7 @@ Rules:
       console.log('Tool calls extracted:', toolCalls?.length ?? 0, toolCalls);
 
       const assistantMessage: Message = {
+        id: makeId(),
         role: 'assistant',
         content: `${cleanContent || 'Sorry, I couldn\'t generate a response.'}${perfSummary || ''}`,
         ...(thinking ? { reasoning_content: thinking } : {}),
@@ -617,6 +630,7 @@ Rules:
       if (toolCalls.length > 0) {
         const toolCallsPayload = JSON.parse(JSON.stringify(toolCalls)) as NonNullable<Message['tool_calls']>;
         const assistantToolTurn: Message = {
+          id: makeId(),
           role: 'assistant',
           content: rawContent.trim() ? `${cleanContent}${perfSummary || ''}` : '',
           tool_calls: toolCallsPayload,
@@ -677,6 +691,7 @@ Rules:
         const { thinking: finalThinking, content: finalClean } = extractThinking(finalRaw);
         const finalPerfSummary = getPerformanceSummary(finalResponse);
         const finalMessage: Message = {
+          id: makeId(),
           role: 'assistant',
           content: `${finalClean || 'I couldn\'t process the tool response.'}${finalPerfSummary || ''}`,
           ...(finalThinking ? { reasoning_content: finalThinking } : {}),

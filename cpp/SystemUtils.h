@@ -38,7 +38,8 @@ public:
     * @param model Pointer to an already loaded llama model
     * @return Optimal number of GPU layers (0 if GPU not supported)
     */
-  static int getOptimalGpuLayers(struct llama_model* model);
+  static int getOptimalGpuLayers(struct llama_model* model,
+                                  int64_t reserved_vram_bytes = 0);
 
   /**
    * Returns the number of bytes of memory currently available to the process.

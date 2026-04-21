@@ -85,6 +85,10 @@ export interface LlamaModelParams {
   mmproj?: string;               // path to multimodal projection model (.gguf)
   image_marker?: string;         // custom placeholder token (default: <__media__>)
   capabilities?: ModelCapability[]; // declare which modalities are active
+
+  // Cooperative prompt-ingestion loop (values from loadLlamaModelInfo.suggestedChunkSize / isCpuOnly)
+  chunk_size?: number;   // tokens per decode call during prompt ingestion (default 128)
+  is_cpu_only?: boolean; // true = 2ms sleep/chunk; false = yield + 1ms if chunk >40ms
 }
 
 export interface LlamaCompletionParams {
@@ -305,7 +309,7 @@ export interface Spec extends TurboModule {
   initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods>;
 
   // Load model info without creating a full context
-  loadLlamaModelInfo(modelPath: string): Promise<{
+  loadLlamaModelInfo(modelPath: string, mmprojPath?: string): Promise<{
     n_params: number;
     n_vocab: number;
     n_context: number;
@@ -319,6 +323,9 @@ export interface Spec extends TurboModule {
     model_size_bytes: number;
     availableMemoryMB: number;
     estimatedVramMB: number;
+    mmprojSizeMB?: number;      // present when mmprojPath was supplied
+    suggestedChunkSize: number; // recommended chunk_size for initLlama (32=CPU, 128=GPU)
+    isCpuOnly: boolean;         // true when optimalGpuLayers == 0
   }>;
 }
 
@@ -336,10 +343,13 @@ export function initLlama(params: LlamaModelParams): Promise<LlamaContextType & 
 }
 
 /**
- * Get information about a model without loading it fully
+ * Get information about a model without loading it fully.
+ * Pass mmprojPath to get an optimalGpuLayers that accounts for mmproj VRAM reservation.
+ * The returned suggestedChunkSize and isCpuOnly can be passed directly to initLlama.
  */
 export function loadLlamaModelInfo(
-  modelPath: string
+  modelPath: string,
+  mmprojPath?: string
 ): Promise<{
   n_params: number;
   n_vocab: number;
@@ -352,8 +362,11 @@ export function loadLlamaModelInfo(
   architecture?: string;
   availableMemoryMB?: number;
   estimatedVramMB?: number;
+  mmprojSizeMB?: number;
+  suggestedChunkSize: number;
+  isCpuOnly: boolean;
 }> {
-  return LlamaCppRn.loadLlamaModelInfo(modelPath);
+  return LlamaCppRn.loadLlamaModelInfo(modelPath, mmprojPath);
 }
 
 export default LlamaCppRn;

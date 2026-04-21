@@ -20,6 +20,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <random>
+#include <algorithm>
+#include <chrono>
 
 namespace facebook::react {
 
@@ -269,7 +271,12 @@ CompletionResult run_completion(
             return result;
         }
 
-        // Encode prompt tokens into the KV cache.
+        // Encode prompt tokens into the KV cache using the cooperative ingestion loop.
+        // chunk_size (distinct from n_batch) is the decode granularity; after each chunk
+        // we yield to let the OS/UI thread run, preventing display fence timeouts (Android)
+        // and UI starvation (CPU-only devices).
+        const int ingest_chunk = std::clamp(rn_ctx->params.chunk_size, 8, 512);
+
         if (state.n_past > 0) {
             // Prefix reuse: only encode prompt_tokens[n_past:] at positions [n_past, n_past+1, ...]
             const int n_new = static_cast<int>(state.prompt_tokens.size()) - state.n_past;
@@ -277,7 +284,7 @@ CompletionResult run_completion(
                 llama_batch new_batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
                 for (int i = 0; i < n_new; ) {
                     common_batch_clear(new_batch);
-                    int chunk = std::min(rn_ctx->params.n_batch, n_new - i);
+                    int chunk = std::min(ingest_chunk, n_new - i);
                     bool last_chunk = (i + chunk >= n_new);
                     for (int j = 0; j < chunk; j++) {
                         common_batch_add(new_batch,
@@ -286,12 +293,21 @@ CompletionResult run_completion(
                             {0},
                             last_chunk && (j == chunk - 1));
                     }
+                    auto t0 = std::chrono::steady_clock::now();
                     if (llama_decode(rn_ctx->ctx, new_batch) != 0) {
                         llama_batch_free(new_batch);
                         result.success = false;
                         result.error_msg = "Failed to process prompt";
                         result.error_type = RN_ERROR_INFERENCE;
                         return result;
+                    }
+                    auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+                    if (rn_ctx->params.is_cpu_only) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                    } else {
+                        std::this_thread::yield();
+                        if (chunk_ms > 40) std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     }
                     i += chunk;
                 }
@@ -300,25 +316,31 @@ CompletionResult run_completion(
             }
         } else {
             // Standard path: encode all tokens from position 0.
-            // We use our own chunked loop (identical to the prefix-reuse path above) so that
-            // prompts longer than n_batch are split correctly. common_prompt_batch_decode passes
-            // all tokens in a single llama_batch_get_one call which aborts when n_tokens > n_batch.
             const int n_total = static_cast<int>(state.prompt_tokens.size());
             llama_batch batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
             for (int i = 0; i < n_total; ) {
                 common_batch_clear(batch);
-                int chunk = std::min(rn_ctx->params.n_batch, n_total - i);
+                int chunk = std::min(ingest_chunk, n_total - i);
                 bool last_chunk = (i + chunk >= n_total);
                 for (int j = 0; j < chunk; j++) {
                     common_batch_add(batch, state.prompt_tokens[i + j], i + j,
                                      {0}, last_chunk && (j == chunk - 1));
                 }
+                auto t0 = std::chrono::steady_clock::now();
                 if (llama_decode(rn_ctx->ctx, batch) != 0) {
                     llama_batch_free(batch);
                     result.success = false;
                     result.error_msg = "Failed to process prompt";
                     result.error_type = RN_ERROR_INFERENCE;
                     return result;
+                }
+                auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t0).count();
+                if (rn_ctx->params.is_cpu_only) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                } else {
+                    std::this_thread::yield();
+                    if (chunk_ms > 40) std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
                 i += chunk;
             }

@@ -13,14 +13,43 @@ Initialize a Llama context with the given model parameters.
 
 **Returns:** Promise that resolves to a `LlamaModel` instance
 
-### `loadLlamaModelInfo(modelPath: string): Promise<ModelInfo>`
+### `loadLlamaModelInfo(modelPath: string, mmprojPath?: string): Promise<ModelInfo>`
 
-Get information about a model without loading it fully.
+Get information about a model without loading it fully. The returned values (`optimalGpuLayers`, `suggestedChunkSize`, `isCpuOnly`) are designed to be passed directly to `initLlama`.
 
 **Parameters:**
 - `modelPath`: Path to the model file
+- `mmprojPath` *(optional)*: Path to a multimodal projection `.gguf`. When provided, its file size is read via `stat()` (no load) and deducted from the VRAM budget before computing `optimalGpuLayers`, preventing VRAM oversubscription when both models run concurrently.
 
-**Returns:** Promise that resolves to model information
+**Returns:** Promise that resolves to:
+
+```typescript
+{
+  // Model metadata
+  description: string;         // human-readable name + quant (e.g. "llama 7B Q4_K_M")
+  n_params: number;            // parameter count
+  n_vocab: number;             // vocabulary size
+  n_context: number;           // model's maximum training context length
+  n_embd: number;              // embedding dimension
+  n_layers: number;            // total layer count
+  model_size_bytes: number;    // quantized on-disk size in bytes
+  architecture: string;        // e.g. "llama", "qwen2", "mistral"
+  quant_type: string;          // e.g. "Q4_K", "Q8_0"
+
+  // Device capability
+  gpuSupported: boolean;       // true if GPU offload is available on this device
+  availableMemoryMB: number;   // current free device RAM in MB
+
+  // Recommended initLlama values — pass these directly
+  optimalGpuLayers: number;    // safe GPU layer count (15% RAM budget, 75% layer cap, minus mmproj)
+  estimatedVramMB: number;     // VRAM needed for optimalGpuLayers layers
+  suggestedChunkSize: number;  // 32 (CPU-only) or 128 (GPU) — pass as chunk_size to initLlama
+  isCpuOnly: boolean;          // true when optimalGpuLayers == 0 — pass as is_cpu_only to initLlama
+
+  // Present only when mmprojPath was supplied
+  mmprojSizeMB?: number;       // file size of the projection model in MB
+}
+```
 
 ## Type Definitions
 
@@ -33,13 +62,14 @@ interface LlamaModelParams {
   // Model loading parameters
   model: string;               // path to the model file
   n_ctx?: number;             // context size (default: 2048)
-  n_batch?: number;           // batch size (default: 512)
+  n_batch?: number;           // batch allocation size for llama_decode (default: 512)
   n_ubatch?: number;          // micro batch size for prompt processing
   n_threads?: number;         // number of threads (default: number of physical CPU cores)
   n_keep?: number;            // number of tokens to keep from initial prompt
 
   // GPU acceleration parameters
   n_gpu_layers?: number;      // number of layers to store in VRAM (default: 0)
+                              // use optimalGpuLayers from loadLlamaModelInfo
 
   // Memory management parameters
   use_mmap?: boolean;         // use mmap for faster loading (default: true)
@@ -66,6 +96,13 @@ interface LlamaModelParams {
   use_jinja?: boolean;        // use Jinja template parser
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
+  // Thinking and reasoning options
+  reasoning_budget?: number;      // -1 = unlimited, 0 = disabled, >0 = token limit
+  reasoning_format?: string;      // 'none' | 'auto' | 'deepseek' | 'deepseek-legacy'
+  thinking_forced_open?: boolean; // force thinking tags in every response
+  parse_tool_calls?: boolean;     // parse tool call JSON (auto-enabled when use_jinja is true)
+  parallel_tool_calls?: boolean;  // allow multiple tool calls per response
+
   // LoRA adapters
   lora_adapters?: Array<{
     path: string;             // path to LoRA adapter file
@@ -74,6 +111,17 @@ interface LlamaModelParams {
 
   // Grammar-based sampling
   grammar?: string;           // GBNF grammar for grammar-based sampling
+
+  // Multimodal
+  mmproj?: string;            // path to multimodal projection model (.gguf)
+  capabilities?: Array<'vision-chat' | 'image-encode' | 'audio-transcribe' | 'vision-reasoning'>;
+
+  // Cooperative prompt-ingestion loop
+  // Use the values from loadLlamaModelInfo.suggestedChunkSize / isCpuOnly directly.
+  chunk_size?: number;        // tokens per llama_decode call during prompt encoding (default: 128)
+                              // independent of n_batch; clamped to [8, 512]
+  is_cpu_only?: boolean;      // true  → sleep 2 ms after each chunk (CPU-only devices)
+                              // false → yield() + sleep 1 ms only if a chunk exceeded 40 ms
 }
 ```
 
@@ -251,14 +299,37 @@ interface EmbeddingResponse {
 
 ### Basic Model Initialization
 
+Always call `loadLlamaModelInfo` first so the device-safe values flow into `initLlama`:
+
 ```typescript
-import { initLlama } from '@novastera-oss/llamarn';
+import { loadLlamaModelInfo, initLlama } from '@novastera-oss/llamarn';
+
+const info = await loadLlamaModelInfo('path/to/model.gguf');
 
 const context = await initLlama({
-  model: 'path/to/model.gguf',
-  n_ctx: 2048,
-  n_batch: 512,
-  n_gpu_layers: 0
+  model:        'path/to/model.gguf',
+  n_ctx:        4096,
+  n_gpu_layers: info.optimalGpuLayers,   // device-safe GPU layer count
+  chunk_size:   info.suggestedChunkSize,  // cooperative ingestion granularity
+  is_cpu_only:  info.isCpuOnly,          // OS-yield mode for prompt encoding
+  use_jinja:    true,
+});
+```
+
+For vision models, pass `mmprojPath` so the VRAM budget is split correctly:
+
+```typescript
+const info = await loadLlamaModelInfo('path/to/model.gguf', 'path/to/mmproj.gguf');
+
+const context = await initLlama({
+  model:        'path/to/model.gguf',
+  mmproj:       'path/to/mmproj.gguf',
+  capabilities: ['vision-chat'],
+  n_ctx:        4096,
+  n_gpu_layers: info.optimalGpuLayers,  // already accounts for mmproj VRAM
+  chunk_size:   info.suggestedChunkSize,
+  is_cpu_only:  info.isCpuOnly,
+  use_jinja:    true,
 });
 ```
 

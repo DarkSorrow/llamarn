@@ -318,24 +318,63 @@ Frame dropping is handled automatically in C++ via an atomic flag — no JS-side
 
 ---
 
-## Model Info
+## Model Info and Optimal Initialization
 
-Query a model's properties without fully loading it:
+`loadLlamaModelInfo` queries a model's properties without fully loading it. The returned values are designed to be passed directly to `initLlama` — this is the **recommended initialization pattern**.
+
+### Text-only model
 
 ```typescript
-import { loadLlamaModelInfo } from '@novastera-oss/llamarn';
+import { loadLlamaModelInfo, initLlama } from '@novastera-oss/llamarn';
 
 const info = await loadLlamaModelInfo('/path/to/model.gguf');
 
-console.log(info.description);       // human-readable model name + quant
-console.log(info.n_params);          // parameter count
-console.log(info.n_layers);          // total layer count
-console.log(info.model_size_bytes);  // quantized on-disk size
-console.log(info.optimalGpuLayers);  // recommended n_gpu_layers for this device
-console.log(info.availableMemoryMB); // current free device RAM in MB
-console.log(info.estimatedVramMB);   // estimated VRAM needed for optimalGpuLayers
-console.log(info.architecture);      // e.g. "llama", "qwen2", "mistral"
-console.log(info.gpuSupported);      // true if GPU offload is available
+const model = await initLlama({
+  model:          '/path/to/model.gguf',
+  n_ctx:          4096,
+  n_gpu_layers:   info.optimalGpuLayers,   // device-safe GPU layer count
+  chunk_size:     info.suggestedChunkSize,  // cooperative ingestion chunk size
+  is_cpu_only:    info.isCpuOnly,          // yield behaviour during prompt encoding
+  use_jinja:      true,
+});
+```
+
+### Vision model with mmproj
+
+Pass `mmprojPath` so the VRAM budget is split between the LLM and the projection model before computing `optimalGpuLayers`:
+
+```typescript
+const info = await loadLlamaModelInfo('/path/to/model.gguf', '/path/to/mmproj.gguf');
+
+const model = await initLlama({
+  model:          '/path/to/model.gguf',
+  mmproj:         '/path/to/mmproj.gguf',
+  capabilities:   ['vision-chat'],
+  n_ctx:          4096,
+  n_gpu_layers:   info.optimalGpuLayers,   // already accounts for mmproj VRAM
+  chunk_size:     info.suggestedChunkSize,
+  is_cpu_only:    info.isCpuOnly,
+  use_jinja:      true,
+});
+
+console.log(info.mmprojSizeMB);      // MB reserved for the projection model
+```
+
+### All returned fields
+
+```typescript
+console.log(info.description);         // human-readable model name + quant
+console.log(info.n_params);            // parameter count
+console.log(info.n_layers);            // total layer count
+console.log(info.model_size_bytes);    // quantized on-disk size in bytes
+console.log(info.optimalGpuLayers);    // recommended n_gpu_layers for this device
+console.log(info.availableMemoryMB);   // current free device RAM in MB
+console.log(info.estimatedVramMB);     // estimated VRAM needed for optimalGpuLayers
+console.log(info.architecture);        // e.g. "llama", "qwen2", "mistral"
+console.log(info.gpuSupported);        // true if GPU offload is available
+console.log(info.suggestedChunkSize);  // 32 (CPU-only) or 128 (GPU) — pass as chunk_size
+console.log(info.isCpuOnly);           // true when optimalGpuLayers == 0
+console.log(info.mmprojSizeMB);        // present only when mmprojPath was supplied
 ```
 
 ---
@@ -346,11 +385,20 @@ console.log(info.gpuSupported);      // true if GPU offload is available
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `n_gpu_layers` | `0` | Layers to offload to GPU (use `optimalGpuLayers` from `loadLlamaModelInfo`) |
+| `n_gpu_layers` | `0` | Layers to offload to GPU — use `optimalGpuLayers` from `loadLlamaModelInfo` |
 | `n_ctx` | `2048` | Context window size |
-| `n_batch` | `512` | Prompt processing batch size |
+| `n_batch` | `512` | Prompt processing batch allocation size |
 | `use_mmap` | `true` | Memory-mapped loading (faster startup) |
 | `use_mlock` | `false` | Lock model in RAM (prevents swapping) |
+
+### Cooperative Ingestion Parameters
+
+These control how the prompt is encoded into the KV cache — smaller chunks with OS yields prevent display fence timeouts on Android and UI starvation on CPU-only devices. Use the values from `loadLlamaModelInfo` directly.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chunk_size` | `128` | Tokens per `llama_decode` call during prompt encoding (8–512, independent of `n_batch`) |
+| `is_cpu_only` | `false` | `true` → 2 ms sleep after each chunk; `false` → `yield()` + 1 ms sleep if chunk > 40 ms |
 
 ### Thinking and Reasoning Parameters
 

@@ -122,35 +122,30 @@ int64_t SystemUtils::getAvailableMemoryBytes() {
 #endif
 }
 
-int SystemUtils::getOptimalGpuLayers(struct llama_model* model) {
-    // Get model parameters
+int SystemUtils::getOptimalGpuLayers(struct llama_model* model,
+                                      int64_t reserved_vram_bytes) {
     const int n_layer = llama_model_n_layer(model);
-
-    // Use actual quantized tensor size for per-layer estimate (more accurate than float32 assumption)
     int64_t bytes_per_layer = (int64_t)llama_model_size(model) / n_layer;
-
-    // Get actual device memory
     int64_t total_memory = getTotalPhysicalMemory();
 
-    // On mobile devices, we don't have dedicated VRAM - it's shared with system RAM
-    // Estimate available GPU memory as a percentage of total memory
     int64_t available_vram = 0;
-
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    // iOS devices - use 25% of total RAM
-    available_vram = total_memory / 4;
-#elif defined(__ANDROID__)
-    // Android - use 20% of total RAM (more conservative)
-    available_vram = total_memory / 5;
+#if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__ANDROID__)
+    // Unified mobile budget: 15% of total RAM.
+    // 25%/20% was too aggressive — all layers on GPU causes GPU fence timeouts
+    // (Android mLastRetireFence) and memory pressure on smaller iOS devices.
+    available_vram = total_memory * 15 / 100;
 #endif
 
-    // Calculate optimal layers using 80% of available GPU memory
-    // We use a higher percentage since we're already being conservative with the available_vram estimate
+    // Use 80% of the available budget, then deduct VRAM reserved for other models (e.g. mmproj).
     int64_t target_vram = (available_vram * 80) / 100;
-    int possible_layers = target_vram / bytes_per_layer;
+    target_vram = std::max(int64_t(0), target_vram - reserved_vram_bytes);
 
-    // Clamp to total layers and ensure we don't go below 1
-    int optimal_layers = std::max(1, std::min(possible_layers, n_layer));
+    int possible_layers = (bytes_per_layer > 0) ? static_cast<int>(target_vram / bytes_per_layer) : 0;
+
+    // Cap at 75% of total layers so at least 25% run on CPU, creating GPU yield points.
+    // This prevents mobile GPU fence timeouts (Android) and thermal saturation (iOS).
+    int max_layers = n_layer * 3 / 4;
+    int optimal_layers = std::max(1, std::min(possible_layers, max_layers));
 
     return optimal_layers;
 }

@@ -39,7 +39,7 @@ public:
 
     // --- JSI Host Functions defined in your new Spec ---
     jsi::Value initLlama(jsi::Runtime &rt, jsi::Object params); // Matches LlamaModelParams
-    jsi::Value loadLlamaModelInfo(jsi::Runtime &rt, jsi::String modelPath);
+    jsi::Value loadLlamaModelInfo(jsi::Runtime &rt, jsi::String modelPath, std::optional<jsi::String> mmprojPath);
 
 private:
     // Helper method to create the HostObject that wraps the llama context and its methods
