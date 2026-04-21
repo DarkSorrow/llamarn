@@ -558,51 +558,107 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
       
       // Launch background thread for completion
       std::thread([selfPtr, options, callbackFn, resolve, reject, runtimePtr, invoker]() {
+        // Change 2: guard against model being released before the thread even starts.
+        if (selfPtr->is_released_.load()) {
+          try { invoker->invokeAsync([reject, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr,
+                "model was released before completion started")); } catch (...) {}
+          }); } catch (...) {}
+          return;
+        }
+
         try {
-          // Create callback that schedules token updates on JS thread
+          // Change 1: batch streaming tokens to avoid flooding the JS event queue.
+          // In thinking mode a model can emit 500–5000 thinking tokens; one invokeAsync
+          // per token accumulates closures faster than the JS event loop drains them,
+          // which on real devices (where the model occupies GPU memory) triggers an iOS
+          // Jetsam memory-pressure kill with no crash report.
+          //
+          // flushPtr is a shared_ptr<function> so both the partialCallback lambda and the
+          // post-completion drain call can reach the same instance without capturing a local
+          // by reference (which would dangle once the if-block ends).
           std::function<void(jsi::Runtime&, const char*)> partialCallback = nullptr;
-          
+          auto flushPtr = std::make_shared<std::function<void()>>();
+
           if (callbackFn && invoker) {
-            partialCallback = [callbackFn, invoker, runtimePtr](jsi::Runtime& rt, const char* token) {
-              std::string tokenCopy(token);
-              invoker->invokeAsync([callbackFn, tokenCopy, runtimePtr]() {
-                try {
-                  jsi::Object data(*runtimePtr);
-                  data.setProperty(*runtimePtr, "token", jsi::String::createFromUtf8(*runtimePtr, tokenCopy));
-                  callbackFn->call(*runtimePtr, data);
-                } catch (...) {
-                  // Ignore callback errors
-                }
-              });
+            auto tokenBatch = std::make_shared<std::string>();
+            auto batchCount = std::make_shared<int>(0);
+            constexpr int kFlushEvery = 8;
+
+            // batchStr is a shared_ptr<string> so the invokeAsync lambda copies only a
+            // pointer (8 bytes) rather than doing a deep copy of the string data.
+            *flushPtr = [callbackFn, invoker, runtimePtr, tokenBatch, selfPtr]() {
+              if (tokenBatch->empty()) return;
+              auto batchStr = std::make_shared<std::string>(std::move(*tokenBatch));
+              tokenBatch->clear();
+              try {
+                invoker->invokeAsync([callbackFn, batchStr, runtimePtr, selfPtr]() {
+                  // Change 2: skip if model was released while this lambda was queued.
+                  if (selfPtr->is_released_.load()) return;
+                  try {
+                    jsi::Object data(*runtimePtr);
+                    data.setProperty(*runtimePtr, "token",
+                        jsi::String::createFromUtf8(*runtimePtr, *batchStr));
+                    callbackFn->call(*runtimePtr, data);
+                  } catch (...) {}
+                });
+              } catch (...) {}
+            };
+
+            partialCallback = [flushPtr, tokenBatch, batchCount](jsi::Runtime&, const char* token) {
+              *tokenBatch += token;
+              if (++(*batchCount) >= kFlushEvery) {
+                *batchCount = 0;
+                (*flushPtr)();
+              }
             };
           }
-          
-          // Run completion
-          CompletionResult result = selfPtr->completion(options, partialCallback, runtimePtr);
-          
-          // Schedule success callback on JS thread
+
+          // Change 3: serialize with multimodal functions via inference_mutex_.
+          // completionAsyncJsi previously only held rn_ctx_->mutex (acquired inside
+          // completion()), while runOnFrameJsi / embedImageJsi use inference_mutex_.
+          // These are independent locks, so concurrent text + multimodal inference would
+          // both touch rn_ctx_->ctx simultaneously — a data race on the llama context.
+          CompletionResult result;
+          {
+            std::lock_guard<std::mutex> inf_lock(selfPtr->inference_mutex_);
+            // Change 2: re-check after potentially waiting on the mutex.
+            if (selfPtr->is_released_.load()) {
+              try { invoker->invokeAsync([reject, runtimePtr]() {
+                try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr,
+                    "model released during wait")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
+            result = selfPtr->completion(options, partialCallback, runtimePtr);
+          }
+
+          // Drain any tokens that didn't reach the kFlushEvery threshold.
+          if (flushPtr && *flushPtr) {
+            (*flushPtr)();
+          }
+
+          // Schedule success callback on JS thread.
           invoker->invokeAsync([selfPtr, resolve, result, runtimePtr]() {
+            // Change 2: skip if model was released while this lambda was queued.
+            if (selfPtr->is_released_.load()) return;
             try {
               jsi::Object jsResult = selfPtr->completionResultToJsi(*runtimePtr, result);
               resolve->call(*runtimePtr, jsResult);
             } catch (const std::exception& e) {
-              // If conversion fails, create a simple error response
-              jsi::Object errorObj(*runtimePtr);
-              errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
-              resolve->call(*runtimePtr, errorObj);
+              try {
+                jsi::Object errorObj(*runtimePtr);
+                errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
+                resolve->call(*runtimePtr, errorObj);
+              } catch (...) {}
             }
           });
-          
+
         } catch (const std::exception& e) {
-          // Schedule error callback on JS thread
           std::string errorMsg(e.what());
-          invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
-            try {
-              reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg));
-            } catch (...) {
-              // Ignore rejection errors
-            }
-          });
+          try { invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg)); } catch (...) {}
+          }); } catch (...) {}
         }
       }).detach();
       
