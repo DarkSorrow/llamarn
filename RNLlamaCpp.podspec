@@ -29,6 +29,7 @@ Pod::Spec.new do |s|
                    # llama.cpp common utilities - Assuming these are vendored or part of the XCFramework
                    # If these are compiled directly, their paths need to be relative to the podspec (e.g., "cpp/llama.cpp/common/common.{h,cpp}")
                    "cpp/llama.cpp/common/common.{h,cpp}",
+                   "cpp/llama.cpp/common/fit.{h,cpp}",
                    "cpp/llama.cpp/common/log.{h,cpp}",
                    "cpp/llama.cpp/common/arg.{h,cpp}",
                    "cpp/llama.cpp/common/sampling.{h,cpp}",

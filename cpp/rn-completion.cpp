@@ -69,7 +69,7 @@ static bool check_stop_conditions(
     const std::string& token_text,
     bool ignore_eos) {
 
-    if (state.n_remaining <= 0) {
+    if (state.n_predict >= 0 && state.n_remaining <= 0) {
         state.has_next_token = false;
         state.stopped_by_limit = true;
         return true;
@@ -207,7 +207,13 @@ CompletionResult run_completion(
             // via mtmd_helper_eval_chunks. Logits are ready; skip tokenize and KV encode.
             state.n_past      = options.mtmd_encoded_n_past;
             state.n_ctx       = llama_n_ctx(rn_ctx->ctx);
-            state.n_predict   = options.n_predict > 0 ? options.n_predict : params.n_predict;
+            if (options.n_predict > 0) {
+                state.n_predict = options.n_predict;
+            } else if (params.n_predict > 0) {
+                state.n_predict = params.n_predict;
+            } else {
+                state.n_predict = -1; // unlimited — EOS or stop string terminates
+            }
             state.n_remaining = state.n_predict;
             result.n_prompt_tokens = 0;
         } else {
@@ -245,7 +251,13 @@ CompletionResult run_completion(
 
         // Configure state
         state.n_ctx = llama_n_ctx(rn_ctx->ctx);
-        state.n_predict = options.n_predict > 0 ? options.n_predict : params.n_predict;
+        if (options.n_predict > 0) {
+            state.n_predict = options.n_predict;
+        } else if (params.n_predict > 0) {
+            state.n_predict = params.n_predict;
+        } else {
+            state.n_predict = -1; // unlimited — EOS or stop string terminates
+        }
         state.n_remaining = state.n_predict;
 
         // Guard: prompt must fit in the context window, otherwise llama_decode will ggml_abort.
@@ -335,7 +347,7 @@ CompletionResult run_completion(
         // Allocate a single-token batch once and reuse it across the entire generation loop.
         llama_batch gen_batch = llama_batch_init(1, 0, 1);
 
-        while (state.has_next_token && state.n_remaining > 0) {
+        while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
             // Sample the next token
             llama_token token_id = common_sampler_sample(state.sampler, rn_ctx->ctx, -1);
 
@@ -366,11 +378,30 @@ CompletionResult run_completion(
 
             state.n_past++;
 
-            // Check stopping conditions
+            // Check EOS FIRST — before streaming — so the EOS token text is never sent to JS
+            // and all end-of-generation tokens are handled (not just the single llama_vocab_eos()).
+            // Also erase the EOG token text from generated_text so it does not appear in
+            // result.content or any streamed batch: EOG tokens are control tokens, not content.
+            if (!options.ignore_eos && llama_vocab_is_eog(rn_ctx->vocab, token_id)) {
+                if (state.generated_text.size() >= token_text.size()) {
+                    state.generated_text.erase(state.generated_text.size() - token_text.size());
+                }
+                if (!state.generated_tokens.empty()) {
+                    state.generated_tokens.pop_back();
+                }
+                state.has_next_token = false;
+                break;
+            }
+
+            // Check stopping conditions (stop strings, context limit, n_remaining)
             bool should_stop = check_stop_conditions(state, state.antiprompt, token_text, options.ignore_eos);
 
+            if (should_stop) {
+                break;
+            }
+
             // Stream the token if callback is provided
-            if (callback && !should_stop) {
+            if (callback) {
                 std::string text_to_send = state.generated_text.substr(state.n_sent_text);
                 state.n_sent_text = state.generated_text.size();
 
@@ -379,16 +410,6 @@ CompletionResult run_completion(
                     state.has_next_token = false;
                     break;
                 }
-            }
-
-            if (should_stop) {
-                break;
-            }
-
-            // Check for EOS token if not ignoring
-            if (!options.ignore_eos && token_id == llama_vocab_eos(rn_ctx->vocab)) {
-                state.has_next_token = false;
-                break;
             }
         }
 
@@ -499,19 +520,31 @@ CompletionResult run_chat_completion(
             llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
         } else if (kv_match_count > 0) {
             const int32_t kv_common_len = rn_ctx->kv_messages[kv_match_count - 1].token_end;
+            // Clamp against actual context size: persisted metadata may be stale if the
+            // context was shifted or cleared externally.
+            const int32_t n_ctx_size = static_cast<int32_t>(llama_n_ctx(rn_ctx->ctx));
+            const int32_t safe_kv_len = std::min(kv_common_len, n_ctx_size);
             if (kv_match_count < rn_ctx->kv_messages.size()) {
                 // Some cached messages are no longer present — evict beyond the common prefix.
-                if (!llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, kv_common_len, -1)) {
+                if (safe_kv_len <= 0 ||
+                    !llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, safe_kv_len, -1)) {
                     // seq_rm failed (e.g. recurrent model): fall back to full clear.
                     llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
                     kv_hint_pos = 0;
                 } else {
-                    kv_hint_pos = kv_common_len;
+                    kv_hint_pos = safe_kv_len;
                 }
             } else {
-                // All cached messages still match and new messages are being appended.
-                // KV entries at [0..kv_common_len) are fully valid — no eviction needed.
-                kv_hint_pos = kv_common_len;
+                // All cached messages still match. Evict stale KV entries beyond safe_kv_len
+                // (left over from prior generation turns). Without this, GPU backends can read
+                // stale fp16 values at positions > n_past and corrupt softmax computation.
+                if (safe_kv_len <= 0 ||
+                    !llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, safe_kv_len, -1)) {
+                    llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+                    kv_hint_pos = 0;
+                } else {
+                    kv_hint_pos = safe_kv_len;
+                }
             }
         } else {
             // No matching prefix (or no IDs provided): full clear.
@@ -687,12 +720,16 @@ CompletionResult run_chat_completion(
                     // can't be matched by ID either.
                     break;
                 }
-                // Apply the template to messages[0..k] without a generation prompt to get
-                // the token boundary at the end of this message.
+                // Apply the template to messages[0..k] to get the token boundary.
+                // Use add_generation_prompt=true for the final message so the stored token_end
+                // includes the gen-prompt suffix tokens (e.g. "<|im_start|>assistant\n") that
+                // ARE encoded in the actual KV cache. Using false would make kv_hint_pos point
+                // before those tokens, causing the next call to re-encode them at occupied
+                // KV positions and misaligning all subsequent RoPE position embeddings.
                 common_chat_templates_inputs tinput;
                 tinput.messages               = std::vector<common_chat_msg>(chat_msgs.begin(),
                                                                               chat_msgs.begin() + k + 1);
-                tinput.add_generation_prompt  = false;
+                tinput.add_generation_prompt  = (k + 1 == n_msgs);
                 tinput.use_jinja              = rn_ctx->params.use_jinja;
                 tinput.reasoning_format       = rn_ctx->params.reasoning_format;
                 tinput.chat_template_kwargs   = rn_ctx->params.default_template_kwargs;

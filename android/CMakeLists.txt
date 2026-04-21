@@ -63,6 +63,7 @@ add_library(
     # Note: build-info.cpp is NOT here - it's compiled as part of RNLlamaCpp (cpp/build-info.cpp)
     ${CPP_DIR}/llama.cpp/common/log.cpp
     ${CPP_DIR}/llama.cpp/common/common.cpp
+    ${CPP_DIR}/llama.cpp/common/fit.cpp
     ${CPP_DIR}/llama.cpp/common/sampling.cpp
     ${CPP_DIR}/llama.cpp/common/chat.cpp
     ${CPP_DIR}/llama.cpp/common/chat-auto-parser-generator.cpp
