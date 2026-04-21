@@ -390,12 +390,26 @@ CompletionResult run_completion(
             // Decode the generated token to prepare logits for the next sample
             common_batch_clear(gen_batch);
             common_batch_add(gen_batch, token_id, state.n_past, {0}, true);
+            auto decode_start = std::chrono::steady_clock::now();
             if (llama_decode(rn_ctx->ctx, gen_batch) != 0) {
                 llama_batch_free(gen_batch);
                 result.success = false;
                 result.error_msg = "Failed to decode generated token";
                 result.error_type = RN_ERROR_INFERENCE;
                 return result;
+            }
+            auto decode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - decode_start).count();
+
+            // Cooperative yielding during generation:
+            // GPU: yield every token; sleep only when decode already ran long (display / compositor pressure).
+            // CPU: same progressive pattern — avoid a fixed per-token sleep that caps throughput (~200 tok/s
+            // from sleep alone) on devices that were fine with yield-only before; prefill still uses 2ms/chunk.
+            std::this_thread::yield();
+            if (decode_ms >= 60) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(12));
+            } else if (decode_ms >= 30) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
             }
 
             state.n_past++;
