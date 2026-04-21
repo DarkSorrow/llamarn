@@ -861,6 +861,10 @@ jobs:
             echo "✅ iOS framework present"
             ls -la ios/libs/llama.xcframework
           fi
+
+      - name: Verify packed tarball includes mtmd sources
+        run: |
+          bash scripts/verify-pack-contents.sh
       
       - name: Publish to NPM
         run: |
