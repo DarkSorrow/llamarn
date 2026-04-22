@@ -212,8 +212,8 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
   }
 
   // KV cache control
-  if (obj.hasProperty(rt, "resetKvCache") && !obj.getProperty(rt, "resetKvCache").isUndefined()) {
-    options.reset_kv_cache = obj.getProperty(rt, "resetKvCache").asBool();
+  if (obj.hasProperty(rt, "reset_kv_cache") && !obj.getProperty(rt, "reset_kv_cache").isUndefined()) {
+    options.reset_kv_cache = obj.getProperty(rt, "reset_kv_cache").asBool();
   }
 
   if (obj.hasProperty(rt, "prompt_id") && !obj.getProperty(rt, "prompt_id").isUndefined()) {

@@ -123,11 +123,15 @@ const r2 = await context.completion({ messages: history });
 **Rules:**
 - Messages without an `id` are always fully re-encoded.
 - If you edit a message's content, change its `id` so the cache is invalidated.
-- `resetKvCache: true` forces a full clear.
+- `reset_kv_cache: true` forces a full clear.
 
 ```js
-await context.completion({ messages: history, resetKvCache: true });
+await context.completion({ messages: history, reset_kv_cache: true });
 ```
+
+### Completion parameter naming
+
+Completion request keys are strict snake_case to match the native layer (`top_p`, `top_k`, `min_p`, `repeat_penalty`, `frequency_penalty`, `presence_penalty`, `reset_kv_cache`, etc.). CamelCase aliases are not parsed by the native bridge.
 
 ### Thinking and Reasoning Models
 
@@ -412,9 +416,10 @@ These control how the prompt is encoded into the KV cache — smaller chunks wit
 | `token_rate_cap` | `30` | Max generated tokens/sec (`0` = uncapped) |
 | `token_buffer_size` | `4` | Stream callback flush cadence in tokens |
 | `prompt_id` | `""` | Cache key for prompt/template/tool identity |
-| `config_id` | `""` | Cache key for sampling/grammar/response-format identity |
+| `config_id` | `""` | Cache key for effective completion config identity (include tools + main system prompt identity) |
 
 Use `prompt_id` and `config_id` together. If either is missing, config-cache reuse is skipped.
+Changes to completion config are expected to take effect when `config_id` changes.
 
 ```ts
 const promptSignature = {

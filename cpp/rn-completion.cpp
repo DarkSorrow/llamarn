@@ -691,6 +691,8 @@ CompletionResult run_chat_completion(
         // skip the expensive common_chat_templates_apply step entirely and reuse the cached
         // sampling params, grammar, grammar_triggers, preserved_tokens, and additional_stops.
         // When both IDs are empty, behave identically to before (no cache lookup, no cache store).
+        // Contract: callers should roll tools + system prompt identity into config_id so
+        // completion-config changes only take effect when config_id changes.
         bool config_cache_hit = false;
         if (has_cache_ids && rn_ctx->completion_cache.has_value()) {
             const auto& cached_entry = *rn_ctx->completion_cache;

@@ -67,11 +67,20 @@ const model = await initLlama({
 
 If you rely on chat/template/tool caching, pass both `prompt_id` and `config_id` on each `completion()` call.
 
+### Completion request naming (snake_case only)
+
+Completion parameters are now documented and consumed as snake_case keys. If your app sends camelCase aliases, migrate to canonical names.
+
+- Use `reset_kv_cache` (not `resetKvCache`).
+- Use canonical sampling keys like `top_p`, `top_k`, `min_p`, `repeat_penalty`, `frequency_penalty`, `presence_penalty`.
+
 ### What app teams must add
 
 - Add `prompt_id` and `config_id` to your completion request payload.
 - Recompute `prompt_id` when system prompt, template, or tools change.
 - Recompute `config_id` when sampling/grammar/response-format changes.
+- Treat `config_id` as the effective completion-config identity (include tools + main system prompt identity).
+- Completion config changes are expected to take effect when `config_id` changes.
 - Update finish-reason handling to include `tool_call_parse_error`.
 
 ### `config_id` example recipe

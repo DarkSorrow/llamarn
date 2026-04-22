@@ -95,7 +95,9 @@ struct CompletionOptions {
     // Completion cache key for system prompt + tools identity.
     std::string prompt_id;
 
-    // Completion cache key for sampling params identity.
+    // Completion cache key for effective completion config identity.
+    // Caller should include all knobs that change generation behavior, including
+    // system prompt + tools identity, so config changes only apply when this key changes.
     std::string config_id;
 };
 
