@@ -131,7 +131,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@react-native/gradle-plugin": "^0.85.2",
+    "@react-native/gradle-plugin": "0.83.4",
     "@types/jest": "^30.0.0",
     "@types/react": "^19.2.1",
     "del-cli": "^6.0.0",

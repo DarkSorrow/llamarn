@@ -4,7 +4,7 @@ import {
   View,
   Text,
   Button,
-  ScrollView,
+  FlatList,
   ActivityIndicator,
   TextInput,
   Platform,
@@ -410,9 +410,42 @@ export default function ModelChatTestScreen() {
   ]);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [streamingTokens, setStreamingTokens] = useState<string[]>([]);
+  const [streamingText, setStreamingText] = useState('');
   
-  const scrollViewRef = useRef<ScrollView>(null);
+  const listRef = useRef<FlatList<Message>>(null);
+  const messagesRef = useRef<Message[]>(messages);
+
+  const updateMessages = (updater: (prev: Message[]) => Message[]) => {
+    setMessages(prev => {
+      const next = updater(prev);
+      messagesRef.current = next;
+      return next;
+    });
+  };
+
+  const replaceMessages = (next: Message[]) => {
+    messagesRef.current = next;
+    setMessages(next);
+  };
+
+  const toModelMessages = (history: Message[]): LlamaMessage[] =>
+    history
+      .filter(m => !m.isToolCall)
+      .map(m => messageToApiPayload(m) as unknown as LlamaMessage);
+
+  const logHistoryDebug = (history: Message[], label: string) => {
+    const compact = history
+      .filter(m => !m.isToolCall)
+      .map(m => ({
+        id: m.id,
+        role: m.role,
+        name: m.name,
+        tool_call_id: m.tool_call_id,
+        has_tool_calls: !!m.tool_calls?.length,
+        content: (m.content ?? '').slice(0, 140),
+      }));
+    console.log(`[ChatDebug] ${label}:`, JSON.stringify(compact, null, 2));
+  };
 
   // Handle tool call
   const handleToolCall = async (toolCall: any) => {
@@ -544,7 +577,7 @@ Rules:
       }];
     }
     
-    setMessages(initialMessages);
+    replaceMessages(initialMessages);
     setModelState(state);
   };
 
@@ -555,7 +588,8 @@ Rules:
         await modelState.instance.release();
         console.log('Model unloaded successfully');
         setModelState(null);
-        setMessages([{ id: makeId(), role: 'system', content: 'You are a helpful AI assistant.' }]);
+        replaceMessages([{ id: makeId(), role: 'system', content: 'You are a helpful AI assistant.' }]);
+        setStreamingText('');
       } catch (err) {
         console.error('Failed to unload model:', err);
         setError(`Release Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -565,8 +599,8 @@ Rules:
 
   // Add streaming token for UI display
   const handleStreamingToken = (token: string) => {
-    console.log('Token received:', token);
-    setStreamingTokens(prev => [...prev, token]);
+    console.log('[Stream] token:', token);
+    setStreamingText(prev => prev + token);
   };
 
   const runNativeSafetyChecks = async () => {
@@ -574,7 +608,7 @@ Rules:
 
     setGenerating(true);
     setError(null);
-    setStreamingTokens([]);
+    setStreamingText('');
 
     const checkLog: string[] = [];
     try {
@@ -722,19 +756,16 @@ Rules:
     if (!modelState?.instance || !input.trim()) return;
     
     const userMessage: Message = { id: makeId(), role: 'user', content: input.trim() };
-    setMessages(prev => [...prev, userMessage]);
+    const currentMessages = [...messagesRef.current, userMessage];
+    replaceMessages(currentMessages);
     setInput('');
     setGenerating(true);
     setError(null);
-    setStreamingTokens([]); // Reset streaming tokens for each new message
+    setStreamingText(''); // Reset streamed text for each new message
     
     try {
-      // Get current messages including the new user message
-      const currentMessages = [...messages, userMessage];
-      
       const completionOptions: any = {
-        // Filter display-only messages (isToolCall) — they must not be sent to the model.
-        messages: currentMessages.filter(m => !m.isToolCall).map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+        messages: toModelMessages(currentMessages),
         // Qwen3 thinking mode settings (better for complex reasoning about tool usage)
         temperature: 0.6,
         top_p: 0.95,
@@ -744,6 +775,7 @@ Rules:
         max_tokens: 8192,       // More space for thinking + response
         stop: ["</s>", "<|im_end|>", "<|eot_id|>", "<|eom_id|>"],
       };
+      logHistoryDebug(currentMessages, 'Pre-completion history');
       
       // Add tools and tool configuration only in tools mode
       if (modelState.mode === 'tools') {
@@ -801,6 +833,7 @@ Rules:
       console.log('Response with tool calls:', response);
 
       const rawContent = extractResponseText(response);
+      console.log('[Stream] completion resolved text:', rawContent);
       const { thinking, content: cleanContent } = extractThinking(rawContent);
       const perfSummary = getPerformanceSummary(response);
       const toolCalls = extractToolCalls(response);
@@ -809,7 +842,7 @@ Rules:
       const assistantMessage: Message = {
         id: makeId(),
         role: 'assistant',
-        content: `${cleanContent || 'Sorry, I couldn\'t generate a response.'}${perfSummary || ''}`,
+        content: cleanContent || 'Sorry, I couldn\'t generate a response.',
         ...(thinking ? { reasoning_content: thinking } : {}),
       };
 
@@ -819,14 +852,14 @@ Rules:
         const assistantToolTurn: Message = {
           id: makeId(),
           role: 'assistant',
-          content: rawContent.trim() ? `${cleanContent}${perfSummary || ''}` : '',
+          content: rawContent.trim() ? cleanContent : '',
           tool_calls: toolCallsPayload,
           ...(thinking ? { reasoning_content: thinking } : {}),
         };
 
         // Always track the assistant tool turn in messages for history integrity,
         // even when it has no visible content (model went straight to tool call).
-        setMessages(prev => [...prev, assistantToolTurn]);
+        updateMessages(prev => [...prev, assistantToolTurn]);
         await yieldToUI();
 
         for (const tc of toolCalls) {
@@ -835,7 +868,7 @@ Rules:
             content: `🔧 Tool call: ${tc.function?.name ?? 'unknown'}\n${formatToolCallArgs(tc)}`,
             isToolCall: true,
           };
-          setMessages(prev => [...prev, callLine]);
+          updateMessages(prev => [...prev, callLine]);
           await yieldToUI();
         }
 
@@ -843,7 +876,7 @@ Rules:
         for (const tc of toolCalls) {
           const toolResponse = await handleToolCall(tc);
           toolResultMessages.push(toolResponse);
-          setMessages(prev => [...prev, toolResponse]);
+          updateMessages(prev => [...prev, toolResponse]);
           await yieldToUI();
         }
 
@@ -853,11 +886,13 @@ Rules:
           assistantToolTurn,
           ...toolResultMessages,
         ];
+        logHistoryDebug(allMessages, 'Tool follow-up history');
 
+        setStreamingText('');
         const finalResponse = await modelState.instance.completion(
           {
             ...completionOptions,
-            messages: allMessages.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+            messages: toModelMessages(allMessages),
             tools: undefined,
             tool_choice: undefined,
             temperature: 0.6,
@@ -875,21 +910,27 @@ Rules:
         console.log('Final response after tool call:', finalResponse);
 
         const finalRaw = extractResponseText(finalResponse);
+        console.log('[Stream] tool follow-up resolved text:', finalRaw);
         const { thinking: finalThinking, content: finalClean } = extractThinking(finalRaw);
-        const finalPerfSummary = getPerformanceSummary(finalResponse);
         const finalMessage: Message = {
           id: makeId(),
           role: 'assistant',
-          content: `${finalClean || 'I couldn\'t process the tool response.'}${finalPerfSummary || ''}`,
+          content: finalClean || 'I couldn\'t process the tool response.',
           ...(finalThinking ? { reasoning_content: finalThinking } : {}),
         };
-        setMessages(prev => [...prev, finalMessage]);
+        updateMessages(prev => [...prev, finalMessage]);
       } else {
-        setMessages(prev => [...prev, assistantMessage]);
+        updateMessages(prev => [...prev, assistantMessage]);
       }
+
+      if (perfSummary) {
+        console.log('Performance summary:', perfSummary);
+      }
+      setStreamingText('');
     } catch (err) {
       console.error('Completion error:', err);
       setError(`Error generating response: ${err instanceof Error ? err.message : String(err)}`);
+      setStreamingText('');
     } finally {
       setGenerating(false);
     }
@@ -1023,12 +1064,12 @@ Rules:
     }
   };
 
-  // Scroll to bottom of messages
+  // Keep chat pinned to latest item during updates.
   useEffect(() => {
     setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 100);
-  }, [messages]);
+      listRef.current?.scrollToEnd({ animated: true });
+    }, 60);
+  }, [messages, streamingText, generating]);
 
   // When in tools mode, show example question and debug buttons
   const renderToolModeControls = () => {
@@ -1179,30 +1220,30 @@ Rules:
               </View>
             )}
 
-            <ScrollView 
+            <FlatList
               style={styles.messagesContainer}
-              ref={scrollViewRef}
+              ref={listRef}
               contentContainerStyle={styles.messagesContent}
-            >
-              {messages.filter(msg => msg.role !== 'system').map((msg, index) => renderMessage(msg, index))}
-              {streamingTokens.length > 0 && (
-                <View style={styles.streamingContainer}>
-                  <Text style={styles.streamingTitle}>Latest tokens:</Text>
-                  <Text style={styles.streamingTokens}>
-                    {streamingTokens.map((token, i) => (
-                      <Text key={i} style={styles.streamingToken}>
-                        {token.replace(/\n/g, '⏎')}
-                      </Text>
-                    )).reverse()}
-                  </Text>
+              data={messages.filter(msg => msg.role !== 'system')}
+              renderItem={({ item, index }) => renderMessage(item, index)}
+              keyExtractor={(item, index) => item.id ?? `${item.role}-${index}`}
+              keyboardShouldPersistTaps="handled"
+              ListFooterComponent={
+                <View>
+                  {!!streamingText && (
+                    <View style={[styles.messageWrapper, styles.assistantMessage]}>
+                      <Text style={styles.messageSender}>Assistant</Text>
+                      <Text style={styles.messageContent}>{streamingText}</Text>
+                    </View>
+                  )}
+                  {generating && !streamingText && (
+                    <View style={[styles.messageWrapper, styles.assistantMessage]}>
+                      <ActivityIndicator size="small" color="#333" />
+                    </View>
+                  )}
                 </View>
-              )}
-              {generating && (
-                <View style={[styles.messageWrapper, styles.assistantMessage]}>
-                  <ActivityIndicator size="small" color="#333" />
-                </View>
-              )}
-            </ScrollView>
+              }
+            />
             
             <View style={styles.inputContainer}>
               <TextInput
@@ -1402,25 +1443,6 @@ const styles = StyleSheet.create({
   },
   testButtonContainer: {
     marginBottom: 16,
-  },
-  streamingContainer: {
-    marginTop: 10,
-    padding: 10,
-    backgroundColor: '#e9ecef',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#dee2e6',
-  },
-  streamingTitle: {
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  streamingTokens: {
-    color: '#212529',
-    fontSize: 14,
-  },
-  streamingToken: {
-    marginBottom: 4,
   },
   tokenToolsContainer: {
     padding: 16,
