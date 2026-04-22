@@ -16,6 +16,8 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,21 @@ struct rn_llama_context {
     };
     std::vector<kv_msg_entry> kv_messages;
     bool                      kv_has_messages = false;
+
+    // Completion cache: stores the resolved sampling params and grammar state from the last
+    // run_chat_completion call. When prompt_id and config_id both match on the next call,
+    // the expensive common_chat_templates_apply step is skipped entirely.
+    struct completion_cache_entry {
+        std::string                          prompt_id;
+        std::string                          config_id;
+        common_params_sampling               sampling_params;
+        std::string                          grammar;
+        bool                                 grammar_lazy = false;
+        std::vector<common_grammar_trigger>  grammar_triggers;
+        std::set<llama_token>                preserved_tokens;
+        std::vector<std::string>             additional_stops;
+    };
+    std::optional<completion_cache_entry> completion_cache;
 };
 
 // Core completion functions
