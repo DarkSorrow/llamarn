@@ -124,6 +124,7 @@ add_library(
     ${MTMD_DIR}/models/qwen3vl.cpp
     ${MTMD_DIR}/models/siglip.cpp
     ${MTMD_DIR}/models/step3vl.cpp
+    ${MTMD_DIR}/models/yasa2.cpp
     ${MTMD_DIR}/models/whisper-enc.cpp
     ${MTMD_DIR}/models/youtuvl.cpp
     # Our multimodal bridge helpers
