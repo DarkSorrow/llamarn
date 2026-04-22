@@ -32,9 +32,11 @@ struct rn_common_params : common_params {
 
     // Cooperative prompt-ingestion loop settings (set at initLlama time).
     // chunk_size: tokens per llama_decode call during prompt encoding (distinct from n_batch).
-    // is_cpu_only: when true, sleep 2ms after each chunk; when false, yield + 1ms if >40ms.
-    int  chunk_size  = 128;
-    bool is_cpu_only = false;
+    // is_cpu_only: when true, sleep 2ms after each chunk.
+    // prompt_chunk_gap_ms: minimum inter-chunk gap on GPU path.
+    int  chunk_size          = 128;
+    bool is_cpu_only         = false;
+    int  prompt_chunk_gap_ms = 5;
 };
 
 // Main context structure for React Native integration
@@ -75,6 +77,7 @@ struct rn_llama_context {
     };
     std::vector<kv_msg_entry> kv_messages;
     bool                      kv_has_messages = false;
+    std::string               kv_render_identity;
 
     // Completion cache: stores the resolved sampling params and grammar state from the last
     // run_chat_completion call. When prompt_id and config_id both match on the next call,
@@ -90,6 +93,11 @@ struct rn_llama_context {
         std::vector<std::string>             additional_stops;
     };
     std::optional<completion_cache_entry> completion_cache;
+
+    // Reused decode batches to avoid per-request alloc/free churn.
+    llama_batch gen_batch = {};
+    llama_batch ingest_batch = {};
+    bool batches_initialized = false;
 };
 
 // Core completion functions

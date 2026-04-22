@@ -22,11 +22,20 @@
 #include <random>
 #include <algorithm>
 #include <chrono>
+#include <memory>
 
 namespace facebook::react {
 
 // Struct to track prediction completion state
 struct completion_state {
+    struct sampler_deleter {
+        void operator()(common_sampler* sampler) const {
+            if (sampler) {
+                common_sampler_free(sampler);
+            }
+        }
+    };
+
     rn_llama_context* rn_ctx = nullptr;
 
     bool has_next_token = true;
@@ -49,19 +58,13 @@ struct completion_state {
     std::vector<llama_token> prompt_tokens;
     std::vector<llama_token> generated_tokens;
 
-    common_sampler* sampler = nullptr;
+    std::unique_ptr<common_sampler, sampler_deleter> sampler;
     std::vector<std::string> antiprompt;
 
     // Chat format and tools info
     common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
     common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
 
-    ~completion_state() {
-        if (sampler) {
-            common_sampler_free(sampler);
-            sampler = nullptr;
-        }
-    }
 };
 
 // Helper function to check for stopping criteria
@@ -94,6 +97,9 @@ static bool check_stop_conditions(
             state.generated_text.begin() + stop_pos,
             state.generated_text.end()
         );
+        if (state.n_sent_text > state.generated_text.size()) {
+            state.n_sent_text = state.generated_text.size();
+        }
         state.stop_found = true;
         return true;
     }
@@ -122,6 +128,20 @@ static bool check_stop_conditions(
     return false;
 }
 
+static std::string build_kv_render_identity(
+    const rn_llama_context* rn_ctx,
+    const CompletionOptions& options) {
+    std::string identity;
+    identity.reserve(512);
+    identity += "use_jinja=" + std::to_string(rn_ctx->params.use_jinja ? 1 : 0);
+    identity += "|reasoning_format=" + std::to_string(static_cast<int>(rn_ctx->params.reasoning_format));
+    identity += "|chat_template=" + rn_ctx->params.chat_template;
+    identity += "|tool_choice=" + options.tool_choice;
+    identity += "|grammar=" + options.grammar;
+    identity += "|tools=" + (options.tools.is_null() ? "null" : options.tools.dump());
+    return identity;
+}
+
 CompletionResult run_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
@@ -134,6 +154,13 @@ CompletionResult run_completion(
         result.success = false;
         result.error_msg = "Model not initialized";
         result.error_type = RN_ERROR_MODEL_LOAD;
+        return result;
+    }
+
+    if (!rn_ctx->batches_initialized) {
+        result.success = false;
+        result.error_msg = "Decode batches are not initialized";
+        result.error_type = RN_ERROR_CONTEXT;
         return result;
     }
 
@@ -193,7 +220,7 @@ CompletionResult run_completion(
             state.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
         }
         // Initialize the sampler with the updated sampling parameters
-        state.sampler = common_sampler_init(rn_ctx->model, sampling_params);
+        state.sampler.reset(common_sampler_init(rn_ctx->model, sampling_params));
         if (!state.sampler) {
             result.success = false;
             result.error_msg = "Failed to initialize sampler";
@@ -281,70 +308,88 @@ CompletionResult run_completion(
             // Prefix reuse: only encode prompt_tokens[n_past:] at positions [n_past, n_past+1, ...]
             const int n_new = static_cast<int>(state.prompt_tokens.size()) - state.n_past;
             if (n_new > 0) {
-                llama_batch new_batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
+                llama_batch& ingest_batch = rn_ctx->ingest_batch;
                 for (int i = 0; i < n_new; ) {
-                    common_batch_clear(new_batch);
+                    if (rn_ctx->abort_generation.load(std::memory_order_relaxed)) {
+                        result.success = false;
+                        result.error_msg = "Generation aborted";
+                        result.error_type = RN_ERROR_INFERENCE;
+                        return result;
+                    }
+                    common_batch_clear(ingest_batch);
                     int chunk = std::min(ingest_chunk, n_new - i);
                     bool last_chunk = (i + chunk >= n_new);
                     for (int j = 0; j < chunk; j++) {
-                        common_batch_add(new_batch,
+                        common_batch_add(ingest_batch,
                             state.prompt_tokens[state.n_past + i + j],
                             state.n_past + i + j,
                             {0},
                             last_chunk && (j == chunk - 1));
                     }
                     auto t0 = std::chrono::steady_clock::now();
-                    if (llama_decode(rn_ctx->ctx, new_batch) != 0) {
-                        llama_batch_free(new_batch);
+                    if (llama_decode(rn_ctx->ctx, ingest_batch) != 0) {
                         result.success = false;
                         result.error_msg = "Failed to process prompt";
                         result.error_type = RN_ERROR_INFERENCE;
                         return result;
                     }
-                    auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0).count();
+                    const auto chunk_elapsed = std::chrono::steady_clock::now() - t0;
                     if (rn_ctx->params.is_cpu_only) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     } else {
-                        std::this_thread::yield();
-                        if (chunk_ms > 40) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        int chunk_gap_ms = std::max(0, rn_ctx->params.prompt_chunk_gap_ms);
+                        if (state.prompt_tokens.size() > 2048) {
+                            chunk_gap_ms += static_cast<int>(state.prompt_tokens.size() / 2048);
+                        }
+                        const auto min_chunk_gap = std::chrono::milliseconds(chunk_gap_ms);
+                        if (chunk_elapsed < min_chunk_gap) {
+                            std::this_thread::sleep_for(min_chunk_gap - chunk_elapsed);
+                        }
                     }
                     i += chunk;
                 }
-                llama_batch_free(new_batch);
                 state.n_past = static_cast<int>(state.prompt_tokens.size());
             }
         } else {
             // Standard path: encode all tokens from position 0.
             const int n_total = static_cast<int>(state.prompt_tokens.size());
-            llama_batch batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
+            llama_batch& ingest_batch = rn_ctx->ingest_batch;
             for (int i = 0; i < n_total; ) {
-                common_batch_clear(batch);
+                if (rn_ctx->abort_generation.load(std::memory_order_relaxed)) {
+                    result.success = false;
+                    result.error_msg = "Generation aborted";
+                    result.error_type = RN_ERROR_INFERENCE;
+                    return result;
+                }
+                common_batch_clear(ingest_batch);
                 int chunk = std::min(ingest_chunk, n_total - i);
                 bool last_chunk = (i + chunk >= n_total);
                 for (int j = 0; j < chunk; j++) {
-                    common_batch_add(batch, state.prompt_tokens[i + j], i + j,
+                    common_batch_add(ingest_batch, state.prompt_tokens[i + j], i + j,
                                      {0}, last_chunk && (j == chunk - 1));
                 }
                 auto t0 = std::chrono::steady_clock::now();
-                if (llama_decode(rn_ctx->ctx, batch) != 0) {
-                    llama_batch_free(batch);
+                if (llama_decode(rn_ctx->ctx, ingest_batch) != 0) {
                     result.success = false;
                     result.error_msg = "Failed to process prompt";
                     result.error_type = RN_ERROR_INFERENCE;
                     return result;
                 }
-                auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t0).count();
+                const auto chunk_elapsed = std::chrono::steady_clock::now() - t0;
                 if (rn_ctx->params.is_cpu_only) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 } else {
-                    std::this_thread::yield();
-                    if (chunk_ms > 40) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    int chunk_gap_ms = std::max(0, rn_ctx->params.prompt_chunk_gap_ms);
+                    if (state.prompt_tokens.size() > 2048) {
+                        chunk_gap_ms += static_cast<int>(state.prompt_tokens.size() / 2048);
+                    }
+                    const auto min_chunk_gap = std::chrono::milliseconds(chunk_gap_ms);
+                    if (chunk_elapsed < min_chunk_gap) {
+                        std::this_thread::sleep_for(min_chunk_gap - chunk_elapsed);
+                    }
                 }
                 i += chunk;
             }
-            llama_batch_free(batch);
             state.n_past = n_total;
         }
 
@@ -352,7 +397,7 @@ CompletionResult run_completion(
         // For non-lazy grammars we skip this and re-init below to keep a clean grammar state.
         for (auto tok : state.prompt_tokens) {
             if (common_grammar_value(sampling_params.grammar).empty() || sampling_params.grammar_lazy) {
-                common_sampler_accept(state.sampler, tok, true);
+                common_sampler_accept(state.sampler.get(), tok, true);
             }
         }
 
@@ -364,17 +409,16 @@ CompletionResult run_completion(
         // would create a fresh sampler with an empty penalty_last_n, causing the model to repeat
         // prompt content indefinitely on subsequent turns (iOS infinite repetition bug).
         if (!common_grammar_value(sampling_params.grammar).empty() && !sampling_params.grammar_lazy) {
-            common_sampler_reset(state.sampler);
+            common_sampler_reset(state.sampler.get());
         }
 
         } // end: normal tokenize + encode path (mtmd_encoded_n_past < 0)
 
-        // Allocate a single-token batch once and reuse it across the entire generation loop.
-        llama_batch gen_batch = llama_batch_init(1, 0, 1);
+        llama_batch& gen_batch = rn_ctx->gen_batch;
 
         while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
             // Sample the next token
-            llama_token token_id = common_sampler_sample(state.sampler, rn_ctx->ctx, -1);
+            llama_token token_id = common_sampler_sample(state.sampler.get(), rn_ctx->ctx, -1);
 
             // Extract the token text
             std::string token_text = common_token_to_piece(rn_ctx->vocab, token_id);
@@ -397,7 +441,6 @@ CompletionResult run_completion(
             common_batch_add(gen_batch, token_id, state.n_past, {0}, true);
             auto decode_start = std::chrono::steady_clock::now();
             if (llama_decode(rn_ctx->ctx, gen_batch) != 0) {
-                llama_batch_free(gen_batch);
                 result.success = false;
                 result.error_msg = "Failed to decode generated token";
                 result.error_type = RN_ERROR_INFERENCE;
@@ -421,7 +464,7 @@ CompletionResult run_completion(
 
             // Accept the token into the sampler AFTER decode and n_past increment.
             // token_id is a plain int32 captured before llama_decode — safe to pass here.
-            common_sampler_accept(state.sampler, token_id, true);
+            common_sampler_accept(state.sampler.get(), token_id, true);
 
             // Check EOS FIRST — before streaming — so the EOS token text is never sent to JS
             // and all end-of-generation tokens are handled (not just the single llama_vocab_eos()).
@@ -430,6 +473,11 @@ CompletionResult run_completion(
             if (!options.ignore_eos && llama_vocab_is_eog(rn_ctx->vocab, token_id)) {
                 if (state.generated_text.size() >= token_text.size()) {
                     state.generated_text.erase(state.generated_text.size() - token_text.size());
+                } else {
+                    state.generated_text.clear();
+                }
+                if (state.n_sent_text > state.generated_text.size()) {
+                    state.n_sent_text = state.generated_text.size();
                 }
                 if (!state.generated_tokens.empty()) {
                     state.generated_tokens.pop_back();
@@ -469,8 +517,6 @@ CompletionResult run_completion(
                 }
             }
         }
-
-        llama_batch_free(gen_batch);
 
         result.stopped_by_length = state.stopped_by_limit;
 
@@ -545,6 +591,15 @@ CompletionResult run_chat_completion(
         std::vector<common_chat_msg> chat_msgs;
         if (!effective_messages.is_null() && !effective_messages.empty()) {
             chat_msgs = common_chat_msgs_parse_oaicompat(effective_messages);
+        }
+
+        const std::string kv_render_identity = build_kv_render_identity(rn_ctx, options);
+        if (rn_ctx->kv_has_messages &&
+            !rn_ctx->kv_render_identity.empty() &&
+            rn_ctx->kv_render_identity != kv_render_identity) {
+            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            rn_ctx->kv_messages.clear();
+            rn_ctx->kv_has_messages = false;
         }
 
         // --- Per-message KV cache prefix reuse ---
@@ -683,37 +738,53 @@ CompletionResult run_chat_completion(
 
         common_chat_params chat_params;
         if (config_cache_hit) {
-            // Cache hit: reuse cached grammar/sampling state. The prompt still needs to be
-            // rendered (messages may have changed), but we skip the expensive grammar/tool-call
-            // autoparser step by stripping tools and grammar from the template inputs.
+            // Cache hit: always render with full template inputs (including tools) so
+            // tool-aware templates remain semantically identical between miss/hit paths.
             const auto& cached_entry = *rn_ctx->completion_cache;
-
-            common_chat_templates_inputs prompt_only_inputs = template_inputs;
-            prompt_only_inputs.tools.clear();
-            prompt_only_inputs.grammar.clear();
             try {
-                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), prompt_only_inputs);
+                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
             } catch (const std::exception &) {
                 try {
-                    prompt_only_inputs.force_pure_content = true;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), prompt_only_inputs);
+                    template_inputs.force_pure_content = true;
+                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
                 } catch (const std::exception &) {
-                    prompt_only_inputs.use_jinja = false;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), prompt_only_inputs);
+                    template_inputs.use_jinja = false;
+                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
                 }
             }
 
-            // Restore cached grammar/sampling state into cmpl_options.
-            if (!cached_entry.grammar.empty()) {
+            // Preserve stop strings and protected tokens from the current render.
+            for (const auto & stop : chat_params.additional_stops) {
+                cmpl_options.stop.push_back(stop);
+            }
+
+            for (const auto & pt : chat_params.preserved_tokens) {
+                auto ids = common_tokenize(rn_ctx->vocab, pt, false, true);
+                if (ids.size() == 1) {
+                    cmpl_options.preserved_tokens.insert(ids[0]);
+                }
+            }
+
+            // Conservative grammar reuse:
+            // - Reuse cached grammar only when no tool grammar is in play.
+            // - Otherwise, regenerate from current chat_params for correctness.
+            const bool grammar_inputs_unchanged =
+                template_inputs.tools.empty() &&
+                options.grammar.empty() &&
+                !chat_params.grammar.empty();
+
+            if (grammar_inputs_unchanged && !cached_entry.grammar.empty()) {
                 cmpl_options.grammar          = cached_entry.grammar;
                 cmpl_options.grammar_lazy     = cached_entry.grammar_lazy;
                 cmpl_options.grammar_triggers = cached_entry.grammar_triggers;
-            }
-            for (auto tok : cached_entry.preserved_tokens) {
-                cmpl_options.preserved_tokens.insert(tok);
-            }
-            for (const auto& stop : cached_entry.additional_stops) {
-                cmpl_options.stop.push_back(stop);
+            } else if (!chat_params.grammar.empty()) {
+                cmpl_options.grammar = chat_params.grammar;
+                if (!template_inputs.tools.empty()) {
+                    cmpl_options.grammar_lazy = false;
+                } else {
+                    cmpl_options.grammar_lazy = chat_params.grammar_lazy;
+                }
+                cmpl_options.grammar_triggers = chat_params.grammar_triggers;
             }
         } else {
             // Cache miss (or IDs empty): run full common_chat_templates_apply as before.
@@ -882,9 +953,11 @@ CompletionResult run_chat_completion(
                 }
             }
             rn_ctx->kv_has_messages = true;
+            rn_ctx->kv_render_identity = kv_render_identity;
         } else if (options.reset_kv_cache) {
             rn_ctx->kv_messages.clear();
             rn_ctx->kv_has_messages = false;
+            rn_ctx->kv_render_identity.clear();
         }
 
         if (result.success) {
@@ -914,6 +987,8 @@ CompletionResult run_chat_completion(
                 } catch (const std::exception& e) {
                     // If parsing fails, treat as regular content
                     has_parsed_content = false;
+                    result.tool_call_parse_failed = true;
+                    result.tool_call_parse_error = e.what();
                 }
             }
             
@@ -939,6 +1014,10 @@ CompletionResult run_chat_completion(
                 // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion
                 choice["message"] = parsed_msg.to_json_oaicompat();
                 choice["finish_reason"] = "tool_calls";
+            } else if (result.tool_call_parse_failed) {
+                choice["message"]["content"] = result.content;
+                choice["finish_reason"] = "tool_call_parse_error";
+                choice["tool_call_parse_error"] = result.tool_call_parse_error;
             } else if (has_parsed_content && !parsed_msg.content.empty()) {
                 // Regular text response with parsed content
                 choice["message"]["content"] = parsed_msg.content;

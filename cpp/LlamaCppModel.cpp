@@ -69,6 +69,12 @@ void LlamaCppModel::release() {
   if (rn_ctx_) {
     std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
 
+    if (rn_ctx_->batches_initialized) {
+      llama_batch_free(rn_ctx_->gen_batch);
+      llama_batch_free(rn_ctx_->ingest_batch);
+      rn_ctx_->batches_initialized = false;
+    }
+
     // Clear KV cache before context is freed (following server.cpp pattern)
     // This is safe even if context will be freed later by init_result_
     if (rn_ctx_->ctx) {
@@ -197,9 +203,25 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.seed = obj.getProperty(rt, "seed").asNumber();
   }
 
+  if (obj.hasProperty(rt, "token_rate_cap") && !obj.getProperty(rt, "token_rate_cap").isUndefined()) {
+    options.token_rate_cap = static_cast<int>(obj.getProperty(rt, "token_rate_cap").asNumber());
+  }
+
+  if (obj.hasProperty(rt, "token_buffer_size") && !obj.getProperty(rt, "token_buffer_size").isUndefined()) {
+    options.token_buffer_size = static_cast<int>(obj.getProperty(rt, "token_buffer_size").asNumber());
+  }
+
   // KV cache control
   if (obj.hasProperty(rt, "resetKvCache") && !obj.getProperty(rt, "resetKvCache").isUndefined()) {
     options.reset_kv_cache = obj.getProperty(rt, "resetKvCache").asBool();
+  }
+
+  if (obj.hasProperty(rt, "prompt_id") && !obj.getProperty(rt, "prompt_id").isUndefined()) {
+    options.prompt_id = obj.getProperty(rt, "prompt_id").asString(rt).utf8(rt);
+  }
+
+  if (obj.hasProperty(rt, "config_id") && !obj.getProperty(rt, "config_id").isUndefined()) {
+    options.config_id = obj.getProperty(rt, "config_id").asString(rt).utf8(rt);
   }
 
   // Extract stop sequences

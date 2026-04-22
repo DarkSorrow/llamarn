@@ -455,6 +455,7 @@ struct InitLlamaParams {
   // Cooperative ingestion loop
   int  chunk_size  = 128;
   bool is_cpu_only = false;
+  int  prompt_chunk_gap_ms = 5;
 };
 
 struct ModelInitResult {
@@ -518,6 +519,7 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     rn_params.reasoning_format = p.reasoning_format;
     rn_params.chunk_size       = p.chunk_size;
     rn_params.is_cpu_only      = p.is_cpu_only;
+    rn_params.prompt_chunk_gap_ms = p.prompt_chunk_gap_ms;
 
     // ── 2. Model init with GPU→CPU fallback ────────────────────────────────
     auto init_result = try_init_with_gpu_fallback(params);
@@ -529,6 +531,9 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     rn_ctx->model_loaded = true;
     rn_ctx->vocab        = llama_model_get_vocab(rn_ctx->model);
     rn_ctx->params       = rn_params;
+    rn_ctx->gen_batch    = llama_batch_init(1, 0, 1);
+    rn_ctx->ingest_batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
+    rn_ctx->batches_initialized = true;
 
     llama_set_abort_callback(
         rn_ctx->ctx,
@@ -710,8 +715,10 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   // Cooperative ingestion loop settings
   int  chunk_size  = 128;
   bool is_cpu_only = false;
+  int  prompt_chunk_gap_ms = 5;
   SystemUtils::setIfExists(runtime, options, "chunk_size",  chunk_size);
   SystemUtils::setIfExists(runtime, options, "is_cpu_only", is_cpu_only);
+  SystemUtils::setIfExists(runtime, options, "prompt_chunk_gap_ms", prompt_chunk_gap_ms);
 
   // Pack all parsed values into a shared struct so the lambda captures stay minimal.
   auto p = std::make_shared<InitLlamaParams>();
@@ -747,6 +754,7 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   p->declared_capabilities = declared_capabilities;
   p->chunk_size            = std::clamp(chunk_size, 8, 512);
   p->is_cpu_only           = is_cpu_only;
+  p->prompt_chunk_gap_ms   = std::max(0, prompt_chunk_gap_ms);
 
   // Create Promise constructor
   auto Promise = runtime.global().getPropertyAsFunction(runtime, "Promise");

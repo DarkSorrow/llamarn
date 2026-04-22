@@ -334,7 +334,8 @@ const model = await initLlama({
   n_ctx:          4096,
   n_gpu_layers:   info.optimalGpuLayers,   // device-safe GPU layer count
   chunk_size:     info.suggestedChunkSize,  // cooperative ingestion chunk size
-  is_cpu_only:    info.isCpuOnly,          // yield behaviour during prompt encoding
+  is_cpu_only:    info.isCpuOnly,
+  prompt_chunk_gap_ms: 5,                  // GPU minimum inter-chunk gap (thermal pacing)
   use_jinja:      true,
 });
 ```
@@ -354,6 +355,7 @@ const model = await initLlama({
   n_gpu_layers:   info.optimalGpuLayers,   // already accounts for mmproj VRAM
   chunk_size:     info.suggestedChunkSize,
   is_cpu_only:    info.isCpuOnly,
+  prompt_chunk_gap_ms: 5,
   use_jinja:      true,
 });
 
@@ -398,7 +400,64 @@ These control how the prompt is encoded into the KV cache — smaller chunks wit
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `chunk_size` | `128` | Tokens per `llama_decode` call during prompt encoding (8–512, independent of `n_batch`) |
-| `is_cpu_only` | `false` | `true` → 2 ms sleep after each chunk; `false` → `yield()` + 1 ms sleep if chunk > 40 ms |
+| `is_cpu_only` | `false` | `true` → 2 ms sleep after each chunk |
+| `prompt_chunk_gap_ms` | `5` | GPU minimum inter-chunk gap; increase on thermally constrained devices |
+
+### Completion pacing and cache keys
+
+`completion()` now supports runtime pacing and cache-key controls:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `token_rate_cap` | `30` | Max generated tokens/sec (`0` = uncapped) |
+| `token_buffer_size` | `4` | Stream callback flush cadence in tokens |
+| `prompt_id` | `""` | Cache key for prompt/template/tool identity |
+| `config_id` | `""` | Cache key for sampling/grammar/response-format identity |
+
+Use `prompt_id` and `config_id` together. If either is missing, config-cache reuse is skipped.
+
+```ts
+const promptSignature = {
+  systemPromptVersion: 'support-bot-v3',
+  toolNames: tools.map(t => t.function.name).sort(),
+  template: 'chatml',
+};
+
+const configSignature = {
+  model: 'qwen3-8b-q4_k_m',
+  temperature: 0.6,
+  top_p: 0.95,
+  top_k: 40,
+  min_p: 0.05,
+  repeat_penalty: 1.05,
+  repeat_last_n: 64,
+  frequency_penalty: 0.0,
+  presence_penalty: 0.0,
+  tool_choice: 'auto',
+  response_format: 'text',
+};
+
+// Use any stable JSON + hash utility available in your app.
+const stableJson = (value: object) =>
+  JSON.stringify(Object.keys(value).sort().reduce((acc, key) => {
+    acc[key] = (value as Record<string, unknown>)[key];
+    return acc;
+  }, {} as Record<string, unknown>));
+
+const prompt_id = `prompt-${sha256Hex(stableJson(promptSignature)).slice(0, 16)}`;
+const config_id = `config-${sha256Hex(stableJson(configSignature)).slice(0, 16)}`;
+
+const result = await model.completion({
+  messages,
+  tools,
+  prompt_id,
+  config_id,
+  token_rate_cap: 30,
+  token_buffer_size: 4,
+});
+```
+
+When tool-call parsing fails, `finish_reason` can now be `tool_call_parse_error` and `tool_call_parse_error` will contain the parser error message.
 
 ### Thinking and Reasoning Parameters
 

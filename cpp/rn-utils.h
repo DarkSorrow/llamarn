@@ -119,6 +119,8 @@ struct CompletionResult {
     json chat_response;
     CompletionTimings timings;
     bool stopped_by_length = false;
+    bool tool_call_parse_failed = false;
+    std::string tool_call_parse_error;
 };
 
 // Utility functions
@@ -139,11 +141,10 @@ static T json_value(const json & body, const std::string & key, const T & defaul
 
 inline std::string gen_chatcmplid() {
     static const std::string chars("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
-    static std::mt19937 gen(std::random_device{}());
-    static std::mutex   mtx;
-    std::lock_guard<std::mutex> lock(mtx);
+    static thread_local std::mt19937_64 gen(std::random_device{}());
+    static thread_local std::uniform_int_distribution<size_t> dist(0, chars.size() - 1);
     std::string result(29, ' ');
-    for (auto & c : result) c = chars[gen() % chars.size()];
+    for (auto & c : result) c = chars[dist(gen)];
     return "chatcmpl-" + result;
 }
 

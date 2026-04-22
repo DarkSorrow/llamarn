@@ -12,7 +12,7 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 |-------|---------|--------------|
 | `optimalGpuLayers` | `n_gpu_layers` | GPU layer count computed from 15% of device RAM + 75% layer cap — prevents Android display fence timeouts |
 | `suggestedChunkSize` | `chunk_size` | Prompt-ingestion chunk size: 32 for CPU-only devices, 128 for GPU devices |
-| `isCpuOnly` | `is_cpu_only` | Controls OS yield mode during prompt encoding: `true` = 2 ms sleep/chunk; `false` = soft yield + 1 ms if a chunk exceeded 40 ms |
+| `isCpuOnly` | `is_cpu_only` | Enables CPU pacing path during prompt encoding (`true` = 2 ms sleep/chunk) |
 
 ```typescript
 // Text-only model
@@ -24,6 +24,7 @@ const model = await initLlama({
   n_gpu_layers: info.optimalGpuLayers,
   chunk_size:   info.suggestedChunkSize,
   is_cpu_only:  info.isCpuOnly,
+  prompt_chunk_gap_ms: 5, // new: deterministic GPU inter-chunk gap
   use_jinja:    true,
 });
 ```
@@ -40,6 +41,7 @@ const model = await initLlama({
   n_gpu_layers: info.optimalGpuLayers,  // already accounts for mmproj VRAM reservation
   chunk_size:   info.suggestedChunkSize,
   is_cpu_only:  info.isCpuOnly,
+  prompt_chunk_gap_ms: 5,
   use_jinja:    true,
 });
 // info.mmprojSizeMB tells you how many MB were reserved for the projection model
@@ -60,6 +62,59 @@ const model = await initLlama({
 **Why `chunk_size` and `n_batch` are different:**
 - `n_batch` is the maximum batch allocation size passed to `llama_batch_init` — it controls the internal buffer.
 - `chunk_size` is the number of tokens actually sent to `llama_decode` per call during **prompt ingestion only** (generation is unaffected). Smaller chunks let the OS scheduler run between GPU submits, preventing SurfaceFlinger fence timeouts on Android (`mLastRetireFence not released during 40ms`) and keeping the UI runloop alive on CPU-only devices.
+
+## Completion cache keys and migration checklist
+
+If you rely on chat/template/tool caching, pass both `prompt_id` and `config_id` on each `completion()` call.
+
+### What app teams must add
+
+- Add `prompt_id` and `config_id` to your completion request payload.
+- Recompute `prompt_id` when system prompt, template, or tools change.
+- Recompute `config_id` when sampling/grammar/response-format changes.
+- Update finish-reason handling to include `tool_call_parse_error`.
+
+### `config_id` example recipe
+
+Build a stable object from the knobs that change model behavior, then hash it:
+
+```ts
+const configSignature = {
+  model: 'qwen3-8b-q4_k_m',
+  temperature: 0.6,
+  top_p: 0.95,
+  top_k: 40,
+  min_p: 0.05,
+  repeat_penalty: 1.05,
+  repeat_last_n: 64,
+  frequency_penalty: 0.0,
+  presence_penalty: 0.0,
+  tool_choice: 'auto',
+  response_format: 'text',
+};
+
+const stableJson = (value: object) =>
+  JSON.stringify(Object.keys(value).sort().reduce((acc, key) => {
+    acc[key] = (value as Record<string, unknown>)[key];
+    return acc;
+  }, {} as Record<string, unknown>));
+
+const config_id = `config-${sha256Hex(stableJson(configSignature)).slice(0, 16)}`;
+```
+
+### Behavioral updates in this release
+
+- Cache-hit path now renders with full tool/template inputs (tools are no longer stripped).
+- Tool-call parse failures are surfaced as:
+  - `finish_reason: "tool_call_parse_error"`
+  - `tool_call_parse_error: "<parser message>"`
+- Prompt ingestion pacing now uses deterministic sleeps:
+  - CPU: fixed 2 ms per chunk
+  - GPU: `prompt_chunk_gap_ms` minimum inter-chunk gap
+
+### Compatibility note
+
+If your client only accepts `finish_reason` in `stop | length | tool_calls`, add support for `tool_call_parse_error` before rolling out this version.
 
 ---
 

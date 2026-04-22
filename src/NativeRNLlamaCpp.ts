@@ -88,7 +88,8 @@ export interface LlamaModelParams {
 
   // Cooperative prompt-ingestion loop (values from loadLlamaModelInfo.suggestedChunkSize / isCpuOnly)
   chunk_size?: number;   // tokens per decode call during prompt ingestion (default 128)
-  is_cpu_only?: boolean; // true = 2ms sleep/chunk; false = yield + 1ms if chunk >40ms
+  is_cpu_only?: boolean; // true = 2ms sleep/chunk
+  prompt_chunk_gap_ms?: number; // minimum inter-chunk gap on GPU path (default: 5ms)
 }
 
 export interface LlamaCompletionParams {
@@ -117,6 +118,10 @@ export interface LlamaCompletionParams {
   presence_penalty?: number;    // presence penalty (default: 0.0)
   seed?: number;                // RNG seed (default: -1, random)
   grammar?: string;             // GBNF grammar for structured outpu
+  token_rate_cap?: number;      // max tokens/sec during generation (0 = uncapped, default: 30)
+  token_buffer_size?: number;   // stream callback flush cadence in tokens (default: 4)
+  prompt_id?: string;           // cache key for system prompt/tools identity
+  config_id?: string;           // cache key for sampling/config identity
 }
 
 export interface LlamaMessage {
@@ -184,7 +189,8 @@ export interface LlamaCompletionResult {
         }
       }>
     };
-    finish_reason: 'stop' | 'length' | 'tool_calls';
+    finish_reason: 'stop' | 'length' | 'tool_calls' | 'tool_call_parse_error';
+    tool_call_parse_error?: string;
   }>;
 
   // Tool calls may appear at different levels based on model response

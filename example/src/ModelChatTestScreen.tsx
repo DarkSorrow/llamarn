@@ -175,6 +175,45 @@ const getPerformanceSummary = (response: any): string | null => {
   return parts.length > 0 ? `\n\n[Performance] ${parts.join(' | ')}` : null;
 };
 
+const hashString = (value: string): string => {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const stableStringify = (value: Record<string, unknown>): string => {
+  const orderedKeys = Object.keys(value).sort();
+  const ordered: Record<string, unknown> = {};
+  orderedKeys.forEach(key => {
+    ordered[key] = value[key];
+  });
+  return JSON.stringify(ordered);
+};
+
+const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${ms}ms`));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
+
+const isPromiseLike = (value: unknown): value is Promise<unknown> =>
+  !!value && typeof (value as { then?: unknown }).then === 'function';
+
 // Model Loading Component
 const ModelLoader: React.FC<{
   onModelLoaded: (state: ModelState) => void;
@@ -528,6 +567,154 @@ Rules:
   const handleStreamingToken = (token: string) => {
     console.log('Token received:', token);
     setStreamingTokens(prev => [...prev, token]);
+  };
+
+  const runNativeSafetyChecks = async () => {
+    if (!modelState?.instance) return;
+
+    setGenerating(true);
+    setError(null);
+    setStreamingTokens([]);
+
+    const checkLog: string[] = [];
+    try {
+      const toolNames =
+        modelState.mode === 'tools' ? ['get_location', 'get_weather'] : [];
+
+      const promptSignature = {
+        mode: modelState.mode,
+        systemPromptVersion: 'safety-check-v1',
+        toolNames: toolNames.join(','),
+      };
+
+      const baseConfig = {
+        temperature: 0.6,
+        top_p: 0.95,
+        top_k: 20,
+        min_p: 0,
+        presence_penalty: 1.5,
+        token_rate_cap: 30,
+        token_buffer_size: 4,
+      };
+
+      const prompt_id = `prompt-${hashString(stableStringify(promptSignature))}`;
+      const config_id = `config-${hashString(stableStringify(baseConfig))}`;
+
+      const history: Message[] = [
+        { id: 'chk-sys', role: 'system', content: 'You are a concise assistant.' },
+        { id: 'chk-u1', role: 'user', content: 'Reply with exactly READY' },
+      ];
+
+      const optionsBase = {
+        temperature: baseConfig.temperature,
+        top_p: baseConfig.top_p,
+        top_k: baseConfig.top_k,
+        min_p: baseConfig.min_p,
+        presence_penalty: baseConfig.presence_penalty,
+        token_rate_cap: baseConfig.token_rate_cap,
+        token_buffer_size: baseConfig.token_buffer_size,
+        max_tokens: 64,
+        prompt_id,
+        config_id,
+      };
+
+      const first = await withTimeout(
+        modelState.instance.completion({
+          ...optionsBase,
+          messages: history.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+        }),
+        25000,
+        'Warmup completion',
+      );
+      const firstText = extractResponseText(first);
+      if (!firstText.trim()) {
+        throw new Error('Warmup completion returned empty content');
+      }
+      checkLog.push('PASS: warmup completion succeeded');
+
+      history.push({
+        id: 'chk-a1',
+        role: 'assistant',
+        content: firstText,
+      });
+      history.push({
+        id: 'chk-u2',
+        role: 'user',
+        content: 'Now reply with exactly SECOND',
+      });
+
+      const second = await withTimeout(
+        modelState.instance.completion({
+          ...optionsBase,
+          messages: history.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+        }),
+        25000,
+        'Cache reuse completion',
+      );
+      const secondText = extractResponseText(second);
+      if (!secondText.trim()) {
+        throw new Error('Cache reuse completion returned empty content');
+      }
+      checkLog.push('PASS: reuse-path completion succeeded');
+
+      const newConfig = {
+        ...baseConfig,
+        temperature: 0.3,
+      };
+      const changedConfigId = `config-${hashString(stableStringify(newConfig))}`;
+      const third = await withTimeout(
+        modelState.instance.completion({
+          ...optionsBase,
+          temperature: newConfig.temperature,
+          config_id: changedConfigId,
+          messages: history.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
+        }),
+        25000,
+        'Config shift completion',
+      );
+      const thirdText = extractResponseText(third);
+      if (!thirdText.trim()) {
+        throw new Error('Config shift completion returned empty content');
+      }
+      checkLog.push('PASS: config_id shift completion succeeded');
+
+      const abortPrompt = `${'abort-check '.repeat(4000)}END`;
+      const abortStart = Date.now();
+      const abortRun = withTimeout(
+        modelState.instance.completion({
+          prompt: abortPrompt,
+          max_tokens: 256,
+          token_buffer_size: 4,
+          token_rate_cap: 20,
+          temperature: 0.6,
+        }),
+        30000,
+        'Abort responsiveness completion',
+      );
+
+      setTimeout(() => {
+        try {
+          const stopResult = modelState.instance.stopCompletion();
+          if (isPromiseLike(stopResult)) {
+            stopResult.catch(e => {
+              console.warn('stopCompletion failed during safety check:', e);
+            });
+          }
+        } catch (e) {
+          console.warn('stopCompletion threw during safety check:', e);
+        }
+      }, 150);
+
+      await abortRun;
+      const abortElapsed = Date.now() - abortStart;
+      checkLog.push(`PASS: stopCompletion path returned in ${abortElapsed}ms`);
+
+      setError(`Native safety checks complete:\n${checkLog.join('\n')}`);
+    } catch (err) {
+      setError(`Native safety checks failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setGenerating(false);
+    }
   };
 
   // Send a message to the model
@@ -956,6 +1143,16 @@ Rules:
             {/* Add the tool mode controls */}
             {renderToolModeControls()}
 
+            <View style={styles.safetyCheckContainer}>
+              <TouchableOpacity
+                style={[styles.safetyCheckButton, generating && styles.modeButtonDisabled]}
+                onPress={runNativeSafetyChecks}
+                disabled={generating}
+              >
+                <Text style={styles.safetyCheckButtonText}>Run Native Safety Checks</Text>
+              </TouchableOpacity>
+            </View>
+
             {modelState.mode === 'conversation' && (
               <View style={styles.tokenToolsContainer}>
                 <TextInput
@@ -1230,6 +1427,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
     borderBottomWidth: 1,
     borderBottomColor: '#dee2e6',
+  },
+  safetyCheckContainer: {
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+  },
+  safetyCheckButton: {
+    backgroundColor: '#198754',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  safetyCheckButtonText: {
+    color: 'white',
+    fontWeight: 'bold',
+    fontSize: 13,
   },
   toolModeContainer: {
     marginVertical: 10,
