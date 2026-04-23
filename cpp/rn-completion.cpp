@@ -284,9 +284,11 @@ CompletionResult run_completion(
         if (options.kv_hint_pos >= 0) {
             size_t kv_common_len = static_cast<size_t>(options.kv_hint_pos);
             // Safety: need at least 1 new token to encode for valid logits.
+            // Clamp to size-1 rather than resetting to 0 — if the hint equals the full
+            // prompt length (all tokens already cached), we still need to encode the last
+            // token to produce logits for the first generated token.
             if (kv_common_len >= state.prompt_tokens.size()) {
-                kv_common_len = 0;
-                llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+                kv_common_len = state.prompt_tokens.size() - 1;
             }
             state.n_past = static_cast<int>(kv_common_len);
         } else {
@@ -685,9 +687,11 @@ CompletionResult run_chat_completion(
                 // Some cached messages are no longer present — evict beyond the common prefix.
                 if (safe_kv_len <= 0 ||
                     !llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, safe_kv_len, -1)) {
-                    // seq_rm returns false on recurrent models and some GPU backends; without
-                    // fallback, stale fp16 values at positions > n_past corrupt softmax computation.
+                    // seq_rm returns false on recurrent models and some GPU backends.
+                    // Full clear + invalidate metadata so next call starts fresh.
                     llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+                    rn_ctx->kv_messages.clear();
+                    rn_ctx->kv_has_messages = false;
                     kv_hint_pos = 0;
                 } else {
                     kv_hint_pos = safe_kv_len;
@@ -697,9 +701,11 @@ CompletionResult run_chat_completion(
                 // (left over from prior generation turns).
                 if (safe_kv_len <= 0 ||
                     !llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, safe_kv_len, -1)) {
-                    // seq_rm returns false on recurrent models and some GPU backends; without
-                    // fallback, stale fp16 values at positions > n_past corrupt softmax computation.
+                    // seq_rm returns false on recurrent models and some GPU backends.
+                    // Full clear + invalidate metadata so next call starts fresh.
                     llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+                    rn_ctx->kv_messages.clear();
+                    rn_ctx->kv_has_messages = false;
                     kv_hint_pos = 0;
                 } else {
                     kv_hint_pos = safe_kv_len;
@@ -975,7 +981,11 @@ CompletionResult run_chat_completion(
                 common_chat_templates_inputs tinput;
                 tinput.messages               = std::vector<common_chat_msg>(chat_msgs.begin(),
                                                                               chat_msgs.begin() + k + 1);
-                tinput.add_generation_prompt  = (k + 1 == n_msgs);
+                // Always false: we want the token boundary after the message content, not after
+                // the generation-prompt suffix. Using true would include e.g. "<|im_start|>assistant\n"
+                // in token_end, but on the next turn that suffix is part of the assistant message
+                // tokens — causing kv_hint_pos to point into the wrong position.
+                tinput.add_generation_prompt  = false;
                 tinput.use_jinja              = rn_ctx->params.use_jinja;
                 tinput.reasoning_format       = rn_ctx->params.reasoning_format;
                 tinput.chat_template_kwargs   = rn_ctx->params.default_template_kwargs;
