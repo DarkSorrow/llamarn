@@ -52,7 +52,6 @@ struct completion_state {
 
     std::string generated_text;
     std::string stopping_word;
-    bool stop_found = false;
     bool stopped_by_limit = false;
     bool context_shifted = false;  // true if at least one context shift occurred
 
@@ -61,10 +60,6 @@ struct completion_state {
 
     std::unique_ptr<common_sampler, sampler_deleter> sampler;
     std::vector<std::string> antiprompt;
-
-    // Chat format and tools info
-    common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
-    common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
 
 };
 
@@ -101,7 +96,7 @@ static bool check_stop_conditions(
         if (state.n_sent_text > state.generated_text.size()) {
             state.n_sent_text = state.generated_text.size();
         }
-        state.stop_found = true;
+        state.has_next_token = false;
         return true;
     }
 
@@ -160,7 +155,6 @@ CompletionResult run_completion(
     try {
         // Initialize state with context values
         state.rn_ctx = rn_ctx;
-        state.chat_format = rn_ctx->params.chat_format;
 
         const auto& params = rn_ctx->params;
 
@@ -220,14 +214,6 @@ CompletionResult run_completion(
             }
         }
 
-        // Parse tool_choice
-        if (options.tool_choice == "auto") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
-        } else if (options.tool_choice == "none") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_NONE;
-        } else if (options.tool_choice == "required") {
-            state.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
-        }
         // Initialize the sampler with the updated sampling parameters
         state.sampler.reset(common_sampler_init(rn_ctx->model, sampling_params));
         if (!state.sampler) {
@@ -245,9 +231,9 @@ CompletionResult run_completion(
             // via mtmd_helper_eval_chunks. Logits are ready; skip tokenize and KV encode.
             state.n_past      = options.mtmd_encoded_n_past;
             state.n_ctx       = llama_n_ctx(rn_ctx->ctx);
-            if (options.n_predict > 0) {
+            if (options.n_predict >= 0) {
                 state.n_predict = options.n_predict;
-            } else if (params.n_predict > 0) {
+            } else if (params.n_predict >= 0) {
                 state.n_predict = params.n_predict;
             } else {
                 state.n_predict = -1; // unlimited — EOS or stop string terminates
@@ -291,9 +277,9 @@ CompletionResult run_completion(
 
         // Configure state
         state.n_ctx = llama_n_ctx(rn_ctx->ctx);
-        if (options.n_predict > 0) {
+        if (options.n_predict >= 0) {
             state.n_predict = options.n_predict;
-        } else if (params.n_predict > 0) {
+        } else if (params.n_predict >= 0) {
             state.n_predict = params.n_predict;
         } else {
             state.n_predict = -1; // unlimited — EOS or stop string terminates
@@ -507,6 +493,16 @@ CompletionResult run_completion(
 
             // Sample the next token
             llama_token token_id = common_sampler_sample(state.sampler.get(), rn_ctx->ctx, -1);
+
+            // Guard: sampler returns LLAMA_TOKEN_NULL (-1) when the grammar rejects all
+            // candidates (e.g. malformed grammar or empty vocabulary after constraints).
+            // Passing -1 downstream to common_token_to_piece / llama_vocab_is_eog is UB.
+            if (token_id == LLAMA_TOKEN_NULL) {
+                result.success = false;
+                result.error_msg = "Sampler produced no valid token (grammar may be over-constrained)";
+                result.error_type = RN_ERROR_INFERENCE;
+                return result;
+            }
 
             // Extract the token text
             std::string token_text = common_token_to_piece(rn_ctx->vocab, token_id);

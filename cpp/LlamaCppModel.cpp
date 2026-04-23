@@ -305,11 +305,7 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
     return result;
   }
 
-  // Lock the mutex during completion to avoid concurrent accesses
-  std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
-
   // KV cache management is handled inside run_completion() based on promptId.
-
   // Sampling overrides are applied per-request inside run_completion() on a LOCAL
   // copy of the sampling params — rn_ctx_->params is never mutated here.
 
@@ -332,14 +328,17 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   CompletionResult result;
 
   try {
-    // Set the predicting flag and reset stop signals for this run
-    {
-      std::lock_guard<std::mutex> cv_lock(predicting_cv_mutex_);
-      is_predicting_ = true;
-    }
+    // Reset stop signals BEFORE setting is_predicting, so any concurrent release()
+    // that fires after this point will set abort_generation=true and be respected.
     should_stop_completion_ = false;
     if (rn_ctx_) {
       rn_ctx_->abort_generation = false;
+    }
+
+    // Set the predicting flag
+    {
+      std::lock_guard<std::mutex> cv_lock(predicting_cv_mutex_);
+      is_predicting_ = true;
     }
 
     if (!options.messages.empty()) {
@@ -408,6 +407,7 @@ jsi::Object LlamaCppModel::completionResultToJsi(jsi::Runtime& rt, const Complet
   jsResult.setProperty(rt, "success", jsi::Value(result.success));
   jsResult.setProperty(rt, "promptTokens", jsi::Value(result.n_prompt_tokens));
   jsResult.setProperty(rt, "completionTokens", jsi::Value(result.n_predicted_tokens));
+  jsResult.setProperty(rt, "contextShifted", jsi::Value(result.context_shifted));
 
   if (!result.success) {
     jsResult.setProperty(rt, "error", jsi::String::createFromUtf8(rt, result.error_msg));
@@ -975,11 +975,13 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     // Copy embeddings to our vector
     std::copy(embd, embd + n_embd_out, embedding_vec.begin());
 
-    // Normalize embedding using common_embd_normalize (Euclidean norm, type 2)
-    // This matches the behavior in embedding.cpp example (always normalizes)
-    std::vector<float> normalized_vec(n_embd_out);
-    common_embd_normalize(embedding_vec.data(), normalized_vec.data(), n_embd_out, 2);
-    embedding_vec = std::move(normalized_vec);
+    // Normalize only for non-pooling models. Pooling models (MEAN, CLS, LAST) already
+    // return normalized embeddings — applying L2 norm again causes numerical drift.
+    if (pooling_type == LLAMA_POOLING_TYPE_NONE) {
+      std::vector<float> normalized_vec(n_embd_out);
+      common_embd_normalize(embedding_vec.data(), normalized_vec.data(), n_embd_out, 2);
+      embedding_vec = std::move(normalized_vec);
+    }
 
     // Create OpenAI-compatible response
     jsi::Object response(rt);
@@ -1299,7 +1301,7 @@ jsi::Value LlamaCppModel::transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value*
       {"audio_url", {{"url", path}}}
     }})}
   }});
-  opts.n_predict = 512;
+  opts.n_predict = 2048;  // generous default for transcription; caller can override via options
 
   auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
   auto invoker = jsInvoker_;
@@ -1376,7 +1378,7 @@ jsi::Value LlamaCppModel::visionReasoningJsi(jsi::Runtime& rt, const jsi::Value*
       {{"type", "image_url"}, {"image_url", {{"url", path}}}}
     })}
   }});
-  cmpl_opts.n_predict = 512;
+  cmpl_opts.n_predict = 2048;  // generous default for vision reasoning; caller can override
 
   auto Promise = rt.global().getPropertyAsFunction(rt, "Promise");
   auto invoker = jsInvoker_;

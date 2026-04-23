@@ -91,7 +91,6 @@ struct rn_llama_context {
     struct completion_cache_entry {
         std::string                          prompt_id;
         std::string                          config_id;
-        common_params_sampling               sampling_params;
         std::string                          grammar;
         bool                                 grammar_lazy = false;
         std::vector<common_grammar_trigger>  grammar_triggers;
