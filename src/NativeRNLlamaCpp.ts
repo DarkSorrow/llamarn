@@ -122,8 +122,6 @@ export interface LlamaCompletionParams {
   presence_penalty?: number;    // presence penalty (default: 0.0)
   seed?: number;                // RNG seed (default: -1, random)
   grammar?: string;             // GBNF grammar for structured outpu
-  token_rate_cap?: number;      // max tokens/sec during generation (0 = uncapped, default: 30)
-  token_buffer_size?: number;   // stream callback flush cadence in tokens (default: 4)
   prompt_id?: string;           // cache key for system prompt/tools identity
   config_id?: string;           // cache key for effective completion config (include tools + main system prompt identity)
 }
@@ -290,6 +288,22 @@ export interface LlamaContextMethods {
   loadSession(path: string): Promise<boolean>;
   saveSession(path: string): Promise<boolean>;
   stopCompletion(): Promise<void>;
+
+  /**
+   * Set the number of CPU threads used for inference (thermal management).
+   *
+   * Non-blocking: returns immediately. The JS thread is never stalled.
+   * The new count takes effect before the next `llama_decode` call.
+   *
+   * Call from platform thermal event handlers:
+   * ```ts
+   * // iOS: NSProcessInfo.processInfo.thermalState (nominal/fair/serious/critical)
+   * // Android: PowerManager.getThermalStatus()
+   * const factors = { nominal: 1.0, fair: 0.75, serious: 0.5, critical: 0.25 };
+   * model.setNThreads(Math.max(1, Math.round(baseThreads * factors[thermalState])));
+   * ```
+   */
+  setNThreads(n: number): void;
 
   /**
    * Release the model and free all associated GPU/CPU memory.

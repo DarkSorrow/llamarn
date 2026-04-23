@@ -95,14 +95,6 @@ struct CompletionOptions {
     // skips its own encode step (prompt + images already in KV cache, logits ready).
     int32_t mtmd_encoded_n_past = -1;
 
-    // Thermal pacing: maximum tokens/second during generation.
-    // 0 = no cap (caller asserts the device can handle it). Default: 30.
-    int token_rate_cap = 30;
-
-    // JS bridge batching: number of tokens to accumulate before invoking callback.
-    // 1 = send every token (original behavior). Default: 4.
-    int token_buffer_size = 4;
-
     // Completion cache key for system prompt + tools identity.
     std::string prompt_id;
 

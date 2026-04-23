@@ -232,14 +232,6 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.seed = obj.getProperty(rt, "seed").asNumber();
   }
 
-  if (obj.hasProperty(rt, "token_rate_cap") && !obj.getProperty(rt, "token_rate_cap").isUndefined()) {
-    options.token_rate_cap = static_cast<int>(obj.getProperty(rt, "token_rate_cap").asNumber());
-  }
-
-  if (obj.hasProperty(rt, "token_buffer_size") && !obj.getProperty(rt, "token_buffer_size").isUndefined()) {
-    options.token_buffer_size = static_cast<int>(obj.getProperty(rt, "token_buffer_size").asNumber());
-  }
-
   // KV cache control
   if (obj.hasProperty(rt, "reset_kv_cache") && !obj.getProperty(rt, "reset_kv_cache").isUndefined()) {
     options.reset_kv_cache = obj.getProperty(rt, "reset_kv_cache").asBool();
@@ -639,19 +631,27 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
           auto flushPtr = std::make_shared<std::function<void()>>();
 
           if (callbackFn && invoker) {
-            auto tokenBatch = std::make_shared<std::string>();
-            auto batchCount = std::make_shared<int>(0);
-            constexpr int kFlushEvery = 8;
+            auto tokenBatch   = std::make_shared<std::string>();
+            // pendingCount: back-pressure gauge for in-flight invokeAsync closures.
+            // shared_ptr<atomic> so the JS-thread lambda can decrement after it fires.
+            // memory_order_relaxed is correct: saturation gauge with no dependent memory.
+            auto pendingCount = std::make_shared<std::atomic<int>>(0);
+            auto lastFlush    = std::make_shared<std::chrono::steady_clock::time_point>(
+                std::chrono::steady_clock::now());
 
-            // batchStr is a shared_ptr<string> so the invokeAsync lambda copies only a
-            // pointer (8 bytes) rather than doing a deep copy of the string data.
-            *flushPtr = [callbackFn, invoker, runtimePtr, tokenBatch, selfPtr]() {
+            *flushPtr = [callbackFn, invoker, runtimePtr, tokenBatch, selfPtr,
+                         pendingCount]() {
               if (tokenBatch->empty()) return;
+              // Back-pressure: if ≥3 invokeAsync closures are already queued on the JS
+              // thread, hold. Tokens accumulate in tokenBatch; next 33ms tick picks them up.
+              if (pendingCount->load(std::memory_order_relaxed) >= 3) return;
+              pendingCount->fetch_add(1, std::memory_order_relaxed);
               auto batchStr = std::make_shared<std::string>(std::move(*tokenBatch));
               tokenBatch->clear();
               try {
-                invoker->invokeAsync([callbackFn, batchStr, runtimePtr, selfPtr]() {
-                  // Change 2: skip if model was released while this lambda was queued.
+                invoker->invokeAsync([callbackFn, batchStr, runtimePtr, selfPtr,
+                                      pendingCount]() {
+                  pendingCount->fetch_sub(1, std::memory_order_relaxed);
                   if (selfPtr->is_released_.load()) return;
                   try {
                     jsi::Object data(*runtimePtr);
@@ -660,13 +660,22 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
                     callbackFn->call(*runtimePtr, data);
                   } catch (...) {}
                 });
-              } catch (...) {}
+              } catch (...) {
+                // invokeAsync threw — undo so back-pressure does not permanently stall.
+                pendingCount->fetch_sub(1, std::memory_order_relaxed);
+              }
             };
 
-            partialCallback = [flushPtr, tokenBatch, batchCount](jsi::Runtime&, const char* token) {
+            // Time-based flush: dispatch to JS at ~30fps regardless of token throughput.
+            // - Slow models (5 tok/s): 200ms >> 33ms → every token dispatched immediately.
+            // - Fast models (50 tok/s): ~1-2 tokens per flush → smooth display.
+            // - Thinking mode (200 tok/s): ~6-7 tokens per flush → 30 invokeAsync/s, Jetsam-safe.
+            partialCallback = [flushPtr, tokenBatch, lastFlush](jsi::Runtime&,
+                                                                 const char* token) {
               *tokenBatch += token;
-              if (++(*batchCount) >= kFlushEvery) {
-                *batchCount = 0;
+              auto now = std::chrono::steady_clock::now();
+              if (now - *lastFlush >= std::chrono::milliseconds(33)) {
+                *lastFlush = now;
                 (*flushPtr)();
               }
             };
@@ -691,7 +700,7 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
             result = selfPtr->completion(options, partialCallback, runtimePtr);
           }
 
-          // Drain any tokens that didn't reach the kFlushEvery threshold.
+          // Drain any tokens buffered since the last 33ms flush tick.
           if (flushPtr && *flushPtr) {
             (*flushPtr)();
           }
@@ -1600,6 +1609,24 @@ jsi::Value LlamaCppModel::releaseJsi(jsi::Runtime& rt, const jsi::Value* args, s
   }
 }
 
+jsi::Value LlamaCppModel::setNThreadsJsi(jsi::Runtime& rt,
+                                          const jsi::Value* args, size_t count) {
+  if (count < 1 || !args[0].isNumber())
+    throw jsi::JSError(rt, "setNThreads requires a number argument");
+  const int32_t n = static_cast<int32_t>(args[0].asNumber());
+  if (n < 1)
+    throw jsi::JSError(rt, "setNThreads: thread count must be >= 1");
+  if (!rn_ctx_)
+    throw jsi::JSError(rt, "setNThreads: model not initialized");
+  // Non-blocking: JS thread (= UI thread) stores the request with release ordering
+  // and returns immediately. The inference loop reads with acq_rel at the top of each
+  // token iteration and calls llama_set_n_threads before the next llama_decode.
+  // No mutex — acquiring inference_mutex_ here would block the UI thread for the full
+  // duration of any in-flight completion. Mirrors the abort_generation atomic pattern.
+  rn_ctx_->requested_n_threads.store(n, std::memory_order_release);
+  return jsi::Value::undefined();
+}
+
 jsi::Value LlamaCppModel::get(jsi::Runtime& rt, const jsi::PropNameID& name) {
   auto nameStr = name.utf8(rt);
 
@@ -1698,6 +1725,12 @@ jsi::Value LlamaCppModel::get(jsi::Runtime& rt, const jsi::PropNameID& name) {
         return this->runOnFrameJsi(runtime, args, count);
       });
   }
+  else if (nameStr == "setNThreads") {
+    return jsi::Function::createFromHostFunction(rt, name, 1,
+      [this](jsi::Runtime& runtime, const jsi::Value&, const jsi::Value* args, size_t count) {
+        return this->setNThreadsJsi(runtime, args, count);
+      });
+  }
   else if (nameStr == "n_vocab") {
     return jsi::Value(getVocabSize());
   }
@@ -1734,6 +1767,7 @@ std::vector<jsi::PropNameID> LlamaCppModel::getPropertyNames(jsi::Runtime& rt) {
   result.push_back(jsi::PropNameID::forAscii(rt, "n_vocab"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_ctx"));
   result.push_back(jsi::PropNameID::forAscii(rt, "n_embd"));
+  result.push_back(jsi::PropNameID::forAscii(rt, "setNThreads"));
   return result;
 }
 

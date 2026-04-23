@@ -4,6 +4,36 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
+## Streaming API simplification
+
+### Removed: `token_rate_cap` and `token_buffer_size`
+
+Both fields are **removed** from `LlamaCompletionParams`. Passing them is now a TypeScript type error.
+
+- **`token_rate_cap`** — the sleep-based rate cap did not reduce GPU thermal load (the GPU finishes its compute before the sleep fires). It only delayed the display, not the heat. Removed entirely. Use `setNThreads()` for actual thermal control.
+- **`token_buffer_size`** — display cadence is now controlled internally by a 33ms time-based flush (~30fps). No caller configuration needed or accepted.
+
+**Migration**: remove any `token_rate_cap` or `token_buffer_size` from your `completion()` call sites.
+
+### New: `model.setNThreads(n: number)`
+
+Reduces inference thread count at runtime — the correct lever for thermal management.
+
+```typescript
+// On iOS thermal state change (NSProcessInfo.processInfo.thermalState):
+// On Android thermal event (PowerManager.getThermalStatus()):
+const factors = { nominal: 1.0, fair: 0.75, serious: 0.5, critical: 0.25 };
+model.setNThreads(Math.max(1, Math.round(baseThreads * factors[thermalState])));
+```
+
+**Non-blocking**: `setNThreads` returns immediately — the JS/UI thread is never stalled. The new thread count takes effect on the next `llama_decode` call inside the inference thread. Safe to call during active generation.
+
+### Streaming correctness fix
+
+Partial stop-word characters (e.g. the `<` in `<|im_end|>`) are now correctly held until the full stop word is confirmed before deciding to discard or display them. Apps that filtered control-token fragments from streaming output can remove that workaround.
+
+---
+
 ## Recommended model loading pattern
 
 **Always call `loadLlamaModelInfo` before `initLlama`.** The function returns three fields specifically designed to be passed directly to `initLlama`:

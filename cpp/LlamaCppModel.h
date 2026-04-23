@@ -104,6 +104,7 @@ private:
   jsi::Value detokenizeJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
   jsi::Value embeddingJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
   jsi::Value releaseJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
+  jsi::Value setNThreadsJsi(jsi::Runtime& rt, const jsi::Value* args, size_t count);
 
   /**
    * Helper to parse completion options from JS object

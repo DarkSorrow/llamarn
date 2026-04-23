@@ -101,14 +101,6 @@ static bool check_stop_conditions(
         return true;
     }
 
-    // Check for partial stop strings at the end
-    for (const std::string & word : stop_words) {
-        if (size_t partial_pos = find_partial_stop_string(word, state.generated_text);
-            partial_pos != std::string::npos) {
-            return false; // Don't send token yet, wait for full stop word
-        }
-    }
-
     // Check for newline condition
     if (token_text.find('\n') != std::string::npos) {
         state.has_new_line = true;
@@ -449,11 +441,25 @@ CompletionResult run_completion(
             state.generated_text.reserve(static_cast<size_t>(state.n_predict) * 4);
             state.generated_tokens.reserve(static_cast<size_t>(state.n_predict));
         } else {
-            state.generated_text.reserve(512 * 4);
-            state.generated_tokens.reserve(512);
+            // Thinking models (reasoning_budget != 0) generate 2000-5000 token reasoning
+            // blocks with n_predict = -1. Reserve enough upfront to avoid reallocations.
+            const bool has_thinking = (rn_ctx->params.reasoning_budget != 0);
+            const size_t initial_reserve = has_thinking ? 6144 : 512;
+            state.generated_text.reserve(initial_reserve * 4);
+            state.generated_tokens.reserve(initial_reserve);
         }
 
         while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
+            // Thermal management: apply any thread count change requested by the JS thread.
+            // JS writes requested_n_threads with memory_order_release (non-blocking).
+            // exchange(-1, acq_rel) clears the request; new count applies to next llama_decode.
+            {
+                int requested = rn_ctx->requested_n_threads.exchange(-1, std::memory_order_acq_rel);
+                if (requested > 0) {
+                    llama_set_n_threads(rn_ctx->ctx, requested, requested);
+                }
+            }
+
             // Context shift: if we're about to fill the KV cache, slide the window.
             // This allows infinite-length conversations without hard failures.
             // Mirrors server-context.cpp update_slots() context shift logic.
@@ -548,26 +554,12 @@ CompletionResult run_completion(
             // Correct order matches server-context.cpp and ai_chat.cpp: sample → decode → accept → n_past++
             common_batch_clear(gen_batch);
             common_batch_add(gen_batch, token_id, state.n_past, {0}, true);
-            auto decode_start = std::chrono::steady_clock::now();
             if (llama_decode(rn_ctx->ctx, gen_batch) != 0) {
                 result.success = false;
                 result.error_msg = "Failed to decode generated token";
                 result.error_type = RN_ERROR_INFERENCE;
                 return result;
             }
-            // Deterministic thermal pacing: enforce a minimum inter-token interval.
-            // yield() is a no-op on Android's CFS scheduler; heuristic decode-time sleeps
-            // don't bound throughput on fast GPUs. Use sleep_for with a hard rate cap instead.
-            // Do NOT add negative sleep correction — sleep_for precision on mobile is ~±5ms,
-            // acceptable for 30 tok/s target.
-            if (options.token_rate_cap > 0) {
-                const auto target_interval = std::chrono::microseconds(1000000 / options.token_rate_cap);
-                const auto elapsed = std::chrono::steady_clock::now() - decode_start;
-                if (elapsed < target_interval) {
-                    std::this_thread::sleep_for(target_interval - elapsed);
-                }
-            }
-            // If token_rate_cap == 0, no sleep is applied (caller asserts device can handle it).
 
             state.n_past++;
 
@@ -612,14 +604,22 @@ CompletionResult run_completion(
                 break;
             }
 
-            // Stream the token if callback is provided — buffered: only flush every buf_size tokens
+            // Stream unsent text, holding back any suffix that could be the start of a
+            // stop word. find_partial_stop_string returns the TEXT position where the
+            // potential prefix begins; we only send up to that position.
             if (callback) {
-                const int buf_size = (options.token_buffer_size > 0) ? options.token_buffer_size : 1;
-                if (state.n_decoded % buf_size == 0) {
-                    std::string text_to_send = state.generated_text.substr(state.n_sent_text);
-                    state.n_sent_text = state.generated_text.size();
+                size_t safe_send_limit = state.generated_text.size();
+                for (const std::string& word : state.antiprompt) {
+                    size_t partial_pos = find_partial_stop_string(word, state.generated_text);
+                    if (partial_pos != std::string::npos && partial_pos < safe_send_limit) {
+                        safe_send_limit = partial_pos;
+                    }
+                }
+                if (safe_send_limit > state.n_sent_text) {
+                    std::string text_to_send = state.generated_text.substr(
+                        state.n_sent_text, safe_send_limit - state.n_sent_text);
+                    state.n_sent_text = safe_send_limit;
                     if (!text_to_send.empty() && !callback(text_to_send, false)) {
-                        // Callback returned false — caller wants to stop; no further flush needed
                         state.has_next_token = false;
                         break;
                     }
@@ -654,9 +654,10 @@ CompletionResult run_completion(
             callback(state.generated_text.substr(state.n_sent_text), false);
             state.n_sent_text = state.generated_text.size();
         }
-        // Final callback with is_done=true
+        // Final callback with is_done=true. The string argument is ignored by
+        // callback_adapter (!is_done guard), so pass empty to avoid a needless copy.
         if (callback) {
-            callback(state.generated_text, true);
+            callback("", true);
         }
 
         return result;

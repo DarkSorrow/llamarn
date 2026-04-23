@@ -74,6 +74,11 @@ struct rn_llama_context {
     // Read by the abort_callback registered via llama_set_abort_callback().
     std::atomic<bool> abort_generation{false};
 
+    // Thermal management: JS thread writes with memory_order_release (non-blocking);
+    // inference loop reads with memory_order_acq_rel at the top of each token iteration
+    // and calls llama_set_n_threads before the next llama_decode. -1 = no change pending.
+    std::atomic<int> requested_n_threads{-1};
+
     // KV cache prefix reuse state (guarded by mutex).
     // Stores the token boundary after each message so the next call can skip re-encoding
     // messages whose IDs haven't changed. IDs are supplied by the caller per message.
