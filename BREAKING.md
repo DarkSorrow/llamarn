@@ -210,3 +210,70 @@ Use this section as the basis for release notes when publishing **v0.7.0**.
 
 - **`BREAKING.md`** added so breaking changes are discoverable without reading the full README.
 - Example app (`example/src/ModelChatTestScreen.tsx`) demonstrates `extractThinking`, `reasoning_content`, and `messageToApiPayload` for thinking + tools flows.
+
+---
+
+## `loadLlamaModelInfo` now returns `samplingDefaults`
+
+`loadLlamaModelInfo` now reads GGUF-embedded sampling parameters from the model file and returns them as a `samplingDefaults` object. These are the values the model author baked in — they represent the recommended settings for that specific model.
+
+### What's in `samplingDefaults`
+
+Only fields the model actually specifies are present. If a model doesn't embed a value, the key is absent (never `null` or `0`).
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `temperature` | `number` | Sampling temperature |
+| `top_p` | `number` | Top-p (nucleus) sampling |
+| `top_k` | `number` | Top-k sampling |
+| `min_p` | `number` | Min-p filtering |
+| `repeat_penalty` | `number` | Repetition penalty (`1.0` = disabled) |
+| `repeat_last_n` | `number` | Window size for repeat penalty |
+| `mirostat` | `number` | Mirostat mode (`0` = off, `1`, `2`) |
+| `mirostat_tau` | `number` | Mirostat target entropy |
+| `mirostat_eta` | `number` | Mirostat learning rate |
+
+### Recommended usage
+
+Use `samplingDefaults` as the baseline for your completion calls. JS-supplied values always win — this just fills in the gaps with what the model author intended:
+
+```typescript
+const info = await loadLlamaModelInfo(modelPath);
+const sd = info.samplingDefaults ?? {};
+
+// Merge: explicit JS values > GGUF defaults > nothing
+const samplingParams = {
+  temperature:    sd.temperature    ?? 0.8,
+  top_p:          sd.top_p          ?? 0.9,
+  top_k:          sd.top_k          ?? 40,
+  min_p:          sd.min_p          ?? 0.05,
+  repeat_penalty: sd.repeat_penalty ?? 1.1,
+  repeat_last_n:  sd.repeat_last_n  ?? 64,
+};
+
+// User can still override any of these in the UI
+const response = await model.completion({
+  messages,
+  ...samplingParams,
+  temperature: userTemperature ?? samplingParams.temperature,
+});
+```
+
+### Why this matters
+
+Different models have very different optimal sampling settings:
+- Qwen3 thinking models: `temperature: 0.6`, `top_p: 0.95`, `top_k: 20`
+- Mistral/Llama instruct: `temperature: 0.7`, `top_p: 0.9`
+- Code models: `temperature: 0.2`, `repeat_penalty: 1.05`
+
+Without `samplingDefaults`, you'd either hardcode values (wrong for other models) or ship no defaults (causes repetition on small models). Now the model tells you what it wants.
+
+### Sampling override priority in the native layer
+
+The C++ layer now uses sentinel values (`NaN` for floats, `-1` for ints) to distinguish "JS didn't send this" from "JS sent a real value". The priority chain is:
+
+1. **JS explicitly sends a value** → used as-is
+2. **JS omits the field** → `initLlama` sampling defaults are preserved (which themselves come from GGUF metadata via `common_params_sampling_init_from_model`)
+3. **GGUF has no metadata** → llama.cpp hardcoded defaults apply
+
+This means you no longer need to pass every sampling parameter on every call — omitting a field is safe and intentional.

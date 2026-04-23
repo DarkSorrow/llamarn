@@ -50,6 +50,14 @@ interface ModelState {
   instance: LlamaModel;
   info: any;
   mode: ModelMode;
+  samplingDefaults: {
+    temperature?: number;
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+    repeat_penalty?: number;
+    repeat_last_n?: number;
+  };
 }
 
 const extractResponseText = (response: any): string => {
@@ -285,7 +293,8 @@ const ModelLoader: React.FC<{
       onModelLoaded({
         instance: modelInstance,
         info,
-        mode
+        mode,
+        samplingDefaults: info.samplingDefaults ?? {},
       });
       
     } catch (err) {
@@ -625,8 +634,10 @@ Rules:
         temperature: 0.6,
         top_p: 0.95,
         top_k: 20,
-        min_p: 0,
-        presence_penalty: 1.5,
+        min_p: 0.05,
+        repeat_penalty: 1.1,
+        repeat_last_n: 64,
+        presence_penalty: 0.0,
         token_rate_cap: 30,
         token_buffer_size: 4,
       };
@@ -644,6 +655,8 @@ Rules:
         top_p: baseConfig.top_p,
         top_k: baseConfig.top_k,
         min_p: baseConfig.min_p,
+        repeat_penalty: baseConfig.repeat_penalty,
+        repeat_last_n: baseConfig.repeat_last_n,
         presence_penalty: baseConfig.presence_penalty,
         token_rate_cap: baseConfig.token_rate_cap,
         token_buffer_size: baseConfig.token_buffer_size,
@@ -751,7 +764,6 @@ Rules:
     }
   };
 
-  // Send a message to the model
   const sendMessage = async () => {
     if (!modelState?.instance || !input.trim()) return;
     
@@ -761,7 +773,19 @@ Rules:
     setInput('');
     setGenerating(true);
     setError(null);
-    setStreamingText(''); // Reset streamed text for each new message
+    setStreamingText('');
+
+    // Build sampling params: GGUF model defaults, then mode-specific overrides.
+    // JS-supplied values always win; omitting a field lets the native layer use initLlama defaults.
+    const sd = modelState.samplingDefaults;
+    const baseSampling = {
+      temperature:    sd.temperature    ?? 0.8,
+      top_p:          sd.top_p          ?? 0.9,
+      top_k:          sd.top_k          ?? 40,
+      min_p:          sd.min_p          ?? 0.05,
+      repeat_penalty: sd.repeat_penalty ?? 1.1,
+      repeat_last_n:  sd.repeat_last_n  ?? 64,
+    };
     
     try {
       const completionOptions: any = {
@@ -770,8 +794,10 @@ Rules:
         temperature: 0.6,
         top_p: 0.95,
         top_k: 20,
-        min_p: 0,
-        presence_penalty: 1.5,  // Higher to prevent endless repetitions in thinking mode
+        min_p: 0.05,          // filter very unlikely tokens — helps small models stay coherent
+        repeat_penalty: 1.1,  // primary anti-repetition: penalises recently-seen tokens
+        repeat_last_n: 64,    // window for repeat_penalty
+        presence_penalty: 0.0, // presence_penalty on top of repeat_penalty is redundant and can over-penalise
         max_tokens: 8192,       // More space for thinking + response
         stop: ["</s>", "<|im_end|>", "<|eot_id|>", "<|eom_id|>"],
       };
@@ -898,8 +924,10 @@ Rules:
             temperature: 0.6,
             top_p: 0.95,
             top_k: 20,
-            min_p: 0,
-            presence_penalty: 1.5,
+            min_p: 0.05,
+            repeat_penalty: 1.1,
+            repeat_last_n: 64,
+            presence_penalty: 0.0,
             max_tokens: 4096,
           },
           (data: { token: string }) => {
