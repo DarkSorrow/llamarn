@@ -54,6 +54,7 @@ struct completion_state {
     std::string stopping_word;
     bool stop_found = false;
     bool stopped_by_limit = false;
+    bool context_shifted = false;  // true if at least one context shift occurred
 
     std::vector<llama_token> prompt_tokens;
     std::vector<llama_token> generated_tokens;
@@ -110,14 +111,6 @@ static bool check_stop_conditions(
             partial_pos != std::string::npos) {
             return false; // Don't send token yet, wait for full stop word
         }
-    }
-
-    // Check if context is full
-    if (state.n_past >= state.n_ctx) {
-        state.truncated = true;
-        state.has_next_token = false;
-        state.stopped_by_limit = true;
-        return true;
     }
 
     // Check for newline condition
@@ -442,7 +435,76 @@ CompletionResult run_completion(
 
         llama_batch& gen_batch = rn_ctx->gen_batch;
 
+        // Whether context shift is available for this run.
+        // Disabled for multimodal (image chunks have special positioning) and
+        // for recurrent models that don't support KV position shifting.
+        const bool can_ctx_shift =
+            options.mtmd_encoded_n_past < 0 &&
+            llama_memory_can_shift(llama_get_memory(rn_ctx->ctx));
+
         while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
+            // Context shift: if we're about to fill the KV cache, slide the window.
+            // This allows infinite-length conversations without hard failures.
+            // Mirrors server-context.cpp update_slots() context shift logic.
+            if (state.n_past + 1 >= state.n_ctx) {
+                if (!can_ctx_shift) {
+                    // Recurrent model or multimodal — can't shift, stop generation
+                    state.truncated = true;
+                    state.has_next_token = false;
+                    state.stopped_by_limit = true;
+                    break;
+                }
+
+                // n_keep: number of initial tokens to always preserve.
+                // Keeps the system prompt + first message so the model retains its persona.
+                // options.n_keep == 0 → auto (25% of context)
+                // options.n_keep  > 0 → explicit token count
+                // options.n_keep == -1 → disable shift (stop on context full)
+                if (options.n_keep < 0) {
+                    // Caller explicitly disabled context shift
+                    state.truncated = true;
+                    state.has_next_token = false;
+                    state.stopped_by_limit = true;
+                    break;
+                }
+
+                int n_keep = options.n_keep > 0 ? options.n_keep : (state.n_ctx / 4);
+
+                // Always keep BOS if the model uses one
+                if (llama_vocab_get_add_bos(rn_ctx->vocab)) {
+                    n_keep = std::max(n_keep, 1);
+                }
+
+                // Safety: leave at least 4 slots for generation
+                n_keep = std::min(n_keep, state.n_ctx - 4);
+
+                const int n_left    = state.n_past - n_keep;
+                const int n_discard = n_left / 2;
+
+                if (n_discard <= 0) {
+                    // n_keep is too large relative to n_ctx — can't shift
+                    state.truncated = true;
+                    state.has_next_token = false;
+                    state.stopped_by_limit = true;
+                    break;
+                }
+
+                // Remove KV entries at positions [n_keep, n_keep + n_discard)
+                llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, n_keep, n_keep + n_discard);
+                // Shift remaining entries [n_keep + n_discard, n_past) backward by n_discard
+                llama_memory_seq_add(llama_get_memory(rn_ctx->ctx), 0, n_keep + n_discard, state.n_past, -n_discard);
+
+                // Shift the prompt_tokens array to match
+                for (int i = n_keep + n_discard; i < (int)state.prompt_tokens.size(); i++) {
+                    state.prompt_tokens[i - n_discard] = state.prompt_tokens[i];
+                }
+                state.prompt_tokens.resize(state.prompt_tokens.size() - n_discard);
+
+                state.n_past -= n_discard;
+                state.truncated = true;
+                state.context_shifted = true;
+            }
+
             // Sample the next token
             llama_token token_id = common_sampler_sample(state.sampler.get(), rn_ctx->ctx, -1);
 
@@ -545,6 +607,7 @@ CompletionResult run_completion(
         }
 
         result.stopped_by_length = state.stopped_by_limit;
+        result.context_shifted   = state.context_shifted;
 
         // Capture timings from the context performance counters
         {
@@ -955,6 +1018,14 @@ CompletionResult run_chat_completion(
 
         // Run standard completion with the processed prompt
         result = run_completion(rn_ctx, cmpl_options, callback);
+
+        // If context shift occurred, KV message boundaries are now stale (positions shifted).
+        // Invalidate them so the next call does a full re-encode rather than using wrong offsets.
+        if (result.context_shifted) {
+            rn_ctx->kv_messages.clear();
+            rn_ctx->kv_has_messages = false;
+            rn_ctx->kv_render_identity.clear();
+        }
 
         // Update per-message KV boundaries so the next call can skip unchanged messages.
         // We only do this when message IDs were provided (otherwise there's nothing to track).

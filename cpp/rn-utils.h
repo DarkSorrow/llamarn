@@ -131,6 +131,7 @@ struct CompletionResult {
     bool stopped_by_length = false;
     bool tool_call_parse_failed = false;
     std::string tool_call_parse_error;
+    bool context_shifted = false;  // true if context shift occurred during generation
 };
 
 // Utility functions
