@@ -158,6 +158,11 @@ CompletionResult run_completion(
 
         const auto& params = rn_ctx->params;
 
+        // Reset per-request performance counters so timings reflect this request only,
+        // not cumulative totals across all prior requests on this context.
+        // Mirrors server-context.cpp slot reset behavior.
+        llama_perf_context_reset(rn_ctx->ctx);
+
         // Create a copy of sampling parameters and apply per-request overrides.
         // All mutations happen on this LOCAL copy — rn_ctx_->params.sampling is never touched.
         common_params_sampling sampling_params = params.sampling;
@@ -454,7 +459,7 @@ CompletionResult run_completion(
                     break;
                 }
 
-                int n_keep = options.n_keep > 0 ? options.n_keep : (state.n_ctx / 4);
+                int n_keep = options.n_keep > 0 ? options.n_keep : (state.n_ctx / 2);
 
                 // Always keep BOS if the model uses one
                 if (llama_vocab_get_add_bos(rn_ctx->vocab)) {
