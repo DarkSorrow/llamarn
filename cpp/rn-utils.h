@@ -23,6 +23,7 @@
 #include <memory>
 #include <unordered_map>
 #include <functional>
+#include <limits>
 
 using json = nlohmann::ordered_json;
 
@@ -46,20 +47,30 @@ common_sampler* common_sampler_init(const llama_model* model, const common_param
 void common_sampler_free(common_sampler* sampler);
 
 // CompletionOptions struct to represent parameters for completion requests
+//
+// Sampling fields use sentinel values to distinguish "not set by caller" from "explicitly set":
+//   float fields: NaN  → use the model's initLlama default (params.sampling)
+//   int fields:   -1   → use the model's initLlama default
+//
+// This means a caller that omits temperature gets the model's configured default,
+// not a hardcoded fallback. Models with GGUF-embedded sampling metadata benefit
+// automatically, and per-model tuning via initLlama is respected.
 struct CompletionOptions {
     std::string prompt;  // for simple completions
     std::string model;   // model identifier
     json messages;       // for chat completions
     bool stream = false;
     int n_predict = -1;  // -1 = unlimited; generation stops on EOS or stop strings
-    float temperature = 0.8f;
-    float top_p = 0.9f;
-    float top_k = 40.0f;
-    float min_p = 0.05f;
-    float presence_penalty = 0.0f;  // for reducing repetitions (0-2 range)
-    float repeat_penalty = 1.0f;    // token repetition penalty
-    int repeat_last_n = 64;         // window for repetition penalty
-    float frequency_penalty = 0.0f; // frequency-based penalty
+
+    // Sampling — NaN means "not set, use model default from initLlama"
+    float temperature       = std::numeric_limits<float>::quiet_NaN();
+    float top_p             = std::numeric_limits<float>::quiet_NaN();
+    float top_k             = std::numeric_limits<float>::quiet_NaN();
+    float min_p             = std::numeric_limits<float>::quiet_NaN();
+    float presence_penalty  = std::numeric_limits<float>::quiet_NaN();
+    float repeat_penalty    = std::numeric_limits<float>::quiet_NaN();
+    int   repeat_last_n     = -1;   // -1 = use model default
+    float frequency_penalty = std::numeric_limits<float>::quiet_NaN();
     int n_keep = 0;
     std::vector<std::string> stop;
     std::string grammar;

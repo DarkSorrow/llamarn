@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <cmath>
 
 namespace facebook::react {
 
@@ -168,14 +169,21 @@ CompletionResult run_completion(
         common_params_sampling sampling_params = params.sampling;
 
         // Apply per-request sampling overrides from CompletionOptions.
-        sampling_params.temp            = options.temperature;
-        sampling_params.top_p           = options.top_p;
-        sampling_params.top_k           = options.top_k;
-        sampling_params.min_p           = options.min_p;
-        sampling_params.penalty_present = options.presence_penalty;
-        sampling_params.penalty_repeat  = options.repeat_penalty;
-        sampling_params.penalty_last_n  = options.repeat_last_n;
-        sampling_params.penalty_freq    = options.frequency_penalty;
+        // Only override when the caller explicitly set a value (not NaN / -1 sentinel).
+        // When not set, the model's initLlama defaults (params.sampling) are preserved —
+        // this respects per-model tuning and GGUF-embedded sampling metadata.
+        auto applyF = [](float& dst, float src) { if (!std::isnan(src)) dst = src; };
+        auto applyFI = [](int32_t& dst, float src) { if (!std::isnan(src)) dst = static_cast<int32_t>(src); };
+        applyF(sampling_params.temp,            options.temperature);
+        applyF(sampling_params.top_p,           options.top_p);
+        applyFI(sampling_params.top_k,          options.top_k);
+        applyF(sampling_params.min_p,           options.min_p);
+        applyF(sampling_params.penalty_present, options.presence_penalty);
+        applyF(sampling_params.penalty_repeat,  options.repeat_penalty);
+        applyF(sampling_params.penalty_freq,    options.frequency_penalty);
+        if (options.repeat_last_n >= 0) {
+            sampling_params.penalty_last_n = options.repeat_last_n;
+        }
         // Map JS sentinel -1 ("use default/random") to the model's configured seed.
         // Only override if the caller supplied an explicit non-negative seed.
         if (options.seed >= 0) {

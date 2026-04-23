@@ -346,6 +346,50 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
           std::string architecture = arch_buf.data();
 
+          // Read GGUF-embedded sampling defaults (present on some models, absent on others).
+          // These are the model author's recommended sampling parameters — the JS layer should
+          // use them as defaults when the user hasn't explicitly set a value.
+          // We use -1 / NaN sentinels so the JS layer can distinguish "model has a value" from
+          // "model doesn't specify this" and fall back to its own defaults accordingly.
+          struct GgufSampling {
+              float temperature    = -1.0f;
+              float top_p          = -1.0f;
+              int   top_k          = -1;
+              float min_p          = -1.0f;
+              float repeat_penalty = -1.0f;
+              int   repeat_last_n  = -1;
+              float mirostat_tau   = -1.0f;
+              float mirostat_eta   = -1.0f;
+              int   mirostat       = -1;
+          } gs;
+
+          auto read_f = [&](llama_model_meta_key key, float& dst) {
+              char vbuf[64] = {0};
+              if (llama_model_meta_val_str(model, llama_model_meta_key_str(key), vbuf, sizeof(vbuf)) > 0) {
+                  char* end = nullptr;
+                  float v = strtof(vbuf, &end);
+                  if (end && end != vbuf) dst = v;
+              }
+          };
+          auto read_i = [&](llama_model_meta_key key, int& dst) {
+              char vbuf[64] = {0};
+              if (llama_model_meta_val_str(model, llama_model_meta_key_str(key), vbuf, sizeof(vbuf)) > 0) {
+                  char* end = nullptr;
+                  int v = static_cast<int>(strtol(vbuf, &end, 10));
+                  if (end && end != vbuf) dst = v;
+              }
+          };
+
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_TEMP,           gs.temperature);
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_TOP_P,          gs.top_p);
+          read_i(LLAMA_MODEL_META_KEY_SAMPLING_TOP_K,          gs.top_k);
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_MIN_P,          gs.min_p);
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_PENALTY_REPEAT, gs.repeat_penalty);
+          read_i(LLAMA_MODEL_META_KEY_SAMPLING_PENALTY_LAST_N, gs.repeat_last_n);
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT_TAU,   gs.mirostat_tau);
+          read_f(LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT_ETA,   gs.mirostat_eta);
+          read_i(LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT,       gs.mirostat);
+
           // Free the model
           llama_model_free(model);
 
@@ -353,7 +397,7 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
                                 gpuSupported, optimalGpuLayers, quantType, n_layers,
                                 model_size_bytes, architecture,
                                 available_memory_mb, estimated_vram_mb,
-                                mmproj_size_mb, is_cpu_only, chunk_size, runtimePtr]() {
+                                mmproj_size_mb, is_cpu_only, chunk_size, gs, runtimePtr]() {
             try {
               jsi::Object result(*runtimePtr);
               result.setProperty(*runtimePtr, "n_params",            jsi::Value(n_params));
@@ -374,6 +418,24 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               if (mmproj_size_mb >= 0.0) {
                 result.setProperty(*runtimePtr, "mmprojSizeMB",      jsi::Value(mmproj_size_mb));
               }
+
+              // GGUF-embedded sampling defaults — only present when the model author set them.
+              // Fields with value -1 mean the model doesn't specify that parameter.
+              // Use these as defaults in your UI/completion calls; JS-supplied values take priority.
+              {
+                jsi::Object sd(*runtimePtr);
+                if (gs.temperature    >= 0.0f) sd.setProperty(*runtimePtr, "temperature",    jsi::Value(static_cast<double>(gs.temperature)));
+                if (gs.top_p          >= 0.0f) sd.setProperty(*runtimePtr, "top_p",          jsi::Value(static_cast<double>(gs.top_p)));
+                if (gs.top_k          >= 0)    sd.setProperty(*runtimePtr, "top_k",          jsi::Value(static_cast<double>(gs.top_k)));
+                if (gs.min_p          >= 0.0f) sd.setProperty(*runtimePtr, "min_p",          jsi::Value(static_cast<double>(gs.min_p)));
+                if (gs.repeat_penalty >= 0.0f) sd.setProperty(*runtimePtr, "repeat_penalty", jsi::Value(static_cast<double>(gs.repeat_penalty)));
+                if (gs.repeat_last_n  >= 0)    sd.setProperty(*runtimePtr, "repeat_last_n",  jsi::Value(static_cast<double>(gs.repeat_last_n)));
+                if (gs.mirostat       >= 0)    sd.setProperty(*runtimePtr, "mirostat",       jsi::Value(static_cast<double>(gs.mirostat)));
+                if (gs.mirostat_tau   >= 0.0f) sd.setProperty(*runtimePtr, "mirostat_tau",   jsi::Value(static_cast<double>(gs.mirostat_tau)));
+                if (gs.mirostat_eta   >= 0.0f) sd.setProperty(*runtimePtr, "mirostat_eta",   jsi::Value(static_cast<double>(gs.mirostat_eta)));
+                result.setProperty(*runtimePtr, "samplingDefaults", std::move(sd));
+              }
+
               resolve->call(*runtimePtr, result);
             } catch (const std::exception& e) {
               // JSI object creation failed — reject (not resolve) so JS catch() sees it
@@ -526,6 +588,13 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
 
     // ── 2. Model init with GPU→CPU fallback ────────────────────────────────
     auto init_result = try_init_with_gpu_fallback(params);
+
+    // params.sampling was updated by common_init_sampler_from_model inside
+    // common_init_result's constructor — it now contains GGUF-embedded values.
+    // rn_params was copy-constructed from params BEFORE init ran, so its sampling
+    // field has only hardcoded defaults. Copy the post-init sampling back so
+    // rn_ctx->params.sampling reflects the model author's recommendations.
+    rn_params.sampling = params.sampling;
 
     // ── 3. Build rn_llama_context ──────────────────────────────────────────
     auto rn_ctx = std::make_unique<rn_llama_context>();
