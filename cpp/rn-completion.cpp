@@ -394,11 +394,13 @@ CompletionResult run_completion(
         }
 
         // Accept all prompt tokens into the sampler (needed for repetition/presence penalty).
-        // For non-lazy grammars we skip this and re-init below to keep a clean grammar state.
+        // CRITICAL: Always accept prompt tokens to seed the repetition penalty window,
+        // regardless of grammar mode. This ensures anti-repetition controls work consistently
+        // across all paths (lazy grammar, non-lazy grammar, no grammar, tools).
+        // The grammar state will be reset below for non-lazy grammars while preserving
+        // the repetition penalty history.
         for (auto tok : state.prompt_tokens) {
-            if (common_grammar_value(sampling_params.grammar).empty() || sampling_params.grammar_lazy) {
-                common_sampler_accept(state.sampler.get(), tok, true);
-            }
+            common_sampler_accept(state.sampler.get(), tok, true);
         }
 
         result.n_prompt_tokens = state.prompt_tokens.size();

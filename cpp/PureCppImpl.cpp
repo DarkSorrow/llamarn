@@ -281,6 +281,7 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Create model params
           llama_model_params params = llama_model_default_params();
           params.n_gpu_layers = 0; // Use CPU for model info loading
+          params.use_direct_io = false; // Disable direct I/O for compatibility
 
           // Load the model
           llama_model* model = llama_model_load_from_file(path.c_str(), params);

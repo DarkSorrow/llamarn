@@ -51,7 +51,7 @@ struct CompletionOptions {
     std::string model;   // model identifier
     json messages;       // for chat completions
     bool stream = false;
-    int n_predict = -1;
+    int n_predict = 1024;  // Changed from -1 to finite default to prevent endless generation
     float temperature = 0.8f;
     float top_p = 0.9f;
     float top_k = 40.0f;
