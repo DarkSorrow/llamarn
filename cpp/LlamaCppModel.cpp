@@ -37,6 +37,26 @@
 
 namespace facebook::react {
 
+// ── CC-P2: Canonical lock hierarchy ──────────────────────────────────────────
+//
+// Three mutexes are used in LlamaCppModel. They MUST always be acquired in the
+// order listed below. Never acquire a lower-ranked mutex while holding a
+// higher-ranked one in the reverse order.
+//
+//   1. inference_mutex_       (rank 1 — outermost)
+//   2. predicting_cv_mutex_   (rank 2 — brief, only to set/clear is_predicting_)
+//   3. rn_ctx_->mutex         (rank 3 — innermost, only inside release())
+//
+// IMPORTANT INVARIANT in release():
+//   predicting_cv_mutex_ is acquired for wait_for() and then RELEASED (end of
+//   its {} block) BEFORE inference_mutex_ is acquired. The two mutexes are
+//   therefore never held simultaneously in release(). Do not restructure
+//   release() in a way that holds both at the same time — that would create a
+//   deadlock with the inference path (which holds inference_mutex_ and then
+//   briefly acquires predicting_cv_mutex_ inside completion()).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
 LlamaCppModel::LlamaCppModel(rn_llama_context* rn_ctx, std::shared_ptr<CallInvoker> jsInvoker)
     : rn_ctx_(rn_ctx), should_stop_completion_(false), is_predicting_(false), jsInvoker_(jsInvoker) {
 }
@@ -60,6 +80,13 @@ void LlamaCppModel::release() {
     predicting_cv_.wait_for(lock, std::chrono::milliseconds(500),
                             [this] { return !is_predicting_.load(); });
   }
+
+  // MS-P1 FIX: Acquire inference_mutex_ before touching rn_ctx_ so that release()
+  // cannot null rn_ctx_ while a background thread holds inference_mutex_ and is
+  // inside completion(). The wait_for above is a fast path (avoids holding the mutex
+  // for the full inference duration), but the mutex is the definitive safety net.
+  // Lock order: inference_mutex_ > rn_ctx_->mutex (consistent with all call sites).
+  std::lock_guard<std::mutex> inf_lock(inference_mutex_);
 
   // Clean up our resources with proper mutex protection
   // NOTE: We do NOT manually free the context or model here because they are owned
@@ -106,12 +133,14 @@ void LlamaCppModel::release() {
     // Reset state flags
     rn_ctx_->model_loaded = false;
 
+    // MS-P1 FIX: Set is_released_ = true BEFORE nulling rn_ctx_ so that any background
+    // thread checking is_released_ inside inference_mutex_ sees the flag set before the
+    // pointer disappears. This is defense-in-depth on top of the inference_mutex_ guard.
+    is_released_ = true;
+
     // Note: rn_ctx_ itself is owned by the module, so we don't delete it here
     rn_ctx_ = nullptr;
   }
-
-  // Mark as released so in-flight background threads can check before touching JSI runtime
-  is_released_ = true;
 
   // Reset our internal state
   should_stop_completion_ = false;
@@ -525,8 +554,15 @@ jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args
     // Set streaming flag based on callback presence
     options.stream = (partialCallback != nullptr);
 
-    // Call our C++ completion method which properly initializes rn_llama_context
-    CompletionResult result = completion(options, partialCallback, &rt);
+    // CC-P1 FIX: Acquire inference_mutex_ before calling completion() so that
+    // completionJsi (sync path) cannot race with completionAsyncJsi (async path)
+    // on kv_messages / completion_cache inside run_chat_completion().
+    // Lock order: inference_mutex_ > rn_ctx_->mutex (consistent with all call sites).
+    CompletionResult result;
+    {
+      std::lock_guard<std::mutex> inf_lock(inference_mutex_);
+      result = completion(options, partialCallback, &rt);
+    }
 
     // Convert the result to a JSI object using our helper
     return completionResultToJsi(rt, result);
@@ -673,11 +709,11 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
               jsi::Object jsResult = selfPtr->completionResultToJsi(*runtimePtr, result);
               resolve->call(*runtimePtr, jsResult);
             } catch (const std::exception& e) {
-              try {
-                jsi::Object errorObj(*runtimePtr);
-                errorObj.setProperty(*runtimePtr, "error", jsi::String::createFromUtf8(*runtimePtr, e.what()));
-                resolve->call(*runtimePtr, errorObj);
-              } catch (...) {}
+              // EH-P1 FIX: JSI result construction failed — reject (not resolve) so the
+              // awaiting Promise is rejected and JS catch() handlers fire correctly.
+              try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, e.what())); } catch (...) {}
+            } catch (...) {
+              try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "completion: JSI result construction failed")); } catch (...) {}
             }
           });
 
@@ -685,6 +721,12 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
           std::string errorMsg(e.what());
           try { invoker->invokeAsync([reject, errorMsg, runtimePtr]() {
             try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, errorMsg)); } catch (...) {}
+          }); } catch (...) {}
+        } catch (...) {
+          // EH-P1 FIX: catch non-std exceptions (e.g. structured exceptions on Windows,
+          // or llama.cpp ggml_abort) so the Promise is always settled.
+          try { invoker->invokeAsync([reject, runtimePtr]() {
+            try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "completion failed (unknown exception)")); } catch (...) {}
           }); } catch (...) {}
         }
       }).detach();
@@ -1119,12 +1161,24 @@ jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args
         } _guard{selfPtr->is_processing_frame_};
 
         try {
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
 
           EmbedResult emb;
           {
             std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
-            if (selfPtr->is_released_) return;
+            if (selfPtr->is_released_) {
+              // EH-P3 FIX: reject so the Promise settles instead of hanging.
+              try { invoker->invokeAsync([reject, rtPtr]() {
+                try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released during wait")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
             emb = encode_image_to_embeddings(
                 selfPtr->rn_ctx_->mtmd_ctx,
                 selfPtr->rn_ctx_->ctx,
@@ -1133,7 +1187,13 @@ jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args
           }
           bm2.reset(); // free bitmap before invokeAsync (reduces peak memory)
 
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           if (!emb.success) {
             std::string err = emb.error_msg;
             try { invoker->invokeAsync([reject, err, rtPtr]() {
@@ -1146,7 +1206,13 @@ jsi::Value LlamaCppModel::runOnFrameJsi(jsi::Runtime& rt, const jsi::Value* args
               llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
           size_t n_tok  = n_embd > 0 ? (emb.embedding.size() / n_embd) : 0;
           auto embCopy  = std::move(emb.embedding);
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           try { invoker->invokeAsync([resolve, embCopy, n_tok, n_embd, rtPtr]() {
             try {
               jsi::Array arr(*rtPtr, embCopy.size());
@@ -1206,13 +1272,25 @@ jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args
 
       std::thread([selfPtr, path, normalize, resolve, reject, invoker, rtPtr]() {
         try {
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
 
           auto bm_deleter = [](mtmd_bitmap* b) { if (b) mtmd_bitmap_free(b); };
           std::unique_ptr<mtmd_bitmap, decltype(bm_deleter)> bm(
               load_bitmap_from_uri(selfPtr->rn_ctx_->mtmd_ctx, path), bm_deleter);
           if (!bm) {
-            if (selfPtr->is_released_) return;
+            if (selfPtr->is_released_) {
+              // EH-P3 FIX: reject so the Promise settles instead of hanging.
+              try { invoker->invokeAsync([reject, rtPtr]() {
+                try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
             std::string err = "Failed to load image: " + path;
             try { invoker->invokeAsync([reject, err, rtPtr]() {
               try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, err)); } catch (...) {}
@@ -1223,7 +1301,13 @@ jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args
           EmbedResult res;
           {
             std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
-            if (selfPtr->is_released_) return;
+            if (selfPtr->is_released_) {
+              // EH-P3 FIX: reject so the Promise settles instead of hanging.
+              try { invoker->invokeAsync([reject, rtPtr]() {
+                try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released during wait")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
             res = encode_image_to_embeddings(
                 selfPtr->rn_ctx_->mtmd_ctx,
                 selfPtr->rn_ctx_->ctx,
@@ -1250,7 +1334,13 @@ jsi::Value LlamaCppModel::embedImageJsi(jsi::Runtime& rt, const jsi::Value* args
               llama_model_n_embd(llama_get_model(selfPtr->rn_ctx_->ctx)));
           size_t n_tok  = n_embd > 0 ? (res.embedding.size() / n_embd) : 0;
           auto emb      = std::move(res.embedding);
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           try { invoker->invokeAsync([resolve, emb, n_tok, n_embd, rtPtr]() {
             try {
               jsi::Array arr(*rtPtr, emb.size());
@@ -1317,15 +1407,33 @@ jsi::Value LlamaCppModel::transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value*
 
       std::thread([selfPtr, opts, resolve, reject, invoker, rtPtr]() {
         try {
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           CompletionResult res;
           {
             std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
-            if (selfPtr->is_released_) return;
+            if (selfPtr->is_released_) {
+              // EH-P3 FIX: reject so the Promise settles instead of hanging.
+              try { invoker->invokeAsync([reject, rtPtr]() {
+                try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released during wait")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
             res = run_chat_completion(selfPtr->rn_ctx_, opts,
                 [](const std::string&, bool) { return false; });
           }
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           try { invoker->invokeAsync([resolve, reject, res, rtPtr]() {
             try {
               if (!res.success) {
@@ -1394,15 +1502,33 @@ jsi::Value LlamaCppModel::visionReasoningJsi(jsi::Runtime& rt, const jsi::Value*
 
       std::thread([selfPtr, cmpl_opts, resolve, reject, invoker, rtPtr]() {
         try {
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           CompletionResult res;
           {
             std::lock_guard<std::mutex> lock(selfPtr->inference_mutex_);
-            if (selfPtr->is_released_) return;
+            if (selfPtr->is_released_) {
+              // EH-P3 FIX: reject so the Promise settles instead of hanging.
+              try { invoker->invokeAsync([reject, rtPtr]() {
+                try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released during wait")); } catch (...) {}
+              }); } catch (...) {}
+              return;
+            }
             res = run_chat_completion(selfPtr->rn_ctx_, cmpl_opts,
                 [](const std::string&, bool) { return false; });
           }
-          if (selfPtr->is_released_) return;
+          if (selfPtr->is_released_) {
+            // EH-P3 FIX: reject so the Promise settles instead of hanging.
+            try { invoker->invokeAsync([reject, rtPtr]() {
+              try { reject->call(*rtPtr, jsi::String::createFromUtf8(*rtPtr, "model released")); } catch (...) {}
+            }); } catch (...) {}
+            return;
+          }
           try { invoker->invokeAsync([resolve, reject, res, rtPtr]() {
             try {
               if (!res.success) {

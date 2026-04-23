@@ -157,7 +157,12 @@ static void load_android_backends() {
         ggml_backend_reg_t hexagon_backend = backend_init();
         if (hexagon_backend) {
           ggml_backend_register(hexagon_backend);
+          // Keep handle open — backend is now registered and in use
+        } else {
+          dlclose(hexagon_handle); // MS-P3 fix: backend_init() returned null — close handle
         }
+      } else {
+        dlclose(hexagon_handle); // MS-P3 fix: no init symbol — close handle
       }
     }
   }
@@ -171,7 +176,12 @@ static void load_android_backends() {
         ggml_backend_reg_t opencl_backend = backend_init();
         if (opencl_backend) {
           ggml_backend_register(opencl_backend);
+          // Keep handle open — backend is now registered and in use
+        } else {
+          dlclose(opencl_handle); // MS-P3 fix: backend_init() returned null — close handle
         }
+      } else {
+        dlclose(opencl_handle); // MS-P3 fix: no init symbol — close handle
       }
     }
   }
@@ -185,7 +195,12 @@ static void load_android_backends() {
         ggml_backend_reg_t vulkan_backend = backend_init();
         if (vulkan_backend) {
           ggml_backend_register(vulkan_backend);
+          // Keep handle open — backend is now registered and in use
+        } else {
+          dlclose(vulkan_handle); // MS-P3 fix: backend_init() returned null — close handle
         }
+      } else {
+        dlclose(vulkan_handle); // MS-P3 fix: no init symbol — close handle
       }
     }
   }
@@ -342,9 +357,11 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               ? static_cast<double>(mmproj_size_bytes) / (1024.0 * 1024.0)
               : -1.0; // negative sentinel: mmprojPath was not provided
 
-          std::array<char, 128> arch_buf{"unknown"};
-          llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
-          std::string architecture = arch_buf.data();
+          // MS-P5 fix: check return value — llama_model_meta_val_str writes '\0' on key-absent,
+          // which would silently overwrite the "unknown" default if we relied on initialization.
+          std::array<char, 128> arch_buf{};
+          int arch_ret = llama_model_meta_val_str(model, "general.architecture", arch_buf.data(), arch_buf.size());
+          std::string architecture = (arch_ret > 0) ? arch_buf.data() : "unknown";
 
           // Read GGUF-embedded sampling defaults (present on some models, absent on others).
           // These are the model author's recommended sampling parameters — the JS layer should

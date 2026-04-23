@@ -124,6 +124,10 @@ int64_t SystemUtils::getAvailableMemoryBytes() {
 
 int SystemUtils::getOptimalGpuLayers(struct llama_model* model,
                                       int64_t reserved_vram_bytes) {
+    // MS-P4 FIX: guard against null model pointer before any dereference.
+    if (!model) {
+        return 0;
+    }
     const int n_layer = llama_model_n_layer(model);
     int64_t bytes_per_layer = (int64_t)llama_model_size(model) / n_layer;
     int64_t total_memory = getTotalPhysicalMemory();

@@ -290,6 +290,26 @@ export interface LlamaContextMethods {
   loadSession(path: string): Promise<boolean>;
   saveSession(path: string): Promise<boolean>;
   stopCompletion(): Promise<void>;
+
+  /**
+   * Release the model and free all associated GPU/CPU memory.
+   *
+   * **You MUST call this method when the model is no longer needed.**
+   * Failing to call `release()` leaks the model's memory (GPU VRAM and/or RAM)
+   * for the lifetime of the process. On iOS, unreleased models accumulate memory
+   * pressure and will trigger a Jetsam kill of your app. On Android, they exhaust
+   * the process heap and cause OOM crashes.
+   *
+   * Typical usage:
+   * ```ts
+   * const ctx = await initLlama({ model: '/path/to/model.gguf' });
+   * try {
+   *   const result = await ctx.completion({ prompt: 'Hello' });
+   * } finally {
+   *   await ctx.release(); // Always release, even on error
+   * }
+   * ```
+   */
   release(): Promise<void>;
 
   isMultimodalEnabled(): Promise<boolean>;
@@ -346,7 +366,20 @@ const LlamaCppRn = TurboModuleRegistry.getEnforcing<Spec>('RNLlamaCpp');
 export type LlamaModel = LlamaContextType & LlamaContextMethods;
 
 /**
- * Initialize a Llama context with the given model parameters
+ * Initialize a Llama context with the given model parameters.
+ *
+ * Loads the model into memory (GPU VRAM and/or RAM). The returned context
+ * holds a reference to the loaded model until `release()` is called.
+ *
+ * **Memory management:** Always call `context.release()` when the model is no
+ * longer needed. Failing to do so leaks the model's GPU/CPU memory for the
+ * lifetime of the process. Calling `initLlama` multiple times without releasing
+ * previous contexts will accumulate memory and eventually cause OOM crashes or
+ * iOS Jetsam kills.
+ *
+ * @param params Model loading parameters (see `LlamaModelParams`)
+ * @returns A context object with completion, tokenize, embedding, and release methods
+ * @see {@link LlamaContextMethods.release} for memory cleanup
  */
 export function initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods> {
   return LlamaCppRn.initLlama(params);

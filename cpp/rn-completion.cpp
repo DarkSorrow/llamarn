@@ -441,6 +441,18 @@ CompletionResult run_completion(
             options.mtmd_encoded_n_past < 0 &&
             llama_memory_can_shift(llama_get_memory(rn_ctx->ctx));
 
+        // MP-P2 FIX: pre-reserve generated_text and generated_tokens to avoid
+        // repeated heap reallocations inside the token generation loop.
+        // Average token is ~4 bytes (mixed ASCII/UTF-8); reserve 4× n_predict chars.
+        // For unlimited generation (n_predict < 0), reserve 512 tokens as a reasonable default.
+        if (state.n_predict > 0) {
+            state.generated_text.reserve(static_cast<size_t>(state.n_predict) * 4);
+            state.generated_tokens.reserve(static_cast<size_t>(state.n_predict));
+        } else {
+            state.generated_text.reserve(512 * 4);
+            state.generated_tokens.reserve(512);
+        }
+
         while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
             // Context shift: if we're about to fill the KV cache, slide the window.
             // This allows infinite-length conversations without hard failures.
