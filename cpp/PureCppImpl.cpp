@@ -492,7 +492,8 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     params.yarn_attn_factor    = p.yarn_attn_factor;
     params.yarn_beta_fast      = p.yarn_beta_fast;
     params.yarn_beta_slow      = p.yarn_beta_slow;
-    params.reasoning_budget    = p.reasoning_budget;
+    // reasoning_budget is stored in rn_common_params (not common_params — upstream moved it
+    // to common_params_sampling.reasoning_budget_tokens). We set it on rn_params below.
     params.reasoning_format    = p.reasoning_format;
     if (!p.chat_template.empty()) params.chat_template = p.chat_template;
     for (const auto& lora : p.lora_adapters) {
@@ -516,10 +517,11 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     // rn_params is now copied AFTER all kwargs are set → kwargs are preserved
     rn_common_params rn_params;
     static_cast<common_params&>(rn_params) = params;
-    rn_params.use_jinja        = p.use_jinja;
-    rn_params.reasoning_format = p.reasoning_format;
-    rn_params.chunk_size       = p.chunk_size;
-    rn_params.is_cpu_only      = p.is_cpu_only;
+    rn_params.use_jinja           = p.use_jinja;
+    rn_params.reasoning_format    = p.reasoning_format;
+    rn_params.reasoning_budget    = p.reasoning_budget;
+    rn_params.chunk_size          = p.chunk_size;
+    rn_params.is_cpu_only         = p.is_cpu_only;
     rn_params.prompt_chunk_gap_ms = p.prompt_chunk_gap_ms;
 
     // ── 2. Model init with GPU→CPU fallback ────────────────────────────────

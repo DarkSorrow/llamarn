@@ -30,6 +30,12 @@ struct rn_common_params : common_params {
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
     bool use_jinja = false;
 
+    // Reasoning budget: -1 = unlimited thinking, 0 = disabled, >0 = token limit.
+    // Stored here because upstream moved this out of common_params into common_params_sampling
+    // (as reasoning_budget_tokens). We keep it here for JS-layer parsing and apply it to
+    // sampling.reasoning_budget_tokens during do_init_llama.
+    int reasoning_budget = 0;
+
     // Cooperative prompt-ingestion loop settings (set at initLlama time).
     // chunk_size: tokens per llama_decode call during prompt encoding (distinct from n_batch).
     // is_cpu_only: when true, sleep 2ms after each chunk.

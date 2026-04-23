@@ -211,6 +211,22 @@ CompletionResult run_completion(
             }
         }
 
+        // Wire reasoning budget into sampling params.
+        // The start/end tags come from chat_params.thinking_start/end_tag (set by run_chat_completion).
+        // Mirrors server-common.cpp oaicompat_chat_params_parse() reasoning budget block.
+        if (!options.reasoning_budget_start_tag.empty() && !options.reasoning_budget_end_tag.empty()) {
+            sampling_params.reasoning_budget_tokens  = options.reasoning_budget_tokens;
+            sampling_params.reasoning_budget_start   = common_tokenize(rn_ctx->vocab, options.reasoning_budget_start_tag, false, true);
+            sampling_params.reasoning_budget_end     = common_tokenize(rn_ctx->vocab, options.reasoning_budget_end_tag,   false, true);
+            if (!options.reasoning_budget_message.empty()) {
+                sampling_params.reasoning_budget_forced = common_tokenize(rn_ctx->vocab,
+                    options.reasoning_budget_message + options.reasoning_budget_end_tag, false, true);
+                sampling_params.reasoning_budget_message = options.reasoning_budget_message;
+            } else {
+                sampling_params.reasoning_budget_forced = sampling_params.reasoning_budget_end;
+            }
+        }
+
         // Parse tool_choice
         if (options.tool_choice == "auto") {
             state.tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
@@ -393,26 +409,32 @@ CompletionResult run_completion(
             state.n_past = n_total;
         }
 
-        // Accept all prompt tokens into the sampler (needed for repetition/presence penalty).
-        // CRITICAL: Always accept prompt tokens to seed the repetition penalty window,
-        // regardless of grammar mode. This ensures anti-repetition controls work consistently
-        // across all paths (lazy grammar, non-lazy grammar, no grammar, tools).
-        // The grammar state will be reset below for non-lazy grammars while preserving
-        // the repetition penalty history.
+        // Seed the sampler with prompt tokens — matches the server's init_sampler() pattern exactly.
+        //
+        // CORRECT ORDER (server-context.cpp init_sampler):
+        //   1. Reset FIRST  → clears prev ring buffer + grammar state to a known-clean baseline
+        //   2. Accept ALL prompt tokens with accept_grammar=false
+        //      → rebuilds the repetition-penalty window (prev ring buffer)
+        //      → does NOT advance grammar state (grammar only tracks generated tokens)
+        //
+        // WRONG ORDER (previous mobile code):
+        //   1. Accept prompt tokens (builds prev)
+        //   2. Reset (destroys prev) ← wipes the repetition penalty history we just built
+        //
+        // The wrong order caused the model to have zero context for repetition penalties,
+        // leading to infinite repetition of prompt content on subsequent turns.
+        //
+        // Why accept_grammar=false:
+        //   Grammar state should only track generated tokens, not prompt tokens.
+        //   Using true here would advance the grammar FSM through the prompt, which is wrong
+        //   for tool-call grammars that expect to start fresh at generation time.
+        common_sampler_reset(state.sampler.get());
+
         for (auto tok : state.prompt_tokens) {
-            common_sampler_accept(state.sampler.get(), tok, true);
+            common_sampler_accept(state.sampler.get(), tok, false);
         }
 
         result.n_prompt_tokens = state.prompt_tokens.size();
-
-        // For non-lazy grammars, reset the sampler so grammar state is clean for generation.
-        // Use common_sampler_reset (not free+init) to preserve the repetition penalty window
-        // that was populated by the prompt token acceptance loop above. Freeing and re-initializing
-        // would create a fresh sampler with an empty penalty_last_n, causing the model to repeat
-        // prompt content indefinitely on subsequent turns (iOS infinite repetition bug).
-        if (!common_grammar_value(sampling_params.grammar).empty() && !sampling_params.grammar_lazy) {
-            common_sampler_reset(state.sampler.get());
-        }
 
         } // end: normal tokenize + encode path (mtmd_encoded_n_past < 0)
 
@@ -862,6 +884,16 @@ CompletionResult run_chat_completion(
         }
 
         cmpl_options.prompt = chat_params.prompt;
+
+        // Wire reasoning budget from chat template into completion options.
+        // Mirrors server-common.cpp: reads thinking_start/end_tag from chat_params and
+        // passes them through to the sampler via reasoning_budget_* fields.
+        if (chat_params.supports_thinking && !chat_params.thinking_end_tag.empty()) {
+            cmpl_options.reasoning_budget_tokens    = rn_ctx->params.reasoning_budget;
+            cmpl_options.reasoning_budget_start_tag = chat_params.thinking_start_tag;
+            cmpl_options.reasoning_budget_end_tag   = chat_params.thinking_end_tag;
+            // reasoning_budget_message is not exposed via JS yet; leave empty (sampler uses end tag only)
+        }
 
         // Multimodal: tokenize + eval the full prompt (text + images) via mtmd.
         // On success, sets cmpl_options.mtmd_encoded_n_past so run_completion skips

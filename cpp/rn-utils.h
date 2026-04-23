@@ -51,7 +51,7 @@ struct CompletionOptions {
     std::string model;   // model identifier
     json messages;       // for chat completions
     bool stream = false;
-    int n_predict = 1024;  // Changed from -1 to finite default to prevent endless generation
+    int n_predict = -1;  // -1 = unlimited; generation stops on EOS or stop strings
     float temperature = 0.8f;
     float top_p = 0.9f;
     float top_k = 40.0f;
@@ -99,6 +99,14 @@ struct CompletionOptions {
     // Caller should include all knobs that change generation behavior, including
     // system prompt + tools identity, so config changes only apply when this key changes.
     std::string config_id;
+
+    // Reasoning budget: passed from chat_params.thinking_start/end_tag after template apply.
+    // When non-empty, the sampler enforces a token budget on the thinking block.
+    // -1 = unlimited (thinking enabled, no cap), 0 = disabled, >0 = token limit.
+    int32_t     reasoning_budget_tokens  = -1;
+    std::string reasoning_budget_start_tag;   // e.g. "<think>"
+    std::string reasoning_budget_end_tag;     // e.g. "</think>"
+    std::string reasoning_budget_message;     // injected before end tag when budget exhausted
 };
 
 struct CompletionTimings {
