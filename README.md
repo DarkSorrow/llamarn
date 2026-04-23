@@ -381,7 +381,29 @@ console.log(info.gpuSupported);        // true if GPU offload is available
 console.log(info.suggestedChunkSize);  // 32 (CPU-only) or 128 (GPU) — pass as chunk_size
 console.log(info.isCpuOnly);           // true when optimalGpuLayers == 0
 console.log(info.mmprojSizeMB);        // present only when mmprojPath was supplied
+console.log(info.samplingDefaults);    // GGUF-embedded sampling params (see below)
 ```
+
+### Sampling defaults from the model
+
+`loadLlamaModelInfo` also reads any sampling parameters the model author embedded in the GGUF file and returns them as `samplingDefaults`. Only fields the model actually specifies are present — if a model doesn't embed a value, the key is absent.
+
+```typescript
+const info = await loadLlamaModelInfo('/path/to/model.gguf');
+const sd = info.samplingDefaults ?? {};
+
+// Merge: your explicit values > GGUF defaults > nothing
+const result = await model.completion({
+  messages,
+  temperature:    sd.temperature    ?? 0.8,
+  top_p:          sd.top_p          ?? 0.9,
+  top_k:          sd.top_k          ?? 40,
+  min_p:          sd.min_p          ?? 0.05,
+  repeat_penalty: sd.repeat_penalty ?? 1.1,
+});
+```
+
+**Important:** When you omit a sampling parameter from a `completion()` call entirely, the native layer now falls back to the GGUF-embedded defaults (loaded at `initLlama` time) rather than llama.cpp hardcoded values. This means **omitting a field is safe and intentional** — you only need to pass a value when you want to override what the model recommends. See [BREAKING.md](./BREAKING.md) for the full priority chain.
 
 ---
 

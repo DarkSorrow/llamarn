@@ -356,6 +356,17 @@ export interface Spec extends TurboModule {
     mmprojSizeMB?: number;      // present when mmprojPath was supplied
     suggestedChunkSize: number; // recommended chunk_size for initLlama (32=CPU, 128=GPU)
     isCpuOnly: boolean;         // true when optimalGpuLayers == 0
+    samplingDefaults?: {
+      temperature?: number;
+      top_p?: number;
+      top_k?: number;
+      min_p?: number;
+      repeat_penalty?: number;
+      repeat_last_n?: number;
+      mirostat?: number;
+      mirostat_tau?: number;
+      mirostat_eta?: number;
+    };
   }>;
 }
 
@@ -398,16 +409,29 @@ export function loadLlamaModelInfo(
   n_vocab: number;
   n_context: number;
   n_embd: number;
+  n_layers: number;
+  model_size_bytes: number;
   description: string;
   gpuSupported: boolean;
-  optimalGpuLayers?: number;
+  optimalGpuLayers: number;
   quant_type?: string;
-  architecture?: string;
-  availableMemoryMB?: number;
-  estimatedVramMB?: number;
+  architecture: string;
+  availableMemoryMB: number;
+  estimatedVramMB: number;
   mmprojSizeMB?: number;
   suggestedChunkSize: number;
   isCpuOnly: boolean;
+  samplingDefaults?: {
+    temperature?: number;
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+    repeat_penalty?: number;
+    repeat_last_n?: number;
+    mirostat?: number;
+    mirostat_tau?: number;
+    mirostat_eta?: number;
+  };
 }> {
   return LlamaCppRn.loadLlamaModelInfo(modelPath, mmprojPath);
 }

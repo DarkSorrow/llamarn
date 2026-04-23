@@ -48,6 +48,19 @@ Get information about a model without loading it fully. The returned values (`op
 
   // Present only when mmprojPath was supplied
   mmprojSizeMB?: number;       // file size of the projection model in MB
+
+  // GGUF-embedded sampling recommendations — only fields the model author set are present
+  samplingDefaults?: {
+    temperature?: number;      // e.g. 0.6 for Qwen3 thinking models
+    top_p?: number;
+    top_k?: number;
+    min_p?: number;
+    repeat_penalty?: number;
+    repeat_last_n?: number;
+    mirostat?: number;         // 0 = off, 1, 2
+    mirostat_tau?: number;
+    mirostat_eta?: number;
+  };
 }
 ```
 
@@ -315,6 +328,23 @@ const context = await initLlama({
   use_jinja:    true,
 });
 ```
+
+Use `samplingDefaults` as the baseline for completion calls — the model author's recommended values, with your overrides on top:
+
+```typescript
+const sd = info.samplingDefaults ?? {};
+
+const result = await context.completion({
+  messages,
+  temperature:    sd.temperature    ?? 0.8,
+  top_p:          sd.top_p          ?? 0.9,
+  top_k:          sd.top_k          ?? 40,
+  min_p:          sd.min_p          ?? 0.05,
+  repeat_penalty: sd.repeat_penalty ?? 1.1,
+});
+```
+
+Omitting a sampling param from `completion()` falls back to the GGUF-embedded defaults loaded at `initLlama` time — you only need to pass a value when overriding.
 
 For vision models, pass `mmprojPath` so the VRAM budget is split correctly:
 
