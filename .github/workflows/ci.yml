@@ -154,7 +154,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
-          key: android-ndk-gpu-${{ runner.os }}-v2
+          key: android-ndk-gpu-${{ runner.os }}-v3
           restore-keys: |
             android-ndk-gpu-
       
@@ -499,7 +499,7 @@ jobs:
         with:
           path: |
             ios/libs/llama.xcframework
-          key: ios-framework-${{ runner.os }}-v1
+          key: ios-framework-${{ runner.os }}-v2
           restore-keys: |
             ios-framework-
       

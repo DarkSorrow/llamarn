@@ -134,10 +134,19 @@ int SystemUtils::getOptimalGpuLayers(struct llama_model* model,
 
     int64_t available_vram = 0;
 #if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__ANDROID__)
-    // Unified mobile budget: 15% of total RAM.
-    // 25%/20% was too aggressive — all layers on GPU causes GPU fence timeouts
-    // (Android mLastRetireFence) and memory pressure on smaller iOS devices.
-    available_vram = total_memory * 15 / 100;
+    // Tiered VRAM budget based on total device RAM:
+    //   ≥ 8 GB → 20%  (flagship: A17 Pro, M-series, Snapdragon 8 Gen 3, Dimensity 9300)
+    //   ≥ 6 GB → 18%  (upper-mid: A15/A16, Snapdragon 8 Gen 2)
+    //   < 6 GB → 15%  (budget/older: safe default to avoid GPU fence timeouts)
+    // The Metal matmul2d optimization (b9028) makes higher budgets viable on modern SoCs.
+    const int64_t GB = 1024LL * 1024 * 1024;
+    if (total_memory >= 8 * GB) {
+        available_vram = total_memory * 20 / 100;
+    } else if (total_memory >= 6 * GB) {
+        available_vram = total_memory * 18 / 100;
+    } else {
+        available_vram = total_memory * 15 / 100;
+    }
 #endif
 
     // Use 80% of the available budget, then deduct VRAM reserved for other models (e.g. mmproj).

@@ -419,6 +419,15 @@ const result = await model.completion({
 | `use_mmap` | `true` | Memory-mapped loading (faster startup) |
 | `use_mlock` | `false` | Lock model in RAM (prevents swapping) |
 
+`loadLlamaModelInfo` applies automatic device-tier VRAM budgeting when computing `optimalGpuLayers`:
+- **≥ 8 GB RAM** (flagship — A17 Pro, M-series, Snapdragon 8 Gen 3): 20% of total RAM
+- **≥ 6 GB RAM** (upper-mid — A15/A16, Snapdragon 8 Gen 2): 18% of total RAM
+- **< 6 GB RAM** (budget / older devices): 15% of total RAM (conservative, avoids GPU fence timeouts)
+
+Pass `n_gpu_layers: info.optimalGpuLayers` to `initLlama` and the right budget is applied automatically.
+
+**Android arm64-v8a:** CPU inference uses [KleidiAI](https://github.com/ARM-software/kleidiai) v1.24.0 microkernels (SVE-256, SME/SME2, optimized GEMM for Q4_0/Q8_0/Q4_K/Q5_K). The runtime selects the best available kernel based on CPU features — no configuration needed. Older devices fall back to baseline kernels.
+
 ### Cooperative Ingestion Parameters
 
 These control how the prompt is encoded into the KV cache — smaller chunks with OS yields prevent display fence timeouts on Android and UI starvation on CPU-only devices. Use the values from `loadLlamaModelInfo` directly.

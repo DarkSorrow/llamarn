@@ -14,7 +14,7 @@ import RNFS from 'react-native-fs';
 import { initLlama } from '@novastera-oss/llamarn';
 import type { LlamaModel } from '@novastera-oss/llamarn';
 
-const MODEL_FILENAME  = Platform.OS === 'android' ? 'Qwen3.5-0.8B-Q4_K_M.gguf' : 'Qwen3.5-2B-Q4_K_M.gguf';
+const MODEL_FILENAME  = 'Qwen3.5-2B-Q4_K_M.gguf';
 const MMPROJ_FILENAME = 'mmproj-F16.gguf';
 
 function getDefaultModelPath(): string {

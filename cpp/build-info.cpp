@@ -3,8 +3,8 @@
 #include <cstdio>
 #include <string>
 
-int LLAMA_BUILD_NUMBER = 8893;
-char const * LLAMA_COMMIT = "6217b4958";
+int LLAMA_BUILD_NUMBER = 9028;
+char const * LLAMA_COMMIT = "d6e7b033a";
 char const * LLAMA_COMPILER = "unknown";
 char const * LLAMA_BUILD_TARGET = "unknown";
 

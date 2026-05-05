@@ -588,7 +588,11 @@ build_for_abi() {
   if [ "$ENABLE_CPU_VARIANTS" = true ]; then
     # Enable building all CPU variants - runtime will select the best one for each device
     ARCH_FLAGS+=(-DGGML_CPU_ALL_VARIANTS=ON)
-    echo -e "${YELLOW}Building all CPU variants for optimal device-specific performance${NC}"
+    # KleidiAI: Arm's optimized AI microkernels (SVE-256, SME/SME2, Q4_0/Q8_0/Q4_K/Q5_K GEMM)
+    # Compiles into the existing armv8*.so variants — no new .so produced.
+    # Runtime CPU feature detection selects the best kernel; old devices fall back safely.
+    ARCH_FLAGS+=(-DGGML_CPU_KLEIDIAI=ON)
+    echo -e "${YELLOW}Building all CPU variants + KleidiAI for optimal ARM64 performance${NC}"
   fi
   
   if [ "$ABI_SUPPORTS_GPU" = true ] && [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
