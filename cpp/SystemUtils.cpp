@@ -128,6 +128,15 @@ int SystemUtils::getOptimalGpuLayers(struct llama_model* model,
     if (!model) {
         return 0;
     }
+#if defined(__APPLE__) && TARGET_OS_SIMULATOR
+    // The iOS Simulator uses MTLSimDriver, a stub Metal implementation that routes
+    // GPU buffer allocation through XPC shared memory (_xpc_shmem_create_with_prot).
+    // This XPC path is not available in the simulator process and triggers
+    // _xpc_api_misuse → SIGTRAP at the first llama_decode call with n_gpu_layers > 0.
+    // Always return 0 so the simulator runs fully on CPU.
+    (void)reserved_vram_bytes;
+    return 0;
+#endif
     const int n_layer = llama_model_n_layer(model);
     int64_t bytes_per_layer = (int64_t)llama_model_size(model) / n_layer;
     int64_t total_memory = getTotalPhysicalMemory();

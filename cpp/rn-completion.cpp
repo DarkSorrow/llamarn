@@ -175,6 +175,12 @@ CompletionResult run_completion(
         applyF(sampling_params.penalty_freq,    options.frequency_penalty);
         if (options.repeat_last_n >= 0) {
             sampling_params.penalty_last_n = options.repeat_last_n;
+        } else if (sampling_params.penalty_last_n == 64) {
+            // Neither the caller nor the GGUF set a repeat-penalty window.
+            // 64 (llama.cpp hardcoded default) is smaller than a typical paragraph (~80-200 tokens),
+            // so paragraph-level repetition passes through the penalty window undetected.
+            // Bump to 256 — covers ~2 average paragraphs with no user intent to override.
+            sampling_params.penalty_last_n = 256;
         }
         // Map JS sentinel -1 ("use default/random") to the model's configured seed.
         // Only override if the caller supplied an explicit non-negative seed.
@@ -425,6 +431,20 @@ CompletionResult run_completion(
         } // end: normal tokenize + encode path (mtmd_encoded_n_past < 0)
 
         llama_batch& gen_batch = rn_ctx->gen_batch;
+
+        // Cap n_predict to the space remaining in the context window.
+        // When callers set max_tokens far beyond n_ctx (e.g. 8192 tokens with n_ctx=2048),
+        // the model is forced into repeated context shifts. Each shift evicts mid-narrative
+        // KV entries; the model then loops on content still visible near the beginning —
+        // the primary mechanical cause of paragraph-level repetition in long generation.
+        // Unlimited generation (n_predict < 0) is never capped; EOS or stop strings end it.
+        if (state.n_predict > 0) {
+            const int available = state.n_ctx - state.n_past - 4;
+            if (available > 0 && state.n_predict > available) {
+                state.n_predict   = available;
+                state.n_remaining = available;
+            }
+        }
 
         // Whether context shift is available for this run.
         // Disabled for multimodal (image chunks have special positioning) and

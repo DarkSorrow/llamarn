@@ -270,20 +270,24 @@ const ModelLoader: React.FC<{
       const info = await loadLlamaModelInfo(modelPath);
       console.log('Model info:', info);
       
-      // Initialize with mode-specific settings
+      // Initialize with mode-specific settings.
+      // n_ctx: 4096 — minimum safe budget for thinking models + story-length responses.
+      // n_gpu_layers: from loadLlamaModelInfo — device-optimal, avoids the all-CPU repetition path.
+      // use_jinja: true — required for Qwen3 chat template to work correctly in all modes.
+      // reasoning_budget: 0 — disables the <think> block; reclaims 300-700 tokens of context
+      //   that would otherwise be consumed before any actual response content.
       const initParams: any = {
-        model: modelPath,
-        n_ctx: mode === 'embeddings' ? 512 : 2048,
-        n_batch: 128,
-        n_gpu_layers: 0,
-        use_mlock: true,
-        embedding: mode === 'embeddings',
+        model:            modelPath,
+        n_ctx:            mode === 'embeddings' ? 512 : 4096,
+        n_batch:          128,
+        n_gpu_layers:     info.optimalGpuLayers,
+        chunk_size:       info.suggestedChunkSize,
+        is_cpu_only:      info.isCpuOnly,
+        use_mlock:        true,
+        use_jinja:        mode !== 'embeddings',
+        reasoning_budget: 0,
+        embedding:        mode === 'embeddings',
       };
-
-      // Add mode-specific parameters
-      if (mode === 'tools') {
-        initParams.use_jinja = true;
-      }
 
       console.log('Initializing model with settings:', initParams);
       const modelInstance = await initLlama(initParams);
@@ -638,8 +642,6 @@ Rules:
         repeat_penalty: 1.1,
         repeat_last_n: 64,
         presence_penalty: 0.0,
-        token_rate_cap: 30,
-        token_buffer_size: 4,
       };
 
       const prompt_id = `prompt-${hashString(stableStringify(promptSignature))}`;
@@ -651,16 +653,14 @@ Rules:
       ];
 
       const optionsBase = {
-        temperature: baseConfig.temperature,
-        top_p: baseConfig.top_p,
-        top_k: baseConfig.top_k,
-        min_p: baseConfig.min_p,
-        repeat_penalty: baseConfig.repeat_penalty,
-        repeat_last_n: baseConfig.repeat_last_n,
+        temperature:      baseConfig.temperature,
+        top_p:            baseConfig.top_p,
+        top_k:            baseConfig.top_k,
+        min_p:            baseConfig.min_p,
+        repeat_penalty:   baseConfig.repeat_penalty,
+        repeat_last_n:    baseConfig.repeat_last_n,
         presence_penalty: baseConfig.presence_penalty,
-        token_rate_cap: baseConfig.token_rate_cap,
-        token_buffer_size: baseConfig.token_buffer_size,
-        max_tokens: 64,
+        max_tokens:       64,
         prompt_id,
         config_id,
       };
@@ -775,30 +775,24 @@ Rules:
     setError(null);
     setStreamingText('');
 
-    // Build sampling params: GGUF model defaults, then mode-specific overrides.
-    // JS-supplied values always win; omitting a field lets the native layer use initLlama defaults.
+    // Use GGUF-embedded sampling defaults where the model author set them,
+    // fall back to Qwen3-tuned values otherwise.
+    // Anti-repetition params (repeat_last_n, presence_penalty) are always
+    // set explicitly — never left to GGUF/llama.cpp defaults which are too small
+    // for paragraph-length generation.
     const sd = modelState.samplingDefaults;
-    const baseSampling = {
-      temperature:    sd.temperature    ?? 0.8,
-      top_p:          sd.top_p          ?? 0.9,
-      top_k:          sd.top_k          ?? 40,
-      min_p:          sd.min_p          ?? 0.05,
-      repeat_penalty: sd.repeat_penalty ?? 1.1,
-      repeat_last_n:  sd.repeat_last_n  ?? 64,
-    };
-    
+
     try {
       const completionOptions: any = {
-        messages: toModelMessages(currentMessages),
-        // Qwen3 thinking mode settings (better for complex reasoning about tool usage)
-        temperature: 0.6,
-        top_p: 0.95,
-        top_k: 20,
-        min_p: 0.05,          // filter very unlikely tokens — helps small models stay coherent
-        repeat_penalty: 1.1,  // primary anti-repetition: penalises recently-seen tokens
-        repeat_last_n: 64,    // window for repeat_penalty
-        presence_penalty: 0.0, // presence_penalty on top of repeat_penalty is redundant and can over-penalise
-        max_tokens: 8192,       // More space for thinking + response
+        messages:         toModelMessages(currentMessages),
+        temperature:      sd.temperature ?? 0.6,
+        top_p:            sd.top_p       ?? 0.95,
+        top_k:            sd.top_k       ?? 20,
+        min_p:            sd.min_p       ?? 0.05,
+        repeat_penalty:   1.15,  // slightly stronger than default; helps long-form coherence
+        repeat_last_n:    512,   // covers ~3 French paragraphs; default of 64 is far too narrow
+        presence_penalty: 0.1,   // global brake: penalises tokens seen anywhere in last 512
+        max_tokens:       2048,  // fits comfortably within n_ctx: 4096 with room for the prompt
         stop: ["</s>", "<|im_end|>", "<|eot_id|>", "<|eom_id|>"],
       };
       logHistoryDebug(currentMessages, 'Pre-completion history');
@@ -925,10 +919,10 @@ Rules:
             top_p: 0.95,
             top_k: 20,
             min_p: 0.05,
-            repeat_penalty: 1.1,
-            repeat_last_n: 64,
-            presence_penalty: 0.0,
-            max_tokens: 4096,
+            repeat_penalty:   1.15,
+            repeat_last_n:    512,
+            presence_penalty: 0.1,
+            max_tokens:       2048,
           },
           (data: { token: string }) => {
             handleStreamingToken(data.token);
