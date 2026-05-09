@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.4.1)
+cmake_minimum_required(VERSION 3.12)
 project(RNLlamaCpp)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -91,43 +91,16 @@ add_library(
 )
 
 # MTMD (Multimodal Toolkit) — vision and audio encoding
+# Match iOS RNLlamaCpp.podspec: tools/mtmd/*.cpp (excluding CLI) + tools/mtmd/models/*.cpp
 set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
+file(GLOB MTMD_ROOT_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/*.cpp")
+list(REMOVE_ITEM MTMD_ROOT_SOURCES "${MTMD_DIR}/mtmd-cli.cpp")
+file(GLOB MTMD_MODEL_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/models/*.cpp")
 add_library(
     mtmd
     STATIC
-    ${MTMD_DIR}/clip.cpp
-    ${MTMD_DIR}/mtmd.cpp
-    ${MTMD_DIR}/mtmd-helper.cpp
-    ${MTMD_DIR}/mtmd-audio.cpp
-    ${MTMD_DIR}/mtmd-image.cpp
-    ${MTMD_DIR}/deprecation-warning.cpp
-    ${MTMD_DIR}/models/cogvlm.cpp
-    ${MTMD_DIR}/models/conformer.cpp
-    ${MTMD_DIR}/models/deepseekocr.cpp
-    ${MTMD_DIR}/models/dotsocr.cpp
-    ${MTMD_DIR}/models/gemma4a.cpp
-    ${MTMD_DIR}/models/gemma4v.cpp
-    ${MTMD_DIR}/models/glm4v.cpp
-    ${MTMD_DIR}/models/hunyuanocr.cpp
-    ${MTMD_DIR}/models/internvl.cpp
-    ${MTMD_DIR}/models/kimik25.cpp
-    ${MTMD_DIR}/models/kimivl.cpp
-    ${MTMD_DIR}/models/llama4.cpp
-    ${MTMD_DIR}/models/llava.cpp
-    ${MTMD_DIR}/models/minicpmv.cpp
-    ${MTMD_DIR}/models/mobilenetv5.cpp
-    ${MTMD_DIR}/models/nemotron-v2-vl.cpp
-    ${MTMD_DIR}/models/paddleocr.cpp
-    ${MTMD_DIR}/models/pixtral.cpp
-    ${MTMD_DIR}/models/qwen2vl.cpp
-    ${MTMD_DIR}/models/qwen3a.cpp
-    ${MTMD_DIR}/models/qwen3vl.cpp
-    ${MTMD_DIR}/models/siglip.cpp
-    ${MTMD_DIR}/models/step3vl.cpp
-    ${MTMD_DIR}/models/yasa2.cpp
-    ${MTMD_DIR}/models/whisper-enc.cpp
-    ${MTMD_DIR}/models/youtuvl.cpp
-    # Our multimodal bridge helpers
+    ${MTMD_ROOT_SOURCES}
+    ${MTMD_MODEL_SOURCES}
     ${CPP_DIR}/rn-multimodal.cpp
 )
 
