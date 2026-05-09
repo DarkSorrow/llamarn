@@ -31,14 +31,29 @@ fi
 TARBALL_PATH="${PACKED_TARBALLS[0]}"
 tar -tf "$TARBALL_PATH" >"$TMP_LIST_FILE"
 
+# android/CMakeLists.txt uses CMake file(GLOB ...) — those patterns are not tarball paths.
+# Mirror the same rules: tools/mtmd/*.cpp except mtmd-cli.cpp, plus tools/mtmd/models/*.cpp
+# (see RNLlamaCpp.podspec + mtmd target in android/CMakeLists.txt).
+collect_mtmd_source_paths() {
+  local mtmd_dir="${ROOT_DIR}/cpp/llama.cpp/tools/mtmd"
+  shopt -s nullglob
+  local f
+  for f in "${mtmd_dir}"/*.cpp; do
+    case "$(basename "$f")" in
+      mtmd-cli.cpp) continue ;;
+    esac
+    printf '%s\n' "${f#"${ROOT_DIR}/"}"
+  done
+  for f in "${mtmd_dir}/models"/*.cpp; do
+    printf '%s\n' "${f#"${ROOT_DIR}/"}"
+  done
+  shopt -u nullglob
+}
+
 MTMD_PATHS=()
 while IFS= read -r mtmd_path; do
-  MTMD_PATHS+=("$mtmd_path")
-done < <(
-  grep -o '\${MTMD_DIR}/[^ )]*' android/CMakeLists.txt \
-    | sed 's#\${MTMD_DIR}/#cpp/llama.cpp/tools/mtmd/#' \
-    | sort -u
-)
+  [[ -n "$mtmd_path" ]] && MTMD_PATHS+=("$mtmd_path")
+done < <(collect_mtmd_source_paths | sort -u)
 
 if [ "${#MTMD_PATHS[@]}" -eq 0 ]; then
   echo "ERROR: Could not extract MTMD source paths from android/CMakeLists.txt."
