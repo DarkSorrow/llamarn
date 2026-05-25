@@ -2451,7 +2451,7 @@ PODS:
     - SocketRocket
   - RNFS (2.20.0):
     - React-Core
-  - RNLlamaCpp (0.6.10):
+  - RNLlamaCpp (0.8.11):
     - boost
     - DoubleConversion
     - fast_float
@@ -2808,10 +2808,10 @@ SPEC CHECKSUMS:
   ReactCodegen: a34bfa4002b73eb038f93456b711a9fad8133a17
   ReactCommon: 0f7a365837f2dbec4342e458c1c1d3876683f492
   RNFS: 4ac0f0ea233904cb798630b3c077808c06931688
-  RNLlamaCpp: 9d2ef773303a83314a5ca0490ceb17c63725fef9
+  RNLlamaCpp: 7bbbd050de55dca9fb7ffc24d3103c1fbef25794
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
   Yoga: 19371ad8ad69b080bfe3bd28bb8ddf6aa0aa0eac
 
-PODFILE CHECKSUM: 1ef622cd108b56048bed528fe1f353b5da1c4468
+PODFILE CHECKSUM: 94901485a6c63fa2ca3c3fff529262627698583b
 
 COCOAPODS: 1.15.2

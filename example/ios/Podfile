@@ -39,5 +39,17 @@ target 'llamarnexample' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # fmt 11.x uses consteval for compile-time format string checking. Apple Clang 21
+    # (Xcode 26) rejects this even in C++20 mode. Compiling fmt in C++17 mode makes
+    # consteval unavailable at the language level, so FMT_CONSTEVAL falls back to
+    # constexpr and all format_to/FMT_STRING calls compile cleanly.
+    installer.pods_project.targets.each do |target|
+      if target.name == 'fmt'
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+        end
+      end
+    end
   end
 end
