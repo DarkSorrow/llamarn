@@ -399,6 +399,7 @@ CMAKE_ARGS=(
   -DLLAMA_BUILD_SERVER=OFF
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF
+  -DLLAMA_BUILD_APP=OFF
   -DGGML_OPENMP=OFF # Ensure OpenMP is disabled for prebuilts (correct flag for ggml)
   -DLLAMA_CLBLAST=ON
   -DGGML_NATIVE=OFF  # Disable native CPU optimizations for cross-compiling

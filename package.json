@@ -1,6 +1,6 @@
 {
   "name": "@novastera-oss/llamarn",
-  "version": "0.6.10",
+  "version": "0.8.11",
   "description": "React Native library for on-device LLM inference using llama.cpp. Part of Novastera CRM/ERP platform ecosystem.",
   "source": "./src/index.tsx",
   "main": "./lib/module/index.js",
