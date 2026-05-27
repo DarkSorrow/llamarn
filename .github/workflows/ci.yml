@@ -175,11 +175,14 @@ jobs:
           mkdir -p prebuilt/libs/external/opencl
           mkdir -p prebuilt/third_party/Vulkan-Headers
           
-          # Skip header preparation if we have a cache hit
+          # Skip header preparation if we have a cache hit with all required artifacts.
+          # IMPORTANT: OpenCL headers live at opencl/include/CL (not opencl/CL).
+          # Also require the staged libOpenCL.so so the GGML GPU backend build can link against it.
           if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && \
-             [ -d "prebuilt/libs/external/opencl/CL" ] && \
+             [ -d "prebuilt/libs/external/opencl/include/CL" ] && \
+             [ -f "prebuilt/gpu/arm64-v8a/libOpenCL.so" ] && \
              [ -d "prebuilt/third_party/Vulkan-Headers/include/vulkan" ]; then
-            echo "✅ Using cached GPU headers"
+            echo "✅ Using cached GPU headers and libOpenCL.so"
           else
             # Prepare GPU backend headers (OpenCL and Vulkan)
             # NOTE: This only prepares headers for build-time. We do NOT build system loaders.
@@ -189,14 +192,24 @@ jobs:
             export GGML_VK_DISABLE_COOPMAT2=1
             scripts/build_android_gpu_backend.sh --abi=all --clean
           fi
-          
+
           # Verify headers were prepared
-          if [ -d "prebuilt/libs/external/opencl/CL" ]; then
+          if [ -d "prebuilt/libs/external/opencl/include/CL" ]; then
             echo "✅ OpenCL headers prepared"
-            ls -la prebuilt/libs/external/opencl/CL/ | head -5
+            ls -la prebuilt/libs/external/opencl/include/CL/ | head -5
           else
             echo "⚠️ OpenCL headers not found (may be disabled)"
           fi
+
+          # Verify the OpenCL ICD loader was staged (required for linking libggml-opencl.so)
+          for ABI in arm64-v8a x86_64; do
+            if [ -f "prebuilt/gpu/$ABI/libOpenCL.so" ]; then
+              echo "✅ libOpenCL.so staged for $ABI"
+            else
+              echo "❌ libOpenCL.so missing for $ABI — build_android_gpu_backend.sh ICD loader build failed"
+              exit 1
+            fi
+          done
           
           if [ -d "prebuilt/third_party/Vulkan-Headers/include/vulkan" ]; then
             echo "✅ Vulkan headers prepared"

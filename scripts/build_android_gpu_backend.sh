@@ -375,16 +375,33 @@ if [ "$BUILD_OPENCL" = true ]; then
       mkdir -p "$PREBUILT_GPU_DIR/$ABI"
       cp "libOpenCL.so" "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so"
       echo -e "${GREEN}Staged libOpenCL.so at $PREBUILT_GPU_DIR/$ABI/libOpenCL.so${NC}"
-      
+
       # Create flag file to indicate OpenCL is available for building
       touch "$PREBUILT_GPU_DIR/$ABI/.opencl_enabled"
     else
-      echo -e "${RED}libOpenCL.so not found in build output for $ABI${NC}"
+      echo -e "${RED}libOpenCL.so not found in build output for $ABI — ICD loader build failed${NC}"
+      popd
+      exit 1
     fi
-    
+
     popd
   done
-  
+
+  # Verify staged libs for all 64-bit ABIs (the 32-bit ones are skipped intentionally)
+  OPENCL_STAGED_OK=true
+  for ABI in "${ABIS[@]}"; do
+    if [ "$ABI" = "armeabi-v7a" ] || [ "$ABI" = "x86" ]; then
+      continue
+    fi
+    if [ ! -f "$PREBUILT_GPU_DIR/$ABI/libOpenCL.so" ]; then
+      echo -e "${RED}libOpenCL.so missing for $ABI after ICD loader build${NC}"
+      OPENCL_STAGED_OK=false
+    fi
+  done
+  if [ "$OPENCL_STAGED_OK" = false ]; then
+    exit 1
+  fi
+
   echo -e "${GREEN}OpenCL headers and ICD loader prepared${NC}"
   echo -e "${YELLOW}Note: libOpenCL.so is staged under prebuilt/gpu for BUILD-TIME linking only.${NC}"
   echo -e "${YELLOW}      We do NOT ship it in the APK - the system will provide it at runtime.${NC}"
