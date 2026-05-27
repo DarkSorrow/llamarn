@@ -307,11 +307,25 @@ if [ "$BUILD_OPENCL" = true ]; then
   cp -r "$OPENCL_HEADERS_DIR/CL/"* "$OPENCL_INCLUDE_DIR/CL/"
   
   # Build OpenCL ICD Loader for each ABI (as fallback for devices without system libOpenCL.so)
+  # Pin to the same tag as the headers so the loader and headers stay in sync.
+  # Cloning unpinned HEAD risks pulling OpenCL 3.1+ changes (pfn_clDeinitLayer etc.)
+  # that are ahead of our 3.0 headers and cause build failures.
   if [ ! -d "$OPENCL_LOADER_DIR" ]; then
-    echo -e "${YELLOW}Cloning OpenCL-ICD-Loader...${NC}"
-    git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader "$OPENCL_LOADER_DIR"
+    echo -e "${YELLOW}Cloning OpenCL-ICD-Loader (tag: $OPENCL_ICD_LOADER_TAG)...${NC}"
+    git clone --depth 1 --branch "$OPENCL_ICD_LOADER_TAG" https://github.com/KhronosGroup/OpenCL-ICD-Loader "$OPENCL_LOADER_DIR" || {
+      echo -e "${YELLOW}Tag $OPENCL_ICD_LOADER_TAG not found, cloning latest...${NC}"
+      git clone --depth 1 https://github.com/KhronosGroup/OpenCL-ICD-Loader "$OPENCL_LOADER_DIR"
+    }
   else
-    echo -e "${YELLOW}OpenCL-ICD-Loader already cloned, using existing copy${NC}"
+    echo -e "${YELLOW}OpenCL-ICD-Loader already cloned, checking version...${NC}"
+    pushd "$OPENCL_LOADER_DIR" >/dev/null
+    CURRENT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "unknown")
+    if [ "$CURRENT_TAG" != "$OPENCL_ICD_LOADER_TAG" ]; then
+      echo -e "${YELLOW}Updating OpenCL-ICD-Loader to tag $OPENCL_ICD_LOADER_TAG...${NC}"
+      git fetch --depth 1 origin tag "$OPENCL_ICD_LOADER_TAG" 2>/dev/null || git fetch --depth 1 origin
+      git checkout "$OPENCL_ICD_LOADER_TAG" 2>/dev/null || echo -e "${YELLOW}Using current version${NC}"
+    fi
+    popd >/dev/null
   fi
   
   for ABI in "${ABIS[@]}"; do

@@ -22,6 +22,10 @@ OPENCL_VERSION="3.0"
 # This is the version used in llama.cpp CI builds
 # Check: https://github.com/KhronosGroup/OpenCL-Headers/releases
 OPENCL_HEADERS_TAG="v2025.07.22"  # Matches llama.cpp CI, supports OpenCL 3.0.19
+# OpenCL ICD Loader: pin to the same date tag as the headers so the loader and headers
+# stay in sync.  Cloning unpinned HEAD risks pulling in OpenCL 3.1+ changes that are
+# ahead of the 3.0 headers, causing build failures with pfn_clDeinitLayer etc.
+OPENCL_ICD_LOADER_TAG="v2025.07.22"
 
 # Android SDK/NDK configuration
 # Using NDK r28c (stable) to match llama.cpp Hexagon backend requirements
@@ -36,6 +40,7 @@ export VULKAN_SDK_VERSION
 export VULKAN_HEADERS_TAG
 export OPENCL_VERSION
 export OPENCL_HEADERS_TAG
+export OPENCL_ICD_LOADER_TAG
 export NDK_VERSION
 export ANDROID_MIN_SDK
 export ANDROID_TARGET_SDK

@@ -154,7 +154,7 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
-          key: android-ndk-gpu-${{ runner.os }}-v3
+          key: android-ndk-gpu-${{ runner.os }}-v4
           restore-keys: |
             android-ndk-gpu-
       
