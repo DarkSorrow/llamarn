@@ -177,10 +177,12 @@ jobs:
           
           # Skip header preparation if we have a cache hit with all required artifacts.
           # IMPORTANT: OpenCL headers live at opencl/include/CL (not opencl/CL).
-          # Also require the staged libOpenCL.so so the GGML GPU backend build can link against it.
+          # Require libOpenCL.so for BOTH 64-bit ABIs — the ICD loader is built for arm64-v8a
+          # and x86_64 (32-bit ABIs are skipped intentionally in build_android_gpu_backend.sh).
           if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && \
              [ -d "prebuilt/libs/external/opencl/include/CL" ] && \
              [ -f "prebuilt/gpu/arm64-v8a/libOpenCL.so" ] && \
+             [ -f "prebuilt/gpu/x86_64/libOpenCL.so" ] && \
              [ -d "prebuilt/third_party/Vulkan-Headers/include/vulkan" ]; then
             echo "✅ Using cached GPU headers and libOpenCL.so"
           else
@@ -236,33 +238,50 @@ jobs:
 
       - name: Build GGML GPU Backend Libraries
         run: |
-          # Get Android NDK path
-          NDK_PATH=$ANDROID_HOME/ndk/28.2.13676358
-          
-          # Build GGML GPU backend libraries (libggml-opencl.so and libggml-vulkan.so)
-          # These are separate from the main llama.cpp libraries and will be loaded dynamically
-          echo "Building GGML GPU backend libraries..."
           chmod +x scripts/build_android_ggml_gpu_backends.sh
           export GGML_VK_DISABLE_COOPMAT=1
           export GGML_VK_DISABLE_COOPMAT2=1
-          scripts/build_android_ggml_gpu_backends.sh --abi=all --clean
-          
-          # Verify GGML GPU backend libraries were built
-          echo "Verifying GGML GPU backend libraries..."
+
+          # Skip the (slow) rebuild when the cache already has everything we need:
+          #   - libggml-opencl.so + libggml-vulkan.so for both 64-bit ABIs
+          #   - SPIRV-HeadersConfig.cmake (needed by build_android_external.sh's find_package)
+          # build_android_external.sh will self-generate the cmake config as a fallback, but
+          # having it in the cache avoids any risk of it being stale.
+          if [ "${{ steps.cache-android-libs.outputs.cache-hit }}" == "true" ] && \
+             [ -f "prebuilt/gpu/arm64-v8a/libggml-opencl.so" ] && \
+             [ -f "prebuilt/gpu/arm64-v8a/libggml-vulkan.so" ] && \
+             [ -f "prebuilt/gpu/x86_64/libggml-opencl.so" ] && \
+             [ -f "prebuilt/gpu/x86_64/libggml-vulkan.so" ] && \
+             [ -f "prebuilt/third_party/spirv-cmake/SPIRV-HeadersConfig.cmake" ]; then
+            echo "✅ Using cached GGML GPU backend libraries and SPIRV cmake config"
+          else
+            echo "Building GGML GPU backend libraries..."
+            scripts/build_android_ggml_gpu_backends.sh --abi=all --clean
+          fi
+
+          # Hard-fail verification: both backends are explicitly enabled so missing libs = broken build
           for ABI in arm64-v8a x86_64; do
             if [ -f "prebuilt/gpu/$ABI/libggml-opencl.so" ]; then
-              echo "✅ libggml-opencl.so built for $ABI"
-              ls -lh prebuilt/gpu/$ABI/libggml-opencl.so
+              echo "✅ libggml-opencl.so built for $ABI ($(ls -lh prebuilt/gpu/$ABI/libggml-opencl.so | awk '{print $5}'))"
             else
-              echo "⚠️ libggml-opencl.so not found for $ABI (may be disabled)"
+              echo "❌ libggml-opencl.so not found for $ABI"
+              exit 1
             fi
             if [ -f "prebuilt/gpu/$ABI/libggml-vulkan.so" ]; then
-              echo "✅ libggml-vulkan.so built for $ABI"
-              ls -lh prebuilt/gpu/$ABI/libggml-vulkan.so
+              echo "✅ libggml-vulkan.so built for $ABI ($(ls -lh prebuilt/gpu/$ABI/libggml-vulkan.so | awk '{print $5}'))"
             else
-              echo "⚠️ libggml-vulkan.so not found for $ABI (may be disabled)"
+              echo "❌ libggml-vulkan.so not found for $ABI"
+              exit 1
             fi
           done
+
+          # Verify SPIRV-HeadersConfig.cmake was generated (required by build_android_external.sh)
+          if [ -f "prebuilt/third_party/spirv-cmake/SPIRV-HeadersConfig.cmake" ]; then
+            echo "✅ SPIRV-Headers CMake config present"
+          else
+            echo "❌ SPIRV-HeadersConfig.cmake missing — find_package(SPIRV-Headers) will fail in the next step"
+            exit 1
+          fi
 
       - name: Setup Hexagon SDK (for Snapdragon devices)
         id: setup-hexagon
@@ -430,33 +449,40 @@ jobs:
               fi
             fi
             
-            # Verify GGML GPU backends (only for 64-bit ABIs)
+            # Verify GGML GPU backends (required for 64-bit ABIs — built and hard-verified above)
             if [ "$ABI" = "arm64-v8a" ] || [ "$ABI" = "x86_64" ]; then
               if [ -f "android/src/main/jniLibs/$ABI/libggml-opencl.so" ]; then
                 echo "✅ libggml-opencl.so present"
               else
-                echo "⚠️  libggml-opencl.so not found (optional - GPU backend)"
+                echo "❌ ERROR: libggml-opencl.so missing from jniLibs/$ABI — copy from prebuilt/gpu failed"
+                VERIFICATION_FAILED=1
               fi
               if [ -f "android/src/main/jniLibs/$ABI/libggml-vulkan.so" ]; then
                 echo "✅ libggml-vulkan.so present"
               else
-                echo "⚠️  libggml-vulkan.so not found (optional - GPU backend)"
+                echo "❌ ERROR: libggml-vulkan.so missing from jniLibs/$ABI — copy from prebuilt/gpu failed"
+                VERIFICATION_FAILED=1
               fi
             fi
             
             # Verify Hexagon backend (arm64-v8a only)
+            # Required when SDK was available (build was invoked with --hexagon); informational otherwise
             if [ "$ABI" = "arm64-v8a" ]; then
               if [ -f "android/src/main/jniLibs/$ABI/libggml-hexagon.so" ]; then
                 echo "✅ libggml-hexagon.so present"
-                # Check for HTP libraries
                 HTP_COUNT=$(ls -1 android/src/main/jniLibs/$ABI/libggml-htp-*.so 2>/dev/null | wc -l)
                 if [ "$HTP_COUNT" -gt 0 ]; then
                   echo "✅ $HTP_COUNT Hexagon HTP libraries present"
+                  ls -1 android/src/main/jniLibs/$ABI/libggml-htp-*.so | sed 's/.*\//  - /'
                 else
-                  echo "⚠️  Hexagon HTP libraries not found (Hexagon backend may not work)"
+                  echo "❌ ERROR: libggml-hexagon.so present but no HTP libraries found (Hexagon will not work)"
+                  VERIFICATION_FAILED=1
                 fi
+              elif [ "${{ steps.setup-hexagon.outputs.hexagon_available }}" = "true" ]; then
+                echo "❌ ERROR: libggml-hexagon.so missing — Hexagon SDK was available and build was invoked with --hexagon"
+                VERIFICATION_FAILED=1
               else
-                echo "ℹ️  libggml-hexagon.so not present (optional - requires HEXAGON_SDK_ROOT to build)"
+                echo "ℹ️  libggml-hexagon.so not built (Hexagon SDK not available in this CI run)"
               fi
             fi
             
