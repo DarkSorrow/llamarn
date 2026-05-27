@@ -176,6 +176,9 @@ VULKAN_INCLUDE_LOCAL="$VULKAN_HEADERS_DIR/include"
 # can pass it to the NDK cross-compiler without leaking host system headers (/usr/include
 # contains Linux-specific headers like bits/wordsize.h that break Android builds).
 SPIRV_STAGED_DIR="$PREBUILT_DIR/third_party/spirv-staged-include"
+# Directory that will contain SPIRV-HeadersConfig.cmake for find_package(SPIRV-Headers CONFIG REQUIRED).
+# apt install spirv-headers provides the header files but no CMake package config; we generate one.
+SPIRV_CMAKE_DIR="$PREBUILT_DIR/third_party/spirv-cmake"
 if [ "$BUILD_VULKAN" = true ]; then
   if [ -f "$VULKAN_INCLUDE_LOCAL/vulkan/vulkan.hpp" ]; then
     VULKAN_AVAILABLE=true
@@ -197,6 +200,20 @@ if [ "$BUILD_VULKAN" = true ]; then
     mkdir -p "$SPIRV_STAGED_DIR/spirv"
     cp -r "$SPIRV_SRC/." "$SPIRV_STAGED_DIR/spirv/"
     echo -e "${GREEN}SPIRV headers staged at $SPIRV_STAGED_DIR (source: $SPIRV_SRC)${NC}"
+
+    # Generate a minimal SPIRV-HeadersConfig.cmake so that
+    # find_package(SPIRV-Headers CONFIG REQUIRED) in ggml-vulkan/CMakeLists.txt succeeds.
+    # The apt package installs headers but not CMake config files, so we create one here.
+    mkdir -p "$SPIRV_CMAKE_DIR"
+    cat > "$SPIRV_CMAKE_DIR/SPIRV-HeadersConfig.cmake" << SPIRVCMAKE
+set(SPIRV-Headers_FOUND TRUE)
+if(NOT TARGET SPIRV-Headers::SPIRV-Headers)
+  add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)
+  set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${SPIRV_STAGED_DIR}")
+endif()
+SPIRVCMAKE
+    echo -e "${GREEN}SPIRV-Headers CMake config generated at $SPIRV_CMAKE_DIR${NC}"
   else
     echo -e "${RED}SPIRV headers not found. Install with: sudo apt-get install spirv-headers${NC}"
     VULKAN_AVAILABLE=false
@@ -370,6 +387,9 @@ build_for_abi() {
     # Pass only the isolated spirv/ tree — never /usr/include which leaks host headers
     # into the NDK cross-compiler and breaks bits/wordsize.h resolution.
     GPU_CMAKE_FLAGS+=(-DCMAKE_CXX_FLAGS="-I${SPIRV_STAGED_DIR}")
+    # Point CMake at the generated SPIRV-HeadersConfig.cmake so that
+    # find_package(SPIRV-Headers CONFIG REQUIRED) in ggml-vulkan/CMakeLists.txt succeeds.
+    GPU_CMAKE_FLAGS+=(-DSPIRV-Headers_DIR="$SPIRV_CMAKE_DIR")
     
     # Explicitly set Vulkan library path to use the correct API level
     # Use the highest available API level for Vulkan (vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+)
