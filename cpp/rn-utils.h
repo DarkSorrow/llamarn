@@ -39,13 +39,6 @@ enum rn_error_type {
     RN_ERROR_GENERAL         // General errors
 };
 
-// Forward declaration
-struct common_sampler;
-
-// These functions are defined in common/sampling.cpp, only declare them here
-common_sampler* common_sampler_init(const llama_model* model, const common_params_sampling& params);
-void common_sampler_free(common_sampler* sampler);
-
 // CompletionOptions struct to represent parameters for completion requests
 //
 // Sampling fields use sentinel values to distinguish "not set by caller" from "explicitly set":

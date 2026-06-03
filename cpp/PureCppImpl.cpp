@@ -280,7 +280,10 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
       auto selfPtr = shared_from_this();
       
       // Launch background thread for model info loading
-      std::thread([selfPtr, path, mmproj_path, resolve, reject, runtimePtr, invoker]() {
+      std::thread([selfPtr, path, mmproj_path,
+                   resolve = std::move(resolve),
+                   reject  = std::move(reject),
+                   runtimePtr, invoker]() mutable {
         try {
           ensure_backends_loaded();
 
@@ -410,7 +413,8 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Free the model
           llama_model_free(model);
 
-          safe_invoke(invoker, [resolve, reject, n_params, n_vocab, n_context, n_embd, description,
+          safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject),
+                                n_params, n_vocab, n_context, n_embd, description,
                                 gpuSupported, optimalGpuLayers, quantType, n_layers,
                                 model_size_bytes, architecture,
                                 available_memory_mb, estimated_vram_mb,
@@ -464,11 +468,11 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
 
         } catch (const std::exception& e) {
           std::string msg = e.what();
-          safe_invoke(invoker, [reject, msg, runtimePtr]() {
+          safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject), msg, runtimePtr]() {
             try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, msg)); } catch (...) {}
           });
         } catch (...) {
-          safe_invoke(invoker, [reject, runtimePtr]() {
+          safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject), runtimePtr]() {
             try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "loadLlamaModelInfo failed")); } catch (...) {}
           });
         }
@@ -863,19 +867,22 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
       auto selfPtr = shared_from_this();
 
       // Launch background thread for model initialization
-      std::thread([selfPtr, p, resolve, reject, runtimePtr, invoker]() {
+      std::thread([selfPtr, p,
+                   resolve = std::move(resolve),
+                   reject  = std::move(reject),
+                   runtimePtr, invoker]() mutable {
         // ── Phase 1: all heavy work — no JSI, no lock ──────────────────────
         ModelInitResult r;
         try {
           r = do_init_llama(*p);
         } catch (const std::exception& e) {
           std::string msg = e.what();
-          safe_invoke(invoker, [reject, msg, runtimePtr]() {
+          safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject), msg, runtimePtr]() {
             try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, msg)); } catch (...) {}
           });
           return;
         } catch (...) {
-          safe_invoke(invoker, [reject, runtimePtr]() {
+          safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject), runtimePtr]() {
             try { reject->call(*runtimePtr, jsi::String::createFromUtf8(*runtimePtr, "initLlama failed")); } catch (...) {}
           });
           return;
@@ -891,7 +898,10 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
         }
 
         // ── Phase 3: resolve Promise on JS thread ───────────────────────────
-        safe_invoke(invoker, [selfPtr, resolve, reject, runtimePtr]() {
+        safe_invoke(invoker, [selfPtr,
+                              resolve = std::move(resolve),
+                              reject  = std::move(reject),
+                              runtimePtr]() {
           try {
             jsi::Object modelObject = selfPtr->createModelObject(*runtimePtr, selfPtr->rn_ctx_.get());
             resolve->call(*runtimePtr, modelObject);
