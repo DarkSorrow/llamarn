@@ -713,7 +713,7 @@ CompletionResult run_chat_completion(
         bool has_media = false;
         if (rn_ctx->multimodal_loaded && rn_ctx->mtmd_ctx &&
             !messages_json.is_null() && messages_json.is_array()) {
-            media_items = extract_media_from_messages(messages_json);
+            media_items = extract_media_from_messages(messages_json, mtmd_get_marker(rn_ctx->mtmd_ctx));
             has_media = !media_items.empty();
         }
         const json& effective_messages = has_media ? messages_json : options.messages;
