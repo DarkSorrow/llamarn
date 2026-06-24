@@ -690,6 +690,126 @@ CompletionResult run_completion(
     }
 }
 
+// Counts media (image/audio) chunks in a tokenized mtmd input. Used to decide
+// whether the batched-encode path below is worth taking.
+static size_t count_media_chunks(const mtmd_input_chunks* chunks) {
+    size_t n = 0;
+    size_t n_chunks = mtmd_input_chunks_size(chunks);
+    for (size_t i = 0; i < n_chunks; i++) {
+        auto type = mtmd_input_chunk_get_type(mtmd_input_chunks_get(chunks, i));
+        if (type == MTMD_INPUT_CHUNK_TYPE_IMAGE || type == MTMD_INPUT_CHUNK_TYPE_AUDIO) {
+            n++;
+        }
+    }
+    return n;
+}
+
+// Like mtmd_helper_eval_chunks, but batches consecutive runs of >=2 media
+// chunks into a single encoder pass via the mtmd_batch_* API (new in
+// llama.cpp b9777) instead of encoding each image/audio chunk one at a time.
+// Text chunks, lone media chunks, and any run the encoder backend can't
+// batch (mtmd_batch_add_chunk failure — e.g. the underlying clip backend
+// doesn't support batching) fall back to the existing single-chunk path
+// (mtmd_helper_eval_chunk_single), so behavior for the dominant 0-or-1-image
+// case is unchanged. LLM decode of each chunk's embeddings stays strictly
+// sequential — only the vision/audio encoder forward pass is batched.
+//
+// Only called when count_media_chunks(chunks) >= 2; the call site keeps the
+// original mtmd_helper_eval_chunks call for everything else.
+static int32_t mtmd_eval_chunks_batched(
+        mtmd_context* mtmd_ctx,
+        llama_context* lctx,
+        const mtmd_input_chunks* chunks,
+        llama_pos n_past,
+        llama_seq_id seq_id,
+        int32_t n_batch,
+        bool logits_last,
+        llama_pos* new_n_past) {
+    size_t n_chunks = mtmd_input_chunks_size(chunks);
+    if (n_chunks == 0) {
+        *new_n_past = n_past;
+        return 0;
+    }
+
+    auto batch_deleter = [](mtmd_batch* b) { if (b) mtmd_batch_free(b); };
+
+    size_t i = 0;
+    while (i < n_chunks) {
+        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, i);
+        if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            bool last = (i == n_chunks - 1) && logits_last;
+            int32_t res = mtmd_helper_eval_chunk_single(mtmd_ctx, lctx, chunk, n_past, seq_id, n_batch, last, &n_past);
+            if (res != 0) {
+                *new_n_past = n_past;
+                return res;
+            }
+            i++;
+            continue;
+        }
+
+        // Gather a run of consecutive media chunks.
+        size_t j = i + 1;
+        while (j < n_chunks &&
+               mtmd_input_chunk_get_type(mtmd_input_chunks_get(chunks, j)) != MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            j++;
+        }
+        size_t run_len = j - i;
+
+        bool batch_ready = false;
+        std::unique_ptr<mtmd_batch, decltype(batch_deleter)> batch(nullptr, batch_deleter);
+        if (run_len >= 2) {
+            batch.reset(mtmd_batch_init(mtmd_ctx));
+            batch_ready = true;
+            for (size_t k = i; k < j && batch_ready; k++) {
+                batch_ready = (mtmd_batch_add_chunk(batch.get(), mtmd_input_chunks_get(chunks, k)) == 0);
+            }
+            if (batch_ready) {
+                batch_ready = (mtmd_batch_encode(batch.get()) == 0);
+            }
+        }
+
+        if (batch_ready) {
+            // Encoding succeeded for the whole run — n_past hasn't moved yet,
+            // so a decode failure from here on is treated the same as a
+            // single-chunk decode failure: fatal, no retry (re-decoding would
+            // double-advance n_past for already-decoded chunks in this run).
+            for (size_t k = i; k < j; k++) {
+                const mtmd_input_chunk* mchunk = mtmd_input_chunks_get(chunks, k);
+                float* embd = mtmd_batch_get_output_embd(batch.get(), mchunk);
+                if (!embd) {
+                    *new_n_past = n_past;
+                    return 1;
+                }
+                int32_t res = mtmd_helper_decode_image_chunk(
+                    mtmd_ctx, lctx, mchunk, embd, n_past, seq_id, n_batch, &n_past, nullptr, nullptr);
+                if (res != 0) {
+                    *new_n_past = n_past;
+                    return res;
+                }
+            }
+            i = j;
+            continue;
+        }
+
+        // Couldn't batch this run (lone chunk, or the backend rejected
+        // batching before any decode happened) — fall back to encoding each
+        // chunk one at a time, identical to mtmd_helper_eval_chunks.
+        for (size_t k = i; k < j; k++) {
+            const mtmd_input_chunk* mchunk = mtmd_input_chunks_get(chunks, k);
+            bool last = (k == n_chunks - 1) && logits_last;
+            int32_t res = mtmd_helper_eval_chunk_single(mtmd_ctx, lctx, mchunk, n_past, seq_id, n_batch, last, &n_past);
+            if (res != 0) {
+                *new_n_past = n_past;
+                return res;
+            }
+        }
+        i = j;
+    }
+
+    *new_n_past = n_past;
+    return 0;
+}
+
 CompletionResult run_chat_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
@@ -1043,10 +1163,18 @@ CompletionResult run_chat_completion(
                 return result;
             }
 
+            // Multiple images/audio chunks: batch their encoder passes
+            // together (mtmd_eval_chunks_batched). Single image (the
+            // dominant case) or text-only: keep the existing, unmodified
+            // upstream helper.
             llama_pos new_n_past = 0;
-            int32_t eval_res = mtmd_helper_eval_chunks(
-                rn_ctx->mtmd_ctx, rn_ctx->ctx, chunks,
-                0, 0, rn_ctx->params.n_batch, true, &new_n_past);
+            int32_t eval_res = (count_media_chunks(chunks) >= 2)
+                ? mtmd_eval_chunks_batched(
+                    rn_ctx->mtmd_ctx, rn_ctx->ctx, chunks,
+                    0, 0, rn_ctx->params.n_batch, true, &new_n_past)
+                : mtmd_helper_eval_chunks(
+                    rn_ctx->mtmd_ctx, rn_ctx->ctx, chunks,
+                    0, 0, rn_ctx->params.n_batch, true, &new_n_past);
             mtmd_input_chunks_free(chunks);
             if (eval_res != 0) {
                 result.success = false;

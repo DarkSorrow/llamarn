@@ -131,14 +131,15 @@
     "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
-    "@react-native/gradle-plugin": "0.83.4",
+    "@react-native/gradle-plugin": "0.85.3",
+    "@react-native/jest-preset": "0.85.3",
     "@types/jest": "^30.0.0",
     "@types/react": "^19.2.1",
     "del-cli": "^6.0.0",
     "jest": "^30.0.0",
     "prettier": "^3.0.3",
-    "react": "19.2.1",
-    "react-native": "0.83.4",
+    "react": "19.2.3",
+    "react-native": "0.85.3",
     "react-native-builder-bob": "^0.41.0",
     "typescript": "^5.2.2"
   },

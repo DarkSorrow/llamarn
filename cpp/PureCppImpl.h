@@ -11,6 +11,20 @@
 // Include the header with the full definition of rn_llama_context
 #include "rn-llama.h"
 
+namespace facebook::react {
+
+// Concrete instantiation of the codegen-generated onModelLoadProgress event
+// payload template, per the "Supporting custom C++ types" bridging pattern
+// (see CLAUDE.md §3.1): alias the codegen template with concrete field types,
+// then specialize Bridging<> to inherit the codegen-generated conversion.
+using ModelLoadProgressEvent = NativeRNLlamaCppModelLoadProgressEvent<std::string, double>;
+
+template <>
+struct Bridging<ModelLoadProgressEvent>
+    : NativeRNLlamaCppModelLoadProgressEventBridging<ModelLoadProgressEvent> {};
+
+} // namespace facebook::react
+
 // Forward declarations for C++ only
 struct llama_model;
 struct llama_context;

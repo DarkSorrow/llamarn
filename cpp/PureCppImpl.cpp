@@ -485,6 +485,24 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
   return Promise.callAsConstructor(runtime, std::move(executor));
 }
 
+// Forwards llama_progress_callback / mtmd_progress_callback ticks (signature
+// is identical for both: bool(float, void*)) to the JS-facing emitter,
+// throttled so we don't flood the JS thread with near-1% deltas.
+struct ProgressCallbackCtx {
+    std::function<void(const std::string&, double)> emit;
+    std::string phase;
+    float last_emitted = -1.0f;
+};
+
+static bool progress_trampoline(float progress, void* user_data) {
+    auto* ctx = static_cast<ProgressCallbackCtx*>(user_data);
+    if (ctx->emit && (progress - ctx->last_emitted >= 0.01f || progress >= 1.0f)) {
+        ctx->last_emitted = progress;
+        ctx->emit(ctx->phase, static_cast<double>(progress));
+    }
+    return true; // returning false would abort loading
+}
+
 // Returns a valid init result or throws std::runtime_error.
 // Attempts GPU first if params.n_gpu_layers > 0; downgrades to CPU on failure.
 static common_init_result_ptr try_init_with_gpu_fallback(rn_common_params& params) {
@@ -549,7 +567,12 @@ struct ModelInitResult {
 
 // Performs all heavy model-loading work on the background thread.
 // No JSI, no Promise, no invoker — returns on success, throws on failure.
-static ModelInitResult do_init_llama(const InitLlamaParams& p) {
+// on_progress(phase, progress) is opaque to this function; it's how the
+// caller (initLlama, which owns the JSI/emitter side) finds out about
+// loading progress without do_init_llama depending on JSI at all.
+static ModelInitResult do_init_llama(
+    const InitLlamaParams& p,
+    const std::function<void(const std::string&, double)>& on_progress) {
     ensure_backends_loaded();
 
     // ── 1. Build rn_common_params ──────────────────────────────────────────
@@ -608,6 +631,9 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
     rn_params.prompt_chunk_gap_ms = p.prompt_chunk_gap_ms;
 
     // ── 2. Model init with GPU→CPU fallback ────────────────────────────────
+    ProgressCallbackCtx model_progress_ctx{on_progress, "model"};
+    params.load_progress_callback           = &progress_trampoline;
+    params.load_progress_callback_user_data = &model_progress_ctx;
     auto init_result = try_init_with_gpu_fallback(params);
 
     // params.sampling was updated by common_init_sampler_from_model inside
@@ -647,6 +673,9 @@ static ModelInitResult do_init_llama(const InitLlamaParams& p) {
         mparams.print_timings        = false;
         mparams.warmup               = false;
         if (!p.image_marker.empty()) mparams.media_marker = p.image_marker.c_str();
+        ProgressCallbackCtx mmproj_progress_ctx{on_progress, "mmproj"};
+        mparams.progress_callback             = &progress_trampoline;
+        mparams.progress_callback_user_data   = &mmproj_progress_ctx;
         rn_ctx->mtmd_ctx          = mtmd_init_from_file(p.mmproj_path.c_str(), rn_ctx->model, mparams);
         rn_ctx->multimodal_loaded = (rn_ctx->mtmd_ctx != nullptr);
     }
@@ -872,9 +901,15 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
                    reject  = std::move(reject),
                    runtimePtr, invoker]() mutable {
         // ── Phase 1: all heavy work — no JSI, no lock ──────────────────────
+        // emitOnModelLoadProgress (AsyncEventEmitter) is thread-safe and
+        // hops to the JS thread internally — safe to call from this
+        // background thread directly, no manual CallInvoker needed here.
+        auto on_progress = [selfPtr](const std::string& phase, double progress) {
+          selfPtr->emitOnModelLoadProgress(ModelLoadProgressEvent{phase, progress});
+        };
         ModelInitResult r;
         try {
-          r = do_init_llama(*p);
+          r = do_init_llama(*p, on_progress);
         } catch (const std::exception& e) {
           std::string msg = e.what();
           safe_invoke(invoker, [resolve = std::move(resolve), reject = std::move(reject), msg, runtimePtr]() {

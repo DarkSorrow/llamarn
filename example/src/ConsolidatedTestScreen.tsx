@@ -10,7 +10,7 @@ import {
   NativeModules,
 } from 'react-native';
 import { loadLlamaModelInfo } from '@novastera-oss/llamarn';
-import RNFS from 'react-native-fs';
+import * as RNFS from '@dr.pogodin/react-native-fs';
 
 const { AssetCheckModule } = NativeModules;
 
@@ -39,8 +39,8 @@ export default function ConsolidatedTestScreen() {
       let bundlePath = '';
       
       if (Platform.OS === 'ios') {
-        bundlePath = RNFS.MainBundlePath;
-        modelPath = RNFS.MainBundlePath + '/' + modelFileName;
+        bundlePath = RNFS.MainBundlePath ?? '';
+        modelPath = (RNFS.MainBundlePath ?? '') + '/' + modelFileName;
         console.log(`[iOS] Bundle path: ${bundlePath}`);
         console.log(`[iOS] Full model path: ${modelPath}`);
       } else if (Platform.OS === 'android') {
@@ -108,7 +108,7 @@ export default function ConsolidatedTestScreen() {
     try {
       let modelPath = modelFileName;
       if (Platform.OS === 'ios') {
-        modelPath = RNFS.MainBundlePath + '/' + modelFileName;
+        modelPath = (RNFS.MainBundlePath ?? '') + '/' + modelFileName;
         console.log(`[iOS] Using full model path: ${modelPath}`);
       } else if (Platform.OS === 'android') {
         // For Android, try different asset path formats

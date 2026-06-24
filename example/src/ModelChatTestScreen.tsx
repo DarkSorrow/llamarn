@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { initLlama, loadLlamaModelInfo } from '@novastera-oss/llamarn';
 import type { LlamaModel, LlamaMessage, LlamaTool } from '@novastera-oss/llamarn';
-import RNFS from 'react-native-fs';
+import * as RNFS from '@dr.pogodin/react-native-fs';
 
 // Use smaller model for Android to avoid build size issues
 const modelFileName = Platform.OS === 'android' 
@@ -233,7 +233,7 @@ const ModelLoader: React.FC<{
     let modelPath = modelFileName;
     
     if (Platform.OS === 'ios') {
-      modelPath = RNFS.MainBundlePath + '/' + modelFileName;
+      modelPath = (RNFS.MainBundlePath ?? '') + '/' + modelFileName;
       console.log(`[iOS] Using full model path: ${modelPath}`);
     } else if (Platform.OS === 'android') {
       // For Android, copy asset to cache directory
@@ -731,8 +731,6 @@ Rules:
         modelState.instance.completion({
           prompt: abortPrompt,
           max_tokens: 256,
-          token_buffer_size: 4,
-          token_rate_cap: 20,
           temperature: 0.6,
         }),
         30000,

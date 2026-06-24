@@ -4,11 +4,11 @@
 
 # The specific llama.cpp commit hash we want to use
 # Using a specific commit hash ensures a consistent build
-LLAMA_CPP_COMMIT="d2e22ed975e3464ff8108542c840733b488f165f"  # Commit as specified by user
+LLAMA_CPP_COMMIT="88636e178ff2972e1002cf2024cb39008eda1192"  # Commit as specified by user
 
 # The tag to use for prebuilt binaries
 # This might differ from the commit hash format
-LLAMA_CPP_TAG="b9587"  # Tag format for binary downloads
+LLAMA_CPP_TAG="b9777"  # Tag format for binary downloads
 
 # Vulkan and OpenCL versions
 # Note: Vulkan loader ships with the NDK, but ggml-vulkan needs the C++ headers (vulkan.hpp)

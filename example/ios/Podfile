@@ -1,5 +1,12 @@
 ENV['RCT_NEW_ARCH_ENABLED'] = '1'
 
+# RN 0.85's prebuilt React Native Core binary (default since RCT_USE_PREBUILT_RNCORE
+# defaults to '1') fails to link against our heavyweight C++ static lib (RNLlamaCpp.a
+# pulls in libc++ exceptions/RTTI/regex/deque via nlohmann::json, jinja, llama.cpp
+# common code, etc.) — undefined libc++ runtime symbols (__cxa_throw, std::runtime_error,
+# ...) at the final app link step. Build React Native Core from source instead.
+ENV['RCT_USE_PREBUILT_RNCORE'] = '0'
+
 # Resolve react_native_pods.rb with node to allow for hoisting
 require Pod::Executable.execute_command('node', ['-p',
   'require.resolve(

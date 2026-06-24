@@ -1,5 +1,6 @@
-import type { TurboModule } from 'react-native';
+import type { TurboModule, EventSubscription } from 'react-native';
 import { TurboModuleRegistry } from 'react-native';
+import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypesNamespace';
 
 /**
  * Native LlamaCppRn Module
@@ -13,6 +14,11 @@ import { TurboModuleRegistry } from 'react-native';
 export interface LlamaContextType {
   // This will be a native object reference that maps to
   // a pointer to the llama_context C++ objec
+}
+
+export interface ModelLoadProgressEvent {
+  phase: 'model' | 'mmproj'; // which load phase this progress update belongs to
+  progress: number;          // 0.0 - 1.0
 }
 
 export type ModelCapability =
@@ -349,6 +355,12 @@ export interface LlamaContextMethods {
 }
 
 export interface Spec extends TurboModule {
+  // Fires during initLlama() while the GGUF model (phase: 'model') and, if
+  // mmproj was supplied, the multimodal projector (phase: 'mmproj') load.
+  // Purely advisory — initLlama()'s resolved Promise is the source of truth
+  // for "loading finished".
+  readonly onModelLoadProgress: EventEmitter<ModelLoadProgressEvent>;
+
   // Initialize a Llama context with the given model parameters
   initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods>;
 
@@ -408,6 +420,26 @@ export type LlamaModel = LlamaContextType & LlamaContextMethods;
  */
 export function initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods> {
   return LlamaCppRn.initLlama(params);
+}
+
+/**
+ * Subscribe to model-load progress updates emitted during `initLlama()`.
+ *
+ * Advisory only — for loading UX (progress bars, etc). `initLlama()`'s
+ * resolved Promise remains the source of truth for "loading finished".
+ *
+ * ```ts
+ * const sub = addModelLoadProgressListener(({ phase, progress }) => {
+ *   console.log(`${phase}: ${Math.round(progress * 100)}%`);
+ * });
+ * await initLlama({ model: '/path/to/model.gguf' });
+ * sub.remove();
+ * ```
+ */
+export function addModelLoadProgressListener(
+  listener: (event: ModelLoadProgressEvent) => void
+): EventSubscription {
+  return LlamaCppRn.onModelLoadProgress(listener);
 }
 
 /**
