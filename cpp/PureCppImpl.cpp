@@ -6,6 +6,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -299,7 +300,9 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           // Create model params
           llama_model_params params = llama_model_default_params();
           params.n_gpu_layers = 0; // Use CPU for model info loading
-          params.use_direct_io = false; // Disable direct I/O for compatibility
+          // load_mode defaults to LLAMA_LOAD_MODE_AUTO via llama_model_default_params().
+          // AUTO on a CPU-only load (n_gpu_layers = 0 above) always keeps mmap enabled and
+          // never selects direct I/O, so no explicit override is needed here.
 
           // Load the model
           llama_model* model = llama_model_load_from_file(path.c_str(), params);
@@ -538,7 +541,9 @@ static void init_chat_templates_safe(rn_llama_context* ctx, const rn_common_para
 struct InitLlamaParams {
   std::string model_path;
   int n_ctx, n_batch, n_ubatch, n_keep;
-  bool use_mmap, use_mlock, use_jinja, embedding;
+  // nullopt = caller did not pass this key; combined into a single load_mode in do_init_llama().
+  std::optional<bool> use_mmap, use_mlock;
+  bool use_jinja, embedding;
   int n_threads, n_gpu_layers;
   std::string logits_file;
   float rope_freq_base, rope_freq_scale;
@@ -583,11 +588,50 @@ static ModelInitResult do_init_llama(
     params.n_batch             = p.n_batch;
     params.n_ubatch            = p.n_ubatch;
     params.n_keep              = p.n_keep;
-    params.use_mmap            = p.use_mmap;
-    params.use_mlock           = p.use_mlock;
+
+    // use_mmap / use_mlock → load_mode (upstream #20834 removed the two booleans from
+    // common_params in favor of a single `enum llama_load_mode load_mode`).
+    // Both unset (JS passed neither key) maps to AUTO, matching upstream's own default and
+    // letting llama.cpp's device-capability check (src/llama-model.cpp) safely disable mmap on
+    // backends that don't support it (OpenCL always, Hexagon always, Vulkan on integrated GPUs —
+    // i.e. most Android SoCs). Any explicitly-set key overrides AUTO; an unset key paired with an
+    // explicitly-set counterpart is treated as false.
+    {
+        const bool mmap_set  = p.use_mmap.has_value();
+        const bool mlock_set = p.use_mlock.has_value();
+        if (!mmap_set && !mlock_set) {
+            params.load_mode = LLAMA_LOAD_MODE_AUTO;
+        } else {
+            const bool mmap_on  = mmap_set  && *p.use_mmap;
+            const bool mlock_on = mlock_set && *p.use_mlock;
+            if (mmap_on && mlock_on) {
+                params.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+            } else if (mlock_on) {
+                params.load_mode = LLAMA_LOAD_MODE_MLOCK;
+            } else if (mmap_on) {
+                params.load_mode = LLAMA_LOAD_MODE_MMAP;
+            } else {
+                params.load_mode = LLAMA_LOAD_MODE_NONE;
+            }
+        }
+    }
+
     params.use_jinja           = p.use_jinja;
     params.embedding           = p.embedding;
     params.cpuparams.n_threads = p.n_threads;
+
+    // Normalize BOTH cpu param sets, mirroring common_params_parse() (arg.cpp).
+    // common_cpu_params::n_threads defaults to -1, and we only ever set cpuparams —
+    // cpuparams_batch stayed at -1. Since b10648, common_init_from_params() builds a
+    // batch threadpool from cpuparams_batch (new common_threadpools::init), and
+    // ggml_threadpool_new_impl() then computes
+    //   workers_size = sizeof(ggml_compute_state) * n_threads
+    // which underflows to a huge size_t for n_threads = -1, so the allocation returns
+    // null and the following memset() segfaults. The second call makes cpuparams_batch
+    // inherit cpuparams (role_model), and the first auto-detects if n_threads <= 0.
+    postprocess_cpu_params(params.cpuparams,       nullptr);
+    postprocess_cpu_params(params.cpuparams_batch, &params.cpuparams);
+
     params.n_gpu_layers        = p.n_gpu_layers;
     params.logits_file         = p.logits_file;
     params.rope_freq_base      = p.rope_freq_base;
@@ -703,8 +747,9 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   int n_batch = 512;
   int n_ubatch = 512;
   int n_keep = 0;
-  bool use_mmap = true;
-  bool use_mlock = false;
+  // nullopt = caller did not pass this key; combined into a single load_mode in do_init_llama().
+  std::optional<bool> use_mmap;
+  std::optional<bool> use_mlock;
   bool use_jinja = false;
   bool embedding = false;
   int n_threads = 0;
@@ -732,8 +777,13 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   SystemUtils::setIfExists(runtime, options, "n_batch", n_batch);
   SystemUtils::setIfExists(runtime, options, "n_ubatch", n_ubatch);
   SystemUtils::setIfExists(runtime, options, "n_keep", n_keep);
-  SystemUtils::setIfExists(runtime, options, "use_mmap", use_mmap);
-  SystemUtils::setIfExists(runtime, options, "use_mlock", use_mlock);
+  {
+    // setIfExists returns true only when the key was present AND was a JS boolean, so an
+    // absent key leaves the optional as nullopt → LLAMA_LOAD_MODE_AUTO in do_init_llama().
+    bool v = false;
+    if (SystemUtils::setIfExists(runtime, options, "use_mmap",  v)) use_mmap  = v;
+    if (SystemUtils::setIfExists(runtime, options, "use_mlock", v)) use_mlock = v;
+  }
   SystemUtils::setIfExists(runtime, options, "use_jinja", use_jinja);
   SystemUtils::setIfExists(runtime, options, "embedding", embedding);
   SystemUtils::setIfExists(runtime, options, "rope_freq_base", rope_freq_base);

@@ -38,25 +38,11 @@ check_required_tool() {
 }
 
 echo "Checking for required tools..."
-check_required_tool "curl" "Please install curl (brew install curl)"
-check_required_tool "unzip" "Please install unzip (brew install unzip)"
 
 # Create necessary directories
 mkdir -p "$PREBUILT_DIR"
 mkdir -p "$INCLUDE_DIR"
 mkdir -p "$TEMP_DIR"
-
-# Function to download a file
-download_file() {
-  local url="$1"
-  local output_path="$2"
-  
-  echo -e "${YELLOW}Downloading from: $url${NC}"
-  echo -e "${YELLOW}Saving to: $output_path${NC}"
-  
-  curl -L -o "$output_path" "$url"
-  return $?
-}
 
 # Copy all necessary header files from llama.cpp to ios/include
 copy_header_files() {
@@ -86,200 +72,100 @@ copy_header_files() {
   return 0
 }
 
-filter_ios_info_plist() {
-  local info_plist="$PREBUILT_DIR/llama.xcframework/Info.plist"
+# Build the iOS xcframework from the pinned llama.cpp source.
+#
+# Why we build instead of downloading the release zip:
+# As of llama.cpp b10648 (commit 805984d67, PR #27252 — "release.yml builds only
+# macos and ios-device to cut the build time"), the published
+# llama-<tag>-xcframework.zip contains ONLY macos + ios-device. It no longer has
+# an iOS *simulator* slice. Since this library ships its xcframework inside the
+# npm tarball (package.json `files` includes "ios"), a simulator-less framework
+# would break `pod install` and simulator builds for every consumer of the
+# package. There is no alternative published artifact — the upstream workflow
+# that builds all slices (build-apple.yml) uploads a GitHub Actions artifact with
+# retention-days: 1, which is neither stable nor publicly downloadable.
+#
+# build-xcframework.sh accepts an explicit build list, so we ask for exactly the
+# two iOS slices. xcodebuild -create-xcframework writes a correct Info.plist for
+# whatever slices it was given, so no hand-maintained plist template is needed.
+build_ios_framework() {
+  local force="$1"
+  local llama_src="$CPP_DIR/llama.cpp"
+  local device_slice="$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework"
+  local sim_slice="$PREBUILT_DIR/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework"
 
-  if [ ! -f "$info_plist" ]; then
-    echo -e "${YELLOW}Info.plist not found at $info_plist, skipping filtering${NC}"
-    return 0
-  fi
+  echo -e "${YELLOW}Setting up iOS framework (version: $LLAMA_CPP_TAG)...${NC}"
 
-  # Check if node is available
-  if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}node not found, skipping Info.plist filtering (not critical)${NC}"
-    echo -e "${YELLOW}Note: Non-iOS slices have already been removed from the xcframework${NC}"
-    return 0
-  fi
-
-  echo -e "${YELLOW}Filtering Info.plist entries to keep only iOS slices...${NC}"
-  INFO_PLIST_PATH="$info_plist" node <<'NODEJS'
-const fs = require('fs');
-const { execSync } = require('child_process');
-
-const infoPath = process.env.INFO_PLIST_PATH;
-const allowedPlatforms = new Set(['ios']);
-let changed = false;
-
-try {
-  // Convert plist to JSON using plutil (macOS built-in tool)
-  let jsonData;
-  try {
-    const jsonStr = execSync(`plutil -convert json -o - "${infoPath}"`, { encoding: 'utf8' });
-    jsonData = JSON.parse(jsonStr);
-  } catch (e) {
-    // If plutil fails, try reading as JSON directly (in case it's already JSON)
-    try {
-      jsonData = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
-    } catch (e2) {
-      console.error('Failed to parse plist file. Skipping filtering.');
-      process.exit(0);
-    }
-  }
-
-  const libraries = jsonData.AvailableLibraries || [];
-  const filtered = [];
-
-  for (const entry of libraries) {
-    const platform = entry.SupportedPlatform;
-    const identifier = entry.LibraryIdentifier;
-    if (allowedPlatforms.has(platform)) {
-      filtered.push(entry);
-    } else {
-      changed = true;
-      console.log(` - Removing ${identifier} (${platform}) from Info.plist`);
-    }
-  }
-
-  jsonData.AvailableLibraries = filtered;
-
-  // Convert JSON back to plist using plutil
-  try {
-    const tempJson = require('os').tmpdir() + '/info_plist_temp.json';
-    fs.writeFileSync(tempJson, JSON.stringify(jsonData, null, 2));
-    execSync(`plutil -convert xml1 -o "${infoPath}" "${tempJson}"`);
-    fs.unlinkSync(tempJson);
-  } catch (e) {
-    // If plutil conversion fails, write as JSON (should still work)
-    fs.writeFileSync(infoPath, JSON.stringify(jsonData, null, 2));
-  }
-
-  if (changed) {
-    console.log('Info.plist updated to include only iOS slices.');
-  } else {
-    console.log('Info.plist already limited to iOS slices.');
-  }
-} catch (error) {
-  console.error('Error filtering Info.plist:', error.message);
-  console.log('Continuing anyway - this is not critical.');
-  process.exit(0);
-}
-NODEJS
-}
-
-# Download and setup iOS framework
-download_ios_framework() {
-  echo -e "${YELLOW}Downloading iOS framework (version: $LLAMA_CPP_TAG)...${NC}"
-  
-  # Check if framework already exists and is valid
-  if [ -d "$PREBUILT_DIR/llama.xcframework" ] && 
-     { [ -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" ] || 
-       [ -d "$PREBUILT_DIR/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework" ]; }; then
-    echo -e "${GREEN}iOS framework already exists at: $PREBUILT_DIR/llama.xcframework${NC}"
-    
-    # Skip if not forced
-    if [ "$1" != "--force" ]; then
-      echo -e "${YELLOW}Use '--force' to redownload or 'clean' to remove it${NC}"
-      # Still copy header files even if framework exists
+  # Require BOTH slices before considering the framework usable. The old check
+  # used OR, so a framework missing the simulator slice looked "already valid"
+  # and every re-run silently skipped the rebuild.
+  if [ -d "$device_slice" ] && [ -d "$sim_slice" ]; then
+    echo -e "${GREEN}iOS framework already present with device + simulator slices${NC}"
+    if [ "$force" != "--force" ]; then
+      echo -e "${YELLOW}Use '--force' to rebuild or 'clean' to remove it${NC}"
       copy_header_files
       return 0
-    else
-      echo -e "${YELLOW}Force flag detected, redownloading...${NC}"
     fi
+    echo -e "${YELLOW}Force flag detected, rebuilding...${NC}"
   fi
-  
-  # Check if we have local llama.cpp source available
-  # If it exists, we'll copy headers but still download the prebuilt framework
-  if [ -d "$CPP_DIR/llama.cpp" ] && [ -f "$CPP_DIR/llama.cpp/include/llama.h" ]; then
-    echo -e "${GREEN}Found local llama.cpp source at: $CPP_DIR/llama.cpp${NC}"
-    echo -e "${YELLOW}Will use local source for headers but still download prebuilt framework${NC}"
-    FOUND_LOCAL_SOURCE=1
-  else
-    echo -e "${YELLOW}No local llama.cpp source found, downloading everything...${NC}"
-    FOUND_LOCAL_SOURCE=0
-  fi
-  
-  # Download URL - use the same format as in llama_cpp_ios.sh
-  local url="https://github.com/ggerganov/llama.cpp/releases/download/$LLAMA_CPP_TAG/llama-$LLAMA_CPP_TAG-xcframework.zip"
-  local temp_zip="$TEMP_DIR/ios_framework.zip"
-  
-  echo -e "${YELLOW}Using URL: $url${NC}"
-  
-  # Download the framework
-  if ! download_file "$url" "$temp_zip"; then
-    echo -e "${RED}Failed to download iOS framework${NC}"
-    return 1
-  fi
-  
-  # Remove any existing framework
-  rm -rf "$PREBUILT_DIR/llama.xcframework"
-  
-  # Extract the framework
-  echo -e "${YELLOW}Extracting framework...${NC}"
-  unzip -q -o "$temp_zip" -d "$TEMP_DIR"
-  
-  # Find the extracted framework
-  local xcframework_path=$(find "$TEMP_DIR" -name "*.xcframework" -type d | head -n 1)
-  
-  if [ -z "$xcframework_path" ]; then
-    echo -e "${RED}Error: No .xcframework found in downloaded archive${NC}"
-    rm -f "$temp_zip"
-    return 1
-  fi
-  
-  # Move it to the prebuilt location
-  echo -e "${YELLOW}Moving framework to: $PREBUILT_DIR/llama.xcframework${NC}"
-  mv "$xcframework_path" "$PREBUILT_DIR/llama.xcframework"
-  
-  # Remove unnecessary slices to reduce size (keep only iOS device and simulator slices)
-  echo -e "${YELLOW}Removing unnecessary framework slices (keeping only iOS device and simulator)...${NC}"
-  cd "$PREBUILT_DIR/llama.xcframework"
-  
-  # Remove all slices except iOS device and simulator
-  for slice in macos-arm64_x86_64 tvos-arm64 tvos-arm64_x86_64-simulator xros-arm64 xros-arm64_x86_64-simulator; do
-    if [ -d "$slice" ]; then
-      echo -e "${YELLOW}Removing $slice slice...${NC}"
-      rm -rf "$slice"
-    fi
-  done
 
-  # Replace Info.plist with the filtered version (iOS only)
-  local info_plist_template="$PROJECT_ROOT/info.plist.change"
-  if [ -f "$info_plist_template" ]; then
-    echo -e "${YELLOW}Replacing Info.plist with iOS-only version...${NC}"
-    cp -f "$info_plist_template" "$PREBUILT_DIR/llama.xcframework/Info.plist"
-    echo -e "${GREEN}Info.plist updated to include only iOS slices${NC}"
-  else
-    echo -e "${YELLOW}Warning: info.plist.change not found at $info_plist_template${NC}"
-    echo -e "${YELLOW}Info.plist will not be filtered (this may cause CocoaPods issues)${NC}"
-  fi
-  
-  # Verify the framework has the necessary iOS slices
-  if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64/llama.framework" ]]; then
-    echo -e "${RED}Error: iOS device framework slice (ios-arm64) not found in downloaded archive${NC}"
-    find "$PREBUILT_DIR/llama.xcframework" -type d | sort
-    rm -f "$temp_zip"
+  if [ ! -f "$llama_src/build-xcframework.sh" ]; then
+    echo -e "${RED}Error: llama.cpp source not found at $llama_src${NC}"
+    echo -e "${YELLOW}Run 'npm run setup-llama-cpp' first to init the submodule.${NC}"
     return 1
   fi
-  
-  if [[ ! -d "$PREBUILT_DIR/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework" ]]; then
-    echo -e "${YELLOW}Warning: iOS simulator framework slice not found, simulator builds may not work${NC}"
+
+  check_required_tool "xcodebuild" "Install Xcode and run: xcode-select --install"
+  check_required_tool "cmake" "Please install cmake (brew install cmake)"
+
+  # Warn if the checkout drifted from the pinned commit — the shipped binary must
+  # match the headers we compile the bridge against.
+  local head_commit
+  head_commit="$(git -C "$llama_src" rev-parse HEAD 2>/dev/null)"
+  if [ -n "$LLAMA_CPP_COMMIT" ] && [ -n "$head_commit" ] && [ "$head_commit" != "$LLAMA_CPP_COMMIT" ]; then
+    echo -e "${YELLOW}Warning: cpp/llama.cpp is at $head_commit${NC}"
+    echo -e "${YELLOW}         but used_version.sh pins $LLAMA_CPP_COMMIT${NC}"
   fi
-  
-  echo -e "${GREEN}Kept iOS device and simulator slices (removed macOS, tvOS, and visionOS)${NC}"
-  
-  # Copy header files
+
+  echo -e "${YELLOW}Building iOS device + simulator slices from source...${NC}"
+  echo -e "${YELLOW}(this compiles llama.cpp twice and can take a while)${NC}"
+  if ! ( cd "$llama_src" && ./build-xcframework.sh ios-sim ios-device ); then
+    echo -e "${RED}Error: build-xcframework.sh failed${NC}"
+    return 1
+  fi
+
+  local built="$llama_src/build-apple/llama.xcframework"
+  if [ ! -d "$built" ]; then
+    echo -e "${RED}Error: expected xcframework not found at $built${NC}"
+    return 1
+  fi
+
+  echo -e "${YELLOW}Installing framework to: $PREBUILT_DIR/llama.xcframework${NC}"
+  rm -rf "$PREBUILT_DIR/llama.xcframework"
+  mkdir -p "$PREBUILT_DIR"
+  cp -R "$built" "$PREBUILT_DIR/llama.xcframework"
+
+  # Both slices are mandatory. Previously a missing simulator slice was only a
+  # warning, which is how a device-only framework reached CocoaPods and produced
+  # the misleading "contains both static and dynamic frameworks" error.
+  if [ ! -d "$device_slice" ]; then
+    echo -e "${RED}Error: iOS device slice (ios-arm64) missing after build${NC}"
+    find "$PREBUILT_DIR/llama.xcframework" -maxdepth 1 -type d | sort
+    return 1
+  fi
+  if [ ! -d "$sim_slice" ]; then
+    echo -e "${RED}Error: iOS simulator slice (ios-arm64_x86_64-simulator) missing after build${NC}"
+    find "$PREBUILT_DIR/llama.xcframework" -maxdepth 1 -type d | sort
+    return 1
+  fi
+
   copy_header_files
-  
-  # Clean up temporary files
-  rm -f "$temp_zip"
-  
-  echo -e "${GREEN}iOS framework downloaded and installed successfully to:${NC}"
+
+  echo -e "${GREEN}iOS framework built and installed successfully to:${NC}"
   echo -e "${GREEN}$PREBUILT_DIR/llama.xcframework${NC}"
-  
-  # List framework architectures
   echo -e "${YELLOW}Framework slices available:${NC}"
   find "$PREBUILT_DIR/llama.xcframework" -maxdepth 1 -type d -not -path "$PREBUILT_DIR/llama.xcframework" | sort
-  
+
   return 0
 }
 
@@ -299,12 +185,12 @@ clean_ios_framework() {
 main() {
   if [ $# -eq 0 ]; then
     echo "Usage: $0 {init|clean|version} [--force]"
-    echo "  init     - Download and setup iOS framework to ios/libs directory"
+    echo "  init     - Build and install the iOS framework into ios/libs"
     echo "  clean    - Remove iOS framework"
     echo "  version  - Show the llama.cpp version used"
     echo ""
     echo "Options:"
-    echo "  --force  - Force redownload even if framework exists"
+    echo "  --force  - Force rebuild even if framework exists"
     exit 1
   fi
   
@@ -313,7 +199,7 @@ main() {
   
   case "$command" in
     "init")
-      download_ios_framework "$1"
+      build_ios_framework "$1"
       ;;
     "clean")
       clean_ios_framework

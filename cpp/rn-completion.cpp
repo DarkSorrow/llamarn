@@ -210,18 +210,36 @@ CompletionResult run_completion(
         }
 
         // Wire reasoning budget into sampling params.
-        // The start/end tags come from chat_params.thinking_start/end_tag (set by run_chat_completion).
+        // The start/end tags come from chat_params.thinking_start/end_tags (set by run_chat_completion).
         // Mirrors server-common.cpp oaicompat_chat_params_parse() reasoning budget block.
-        if (!options.reasoning_budget_start_tag.empty() && !options.reasoning_budget_end_tag.empty()) {
-            sampling_params.reasoning_budget_tokens  = options.reasoning_budget_tokens;
-            sampling_params.reasoning_budget_start   = common_tokenize(rn_ctx->vocab, options.reasoning_budget_start_tag, false, true);
-            sampling_params.reasoning_budget_end     = common_tokenize(rn_ctx->vocab, options.reasoning_budget_end_tag,   false, true);
-            if (!options.reasoning_budget_message.empty()) {
-                sampling_params.reasoning_budget_forced = common_tokenize(rn_ctx->vocab,
-                    options.reasoning_budget_message + options.reasoning_budget_end_tag, false, true);
-                sampling_params.reasoning_budget_message = options.reasoning_budget_message;
-            } else {
-                sampling_params.reasoning_budget_forced = sampling_params.reasoning_budget_end;
+        if (!options.reasoning_budget_start_tag.empty() && !options.reasoning_budget_end_tags.empty()) {
+            sampling_params.reasoning_budget_tokens = options.reasoning_budget_tokens;
+            sampling_params.reasoning_budget_start  = common_tokenize(rn_ctx->vocab, options.reasoning_budget_start_tag, false, true);
+
+            // reasoning_budget_end is now std::vector<llama_tokens> — one token sequence per end
+            // tag (common/common.h). Tokenize each tag separately; the first tag is the forcing one.
+            sampling_params.reasoning_budget_end.clear();
+            for (const auto& end_tag : options.reasoning_budget_end_tags) {
+                if (!end_tag.empty()) {
+                    sampling_params.reasoning_budget_end.push_back(
+                        common_tokenize(rn_ctx->vocab, end_tag, false, true));
+                }
+            }
+
+            if (!sampling_params.reasoning_budget_end.empty()) {
+                if (!options.reasoning_budget_message.empty()) {
+                    // Upstream token-level concatenation pattern (tools/server/server-schema.cpp):
+                    // tokenize the end tag and the forced message SEPARATELY, then concatenate the
+                    // token vectors. Tokenizing the concatenated STRING as one unit can tokenize
+                    // differently at the message/tag boundary.
+                    llama_tokens forced         = sampling_params.reasoning_budget_end.front();
+                    llama_tokens message_tokens = common_tokenize(rn_ctx->vocab, options.reasoning_budget_message, false, true);
+                    forced.insert(forced.begin(), message_tokens.begin(), message_tokens.end());
+                    sampling_params.reasoning_budget_forced  = std::move(forced);
+                    sampling_params.reasoning_budget_message = options.reasoning_budget_message;
+                } else {
+                    sampling_params.reasoning_budget_forced = sampling_params.reasoning_budget_end.front();
+                }
             }
         }
 
@@ -841,7 +859,10 @@ CompletionResult run_chat_completion(
         // Parse messages directly from options
         std::vector<common_chat_msg> chat_msgs;
         if (!effective_messages.is_null() && !effective_messages.empty()) {
-            chat_msgs = common_chat_msgs_parse_oaicompat(effective_messages);
+            // common_chat_msgs_parse_oaicompat now takes common_json (upstream #27511), not
+            // nlohmann::ordered_json. No implicit conversion exists in either direction —
+            // round-trip through dump()/parse() at this boundary.
+            chat_msgs = common_chat_msgs_parse_oaicompat(common_json::parse(effective_messages.dump()));
         }
 
         const std::string kv_render_identity = build_kv_render_identity(rn_ctx, options);
@@ -975,7 +996,7 @@ CompletionResult run_chat_completion(
         }
 
         if (!options.tools.is_null() && !options.tools.empty()) {
-            template_inputs.tools = common_chat_tools_parse_oaicompat(options.tools);
+            template_inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(options.tools.dump()));
             template_inputs.parallel_tool_calls = true;
         }
 
@@ -1119,10 +1140,10 @@ CompletionResult run_chat_completion(
         // Wire reasoning budget from chat template into completion options.
         // Mirrors server-common.cpp: reads thinking_start/end_tag from chat_params and
         // passes them through to the sampler via reasoning_budget_* fields.
-        if (chat_params.supports_thinking && !chat_params.thinking_end_tag.empty()) {
+        if (chat_params.supports_thinking && !chat_params.thinking_end_tags.empty()) {
             cmpl_options.reasoning_budget_tokens    = rn_ctx->params.reasoning_budget;
             cmpl_options.reasoning_budget_start_tag = chat_params.thinking_start_tag;
-            cmpl_options.reasoning_budget_end_tag   = chat_params.thinking_end_tag;
+            cmpl_options.reasoning_budget_end_tags  = chat_params.thinking_end_tags;
             // reasoning_budget_message is not exposed via JS yet; leave empty (sampler uses end tag only)
         }
 
@@ -1151,6 +1172,7 @@ CompletionResult run_chat_completion(
             mtmd_input_chunks* chunks = mtmd_input_chunks_init();
             mtmd_input_text input_text;
             input_text.text          = cmpl_options.prompt.c_str();
+            input_text.text_len      = cmpl_options.prompt.size();
             input_text.add_special   = true;
             input_text.parse_special = true;
             int32_t tok_res = mtmd_tokenize(
@@ -1298,8 +1320,10 @@ CompletionResult run_chat_completion(
             
             // Add parsed content and tool calls if available
             if (has_parsed_content && !parsed_msg.tool_calls.empty()) {
-                // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion
-                choice["message"] = parsed_msg.to_json_oaicompat();
+                // Use the server.cpp approach: let the common_chat_msg handle the JSON conversion.
+                // to_json_oaicompat() now returns common_json (upstream #27511); round-trip through
+                // dump()/parse() back into our nlohmann::ordered_json ("json" alias, rn-utils.h:28).
+                choice["message"] = json::parse(parsed_msg.to_json_oaicompat().dump());
                 choice["finish_reason"] = "tool_calls";
             } else if (result.tool_call_parse_failed) {
                 choice["message"]["content"] = result.content;

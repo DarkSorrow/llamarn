@@ -531,38 +531,49 @@ jobs:
         run: |
           chmod +x scripts/*.sh
       
-      # Cache iOS framework to speed up builds
+      # Cache iOS framework to speed up builds.
+      # The key is derived from used_version.sh so a llama.cpp version bump always
+      # invalidates the cache. Without that, a framework built for an older tag was
+      # restored for a new one (and the broad `restore-keys` made that near-certain),
+      # silently shipping a stale binary whose ABI no longer matches our headers.
       - name: Cache iOS Framework
         uses: actions/cache@v5
         id: cache-ios-framework
         with:
           path: |
             ios/libs/llama.xcframework
-          key: ios-framework-${{ runner.os }}-v2
-          restore-keys: |
-            ios-framework-
+          key: ios-framework-${{ runner.os }}-${{ hashFiles('scripts/used_version.sh') }}
       
       - name: Setup iOS Framework
         run: |
-          # Skip framework download if we have a cache hit
-          if [ "${{ steps.cache-ios-framework.outputs.cache-hit }}" == "true" ] && [ -d "ios/libs/llama.xcframework" ]; then
-            echo "✅ Using cached iOS framework"
+          # A cache hit is only usable if it actually carries BOTH iOS slices.
+          # Upstream's release zip stopped shipping the simulator slice (llama.cpp
+          # PR #27252), so a device-only framework is a real possibility and must
+          # force a rebuild rather than be accepted.
+          DEVICE_SLICE="ios/libs/llama.xcframework/ios-arm64/llama.framework"
+          SIM_SLICE="ios/libs/llama.xcframework/ios-arm64_x86_64-simulator/llama.framework"
+
+          if [ "${{ steps.cache-ios-framework.outputs.cache-hit }}" == "true" ] && [ -d "$DEVICE_SLICE" ] && [ -d "$SIM_SLICE" ]; then
+            echo "✅ Using cached iOS framework (device + simulator)"
           else
-            # Use the build_apple_external.sh to set up iOS framework
-            scripts/build_apple_external.sh init
+            scripts/build_apple_external.sh init --force
           fi
           
-          # Verify the iOS xcframework was set up correctly
-          if [ ! -d "ios/libs/llama.xcframework" ]; then
-            echo "❌ iOS framework build failed!"
+          # Both slices are required: device for real hardware, simulator so app
+          # developers consuming this package can build in the iOS Simulator.
+          if [ ! -d "$DEVICE_SLICE" ]; then
+            echo "❌ iOS device slice (ios-arm64) missing!"
+            ls -la ios/libs/llama.xcframework/ || true
             exit 1
-          else
-            echo "✅ iOS framework downloaded successfully"
-            
-            # List available slices
-            echo "Available iOS framework slices:"
-            ls -la ios/libs/llama.xcframework/
           fi
+          if [ ! -d "$SIM_SLICE" ]; then
+            echo "❌ iOS simulator slice (ios-arm64_x86_64-simulator) missing!"
+            ls -la ios/libs/llama.xcframework/ || true
+            exit 1
+          fi
+          echo "✅ iOS framework ready with device + simulator slices"
+          echo "Available iOS framework slices:"
+          ls -la ios/libs/llama.xcframework/
           
       - name: Upload iOS Framework
         uses: actions/upload-artifact@v7

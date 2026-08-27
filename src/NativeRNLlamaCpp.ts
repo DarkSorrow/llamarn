@@ -47,8 +47,14 @@ export interface LlamaModelParams {
   n_gpu_layers?: number;      // number of layers to store in VRAM (default: 0)
 
   // Memory management parameters
-  use_mmap?: boolean;         // use mmap for faster loading (default: true)
-  use_mlock?: boolean;        // use mlock to keep model in memory (default: false)
+  // Omit BOTH to get llama.cpp's LLAMA_LOAD_MODE_AUTO (recommended): it memory-maps
+  // the model except on backends that report no mmap support, where it falls back
+  // automatically. Setting either one opts out of AUTO and selects an explicit mode:
+  //   use_mmap only  -> MMAP  (true) / NONE (false)
+  //   use_mlock only -> MLOCK (true, no mmap)
+  //   both true      -> MMAP_MLOCK
+  use_mmap?: boolean;         // force memory-mapped loading on/off
+  use_mlock?: boolean;        // lock model pages in RAM (prevents swapping)
 
   // Model behavior parameters
   vocab_only?: boolean;       // only load the vocabulary, no weights

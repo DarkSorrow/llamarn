@@ -99,10 +99,13 @@ struct CompletionOptions {
     // Reasoning budget: passed from chat_params.thinking_start/end_tag after template apply.
     // When non-empty, the sampler enforces a token budget on the thinking block.
     // -1 = unlimited (thinking enabled, no cap), 0 = disabled, >0 = token limit.
-    int32_t     reasoning_budget_tokens  = -1;
-    std::string reasoning_budget_start_tag;   // e.g. "<think>"
-    std::string reasoning_budget_end_tag;     // e.g. "</think>"
-    std::string reasoning_budget_message;     // injected before end tag when budget exhausted
+    int32_t                  reasoning_budget_tokens  = -1;
+    std::string              reasoning_budget_start_tag;  // e.g. "<think>"
+    std::vector<std::string> reasoning_budget_end_tags;   // e.g. {"</think>"} — plural for parity
+                                                           // with upstream's multi-end-tag support
+                                                           // (common_chat_params::thinking_end_tags /
+                                                           // common_params_sampling::reasoning_budget_end)
+    std::string              reasoning_budget_message;    // injected before end tag when budget exhausted
 };
 
 struct CompletionTimings {

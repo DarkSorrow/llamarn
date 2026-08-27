@@ -73,15 +73,15 @@ std::vector<MediaItem> extract_media_from_messages(
 mtmd_bitmap* load_bitmap_from_uri(mtmd_context* ctx, const std::string& url) {
     mtmd_helper_bitmap_wrapper wrapper{nullptr, nullptr};
     if (url.size() >= 7 && url.substr(0, 7) == "file://") {
-        wrapper = mtmd_helper_bitmap_init_from_file(ctx, url.substr(7).c_str(), /* placeholder */ false);
+        wrapper = mtmd_helper_bitmap_init_from_file(ctx, url.substr(7).c_str(), /* placeholder */ false, mtmd_helper_init_opt_default());
     } else if (url.size() >= 5 && url.substr(0, 5) == "data:") {
         auto comma = url.find(',');
         if (comma == std::string::npos) return nullptr;
         auto bytes = base64_decode_bytes(url.substr(comma + 1));
         if (bytes.empty()) return nullptr;
-        wrapper = mtmd_helper_bitmap_init_from_buf(ctx, bytes.data(), bytes.size(), /* placeholder */ false);
+        wrapper = mtmd_helper_bitmap_init_from_buf(ctx, bytes.data(), bytes.size(), /* placeholder */ false, mtmd_helper_init_opt_default());
     } else {
-        wrapper = mtmd_helper_bitmap_init_from_file(ctx, url.c_str(), /* placeholder */ false);
+        wrapper = mtmd_helper_bitmap_init_from_file(ctx, url.c_str(), /* placeholder */ false, mtmd_helper_init_opt_default());
     }
     // not expected in builds without MTMD_VIDEO, but free defensively if ever set
     if (wrapper.video_ctx) {
@@ -111,6 +111,7 @@ EmbedResult encode_image_to_embeddings(
     mtmd_input_chunks* chunks = mtmd_input_chunks_init();
     mtmd_input_text input_text;
     input_text.text          = mtmd_get_marker(mtmd_ctx);
+    input_text.text_len      = strlen(input_text.text);
     input_text.add_special   = false;
     input_text.parse_special = true;
     const mtmd_bitmap* bm_arr[] = { bitmap };

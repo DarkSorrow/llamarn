@@ -85,8 +85,10 @@ interface LlamaModelParams {
                               // use optimalGpuLayers from loadLlamaModelInfo
 
   // Memory management parameters
-  use_mmap?: boolean;         // use mmap for faster loading (default: true)
-  use_mlock?: boolean;        // use mlock to keep model in memory (default: false)
+  // Omit both for LLAMA_LOAD_MODE_AUTO (recommended). use_mmap alone -> MMAP/NONE,
+  // use_mlock alone -> MLOCK (no mmap), both true -> MMAP_MLOCK.
+  use_mmap?: boolean;         // force memory-mapped loading on/off
+  use_mlock?: boolean;        // lock model pages in RAM (prevents swapping)
 
   // Model behavior parameters
   vocab_only?: boolean;       // only load the vocabulary, no weights

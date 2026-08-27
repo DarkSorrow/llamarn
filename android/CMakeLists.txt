@@ -80,11 +80,13 @@ add_library(
     ${CPP_DIR}/llama.cpp/common/jinja/caps.cpp
     ${CPP_DIR}/llama.cpp/common/peg-parser.cpp
     ${CPP_DIR}/llama.cpp/common/unicode.cpp
-    ${CPP_DIR}/llama.cpp/common/regex-partial.cpp
+    ${CPP_DIR}/llama.cpp/common/json.cpp
+    ${CPP_DIR}/llama.cpp/common/trie.cpp
     ${CPP_DIR}/llama.cpp/common/arg.cpp
     ${CPP_DIR}/llama.cpp/common/console.cpp
-    ${CPP_DIR}/llama.cpp/common/json-partial.cpp
     ${CPP_DIR}/llama.cpp/common/ngram-cache.cpp
+    ${CPP_DIR}/llama.cpp/common/ngram-map.cpp
+    ${CPP_DIR}/llama.cpp/common/ngram-mod.cpp
     ${CPP_DIR}/llama.cpp/common/json-schema-to-grammar.cpp
     ${CPP_DIR}/llama.cpp/common/speculative.cpp
     ${CPP_DIR}/llama.cpp/common/llguidance.cpp
@@ -96,19 +98,34 @@ set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
 file(GLOB MTMD_ROOT_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/*.cpp")
 list(REMOVE_ITEM MTMD_ROOT_SOURCES "${MTMD_DIR}/mtmd-cli.cpp")
 file(GLOB MTMD_MODEL_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/models/*.cpp")
+# vendor/hash is new in b10648: mtmd-helper.cpp now derives bitmap IDs from SHA-256
+# (was FNV) via hash_sha256_hex(). Upstream links it in as vendor::hash
+# (tools/mtmd/CMakeLists.txt). Only the sha256 path is reachable from hash.cpp, so
+# sha1/xxhash are deliberately not compiled here.
+set(VENDOR_HASH_SOURCES
+    ${LLAMA_CPP_DIR}/vendor/hash/hash.cpp
+    ${LLAMA_CPP_DIR}/vendor/hash/sha256/sha256.c
+)
+
 add_library(
     mtmd
     STATIC
     ${MTMD_ROOT_SOURCES}
     ${MTMD_MODEL_SOURCES}
+    ${VENDOR_HASH_SOURCES}
     ${CPP_DIR}/rn-multimodal.cpp
 )
+
+# Third-party code: silence warnings (upstream does the same via NO_WARN_FLAG).
+set_source_files_properties(${LLAMA_CPP_DIR}/vendor/hash/sha256/sha256.c
+    PROPERTIES COMPILE_OPTIONS "-w")
 
 target_include_directories(mtmd PRIVATE
     ${LLAMA_CPP_DIR}/ggml/include
     ${LLAMA_CPP_DIR}/include
     ${LLAMA_CPP_DIR}/common
     ${LLAMA_CPP_DIR}/vendor
+    ${LLAMA_CPP_DIR}/vendor/hash
     ${LLAMA_CPP_DIR}/src
     ${MTMD_DIR}
     ${CPP_DIR}

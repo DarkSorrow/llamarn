@@ -416,8 +416,16 @@ const result = await model.completion({
 | `n_gpu_layers` | `0` | Layers to offload to GPU — use `optimalGpuLayers` from `loadLlamaModelInfo` |
 | `n_ctx` | `2048` | Context window size |
 | `n_batch` | `512` | Prompt processing batch allocation size |
-| `use_mmap` | `true` | Memory-mapped loading (faster startup) |
-| `use_mlock` | `false` | Lock model in RAM (prevents swapping) |
+| `use_mmap` | _(unset)_ | Force memory-mapped loading on/off. Omit it — see note below |
+| `use_mlock` | _(unset)_ | Lock model in RAM (prevents swapping) |
+
+> **Load mode:** as of llama.cpp b10648 these two booleans map onto a single
+> `llama_load_mode`. Omitting **both** selects `AUTO`, which memory-maps the model
+> except on backends that report no mmap support (Android OpenCL and Hexagon always,
+> Vulkan on integrated GPUs) — there it falls back on its own. Setting either flag
+> opts out of `AUTO`: `use_mmap` alone gives `MMAP`/`NONE`, `use_mlock` alone gives
+> `MLOCK` (which does **not** mmap), and both `true` gives `MMAP_MLOCK`. Prefer
+> leaving them unset unless you have a measured reason not to.
 
 `loadLlamaModelInfo` applies automatic device-tier VRAM budgeting when computing `optimalGpuLayers`:
 - **≥ 8 GB RAM** (flagship — A17 Pro, M-series, Snapdragon 8 Gen 3): 20% of total RAM

@@ -283,7 +283,6 @@ const ModelLoader: React.FC<{
         n_gpu_layers:     info.optimalGpuLayers,
         chunk_size:       info.suggestedChunkSize,
         is_cpu_only:      info.isCpuOnly,
-        use_mlock:        true,
         use_jinja:        mode !== 'embeddings',
         reasoning_budget: 0,
         embedding:        mode === 'embeddings',
