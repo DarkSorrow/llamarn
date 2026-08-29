@@ -65,7 +65,10 @@ jobs:
       
       - name: Initialize or update submodules
         if: steps.check-submodule.outputs.is_updated != 'true'
-        run: scripts/setupLlamaCpp.sh init
+        # --platform=android: this job runs on ubuntu-latest and only needs the
+        # llama.cpp clone + build-info.cpp here. The iOS xcframework is built
+        # from source (requires xcodebuild) by the ios-build job on macos-latest.
+        run: scripts/setupLlamaCpp.sh init --platform=android
       
       - name: Install Dependencies
         run: npm ci
