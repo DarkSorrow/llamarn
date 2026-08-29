@@ -139,7 +139,12 @@ build_ios_framework() {
 
   echo -e "${YELLOW}Building iOS device + simulator slices from source...${NC}"
   echo -e "${YELLOW}(this compiles llama.cpp twice and can take a while)${NC}"
-  if ! ( cd "$llama_src" && ./build-xcframework.sh ios-sim ios-device ); then
+  # Invoke through `bash` rather than executing directly: CI restores the repo from
+  # an actions/upload-artifact bundle, which does not preserve the executable bit, so
+  # ./build-xcframework.sh fails with "Permission denied" there. cpp/llama.cpp is
+  # read-only upstream code (see CLAUDE.md), so we don't chmod it — the script has a
+  # `#!/usr/bin/env bash` shebang and runs fine as a bash argument.
+  if ! ( cd "$llama_src" && bash ./build-xcframework.sh ios-sim ios-device ); then
     echo -e "${RED}Error: build-xcframework.sh failed${NC}"
     return 1
   fi
