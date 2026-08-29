@@ -120,8 +120,18 @@ build_ios_framework() {
 
   # Warn if the checkout drifted from the pinned commit — the shipped binary must
   # match the headers we compile the bridge against.
-  local head_commit
-  head_commit="$(git -C "$llama_src" rev-parse HEAD 2>/dev/null)"
+  #
+  # This is best-effort: CI restores the repo from an upload-artifact bundle, and
+  # actions/upload-artifact skips hidden files unless include-hidden-files is set,
+  # so cpp/llama.cpp/.git is simply absent there. `git rev-parse` then exits 128,
+  # and under `set -e` (GitHub steps run as `bash -e`) a bare assignment from a
+  # failing command substitution aborts the whole step — redirecting stderr hides
+  # the message but not the status. Guard the call so a missing .git only skips
+  # the check.
+  local head_commit=""
+  if git -C "$llama_src" rev-parse --git-dir >/dev/null 2>&1; then
+    head_commit="$(git -C "$llama_src" rev-parse HEAD 2>/dev/null || true)"
+  fi
   if [ -n "$LLAMA_CPP_COMMIT" ] && [ -n "$head_commit" ] && [ "$head_commit" != "$LLAMA_CPP_COMMIT" ]; then
     echo -e "${YELLOW}Warning: cpp/llama.cpp is at $head_commit${NC}"
     echo -e "${YELLOW}         but used_version.sh pins $LLAMA_CPP_COMMIT${NC}"
