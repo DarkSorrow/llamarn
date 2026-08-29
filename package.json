@@ -133,10 +133,10 @@
   "devDependencies": {
     "@react-native/gradle-plugin": "0.85.3",
     "@react-native/jest-preset": "0.85.3",
-    "@types/jest": "^30.0.0",
+    "@types/jest": "^29.5.14",
     "@types/react": "^19.2.1",
     "del-cli": "^6.0.0",
-    "jest": "^30.0.0",
+    "jest": "^29.7.0",
     "prettier": "^3.0.3",
     "react": "19.2.3",
     "react-native": "0.85.3",
