@@ -835,6 +835,10 @@ Rules:
           }
         ] as LlamaTool[];
         completionOptions.tool_choice = "auto";
+        // Penalties count the prompt, so the tool names and call syntax from the
+        // rendered schema get penalised and small models stop emitting tool calls.
+        completionOptions.repeat_penalty   = 1.0;
+        completionOptions.presence_penalty = 0.0;
       }
       
       console.log('Completion options:', completionOptions);

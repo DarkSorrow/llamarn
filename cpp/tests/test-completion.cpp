@@ -164,6 +164,104 @@ RN_TEST(chat_abort_keeps_matched_prefix) {
     RN_CHECK_EQ(chat_content(rerun), chat_content(full));
 }
 
+// Same tools, kwargs and system prompt as example/src/ModelChatTestScreen.tsx in tools mode.
+static json example_tools() {
+    return json::parse(R"json([
+      {"type": "function", "function": {
+        "name": "get_weather",
+        "description": "Gets the current weather information for a specific city",
+        "parameters": {"type": "object", "properties": {
+          "location": {"type": "string", "description": "The city name for which to get weather information"},
+          "unit": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "The unit of temperature to use (default: celsius)"}
+        }, "required": ["location"]}}},
+      {"type": "function", "function": {
+        "name": "get_location",
+        "description": "Gets the user's current location",
+        "parameters": {"type": "object", "properties": {}, "required": []}}}
+    ])json");
+}
+
+static void set_init_kwargs(rn_llama_context * rn) {
+    auto & kw = rn->params.default_template_kwargs;
+    kw["enable_thinking"]     = "false";
+    kw["parse_tool_calls"]    = "true";
+    kw["parallel_tool_calls"] = "false";
+}
+
+RN_TEST(chat_tools_reach_the_prompt) {
+    auto m = load_or_skip(4096);
+    auto * rn = m->rn.get();
+    set_init_kwargs(rn);
+
+    common_chat_templates_inputs inputs;
+    inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(R"([
+      {"role": "system", "content": "You are a helpful AI assistant with access to tools."},
+      {"role": "user", "content": "What is the weather in Paris?"}
+    ])"));
+    inputs.add_generation_prompt = true;
+    inputs.use_jinja             = true;
+    inputs.chat_template_kwargs  = rn->params.default_template_kwargs;
+    inputs.enable_thinking       = false;
+    inputs.tools                 = common_chat_tools_parse_oaicompat(common_json::parse(example_tools().dump()));
+    inputs.parallel_tool_calls   = true;
+    inputs.tool_choice           = common_chat_tool_choice_parse_oaicompat("auto");
+
+    auto session = rn_make_chat_session(rn, inputs);
+    RN_CHECK(inputs.use_jinja);
+    RN_CHECK(!inputs.force_pure_content);
+    RN_CHECK(session.prompt().str().find("get_weather") != std::string::npos);
+}
+
+RN_TEST(chat_tool_call_end_to_end) {
+    auto m = load_or_skip(4096);
+    auto * rn = m->rn.get();
+    set_init_kwargs(rn);
+
+    auto o = chat({ { "system", "You are a helpful AI assistant with access to tools. Use tools only when necessary." },
+                    { "user", "What is the weather in Paris?" } }, 256);
+    o.tools       = example_tools();
+    o.tool_choice = "auto";
+    auto r = run_chat_completion(rn, o, no_stream);
+    RN_CHECK(r.success);
+    const auto & choice = r.chat_response["choices"][0];
+    if (choice["finish_reason"] != "tool_calls") {
+        throw rn_test_failure("no tool call: " + choice.dump());
+    }
+    RN_CHECK_EQ(choice["message"]["tool_calls"][0]["function"]["name"].get<std::string>(), std::string("get_weather"));
+}
+
+RN_TEST(chat_tool_call_example_settings) {
+    auto m = load_or_skip(4096, 128, 32);
+    auto * rn = m->rn.get();
+    set_init_kwargs(rn);
+
+    for (int run = 0; run < 3; run++) {
+        CompletionOptions o;
+        o.messages = json::parse(R"json([
+          {"id": "s", "role": "system", "content": "You are a helpful AI assistant with access to tools. Use tools only when necessary.\n\nRules:\n1. For weather information: Use the get_weather tool\n2. For location information: Use the get_location tool\n3. For general questions: Answer directly without tools\n4. Only call tools when necessary to answer the user's specific question\n5. Don't make multiple tool calls for the same information\n6. Keep responses concise and helpful"},
+          {"id": "u", "role": "user", "content": "What's the weather in Paris?"}
+        ])json");
+        o.temperature       = 0.6f;
+        o.top_p             = 0.95f;
+        o.top_k             = 20;
+        o.min_p             = 0.05f;
+        o.repeat_penalty    = 1.0f;
+        o.repeat_last_n     = 512;
+        o.presence_penalty  = 0.0f;
+        o.n_predict         = 2048;
+        o.stop              = { "</s>", "<|im_end|>", "<|eot_id|>", "<|eom_id|>" };
+        o.tools             = example_tools();
+        o.tool_choice       = "auto";
+        o.reset_kv_cache    = true;
+        auto r = run_chat_completion(rn, o, no_stream);
+        RN_CHECK(r.success);
+        const auto & choice = r.chat_response["choices"][0];
+        if (choice["finish_reason"] != "tool_calls") {
+            throw rn_test_failure("run " + std::to_string(run) + " no tool call: " + choice.dump());
+        }
+    }
+}
+
 RN_TEST(chat_reasoning_and_content_split) {
     auto m = load_or_skip();
     m->rn->params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
