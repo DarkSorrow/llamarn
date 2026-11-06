@@ -34,6 +34,7 @@
     "!**/__fixtures__",
     "!**/__mocks__",
     "!**/.*",
+    "!cpp/tests",
     "!cpp/llama.cpp/examples",
     "!cpp/llama.cpp/tools/CMakeLists.txt",
     "!cpp/llama.cpp/tools/batched-bench",
@@ -85,7 +86,8 @@
     "build-android-external": "bash scripts/build_android_external.sh",
     "build-android-clean": "bash scripts/build_android_external.sh --clean-prebuilt",
     "build-android-macos": "npm run clean-android && npm run clean-prebuilt && bash scripts/build_android_gpu_backend.sh --no-vulkan --no-opencl --clean && bash scripts/build_android_external.sh --no-vulkan --no-opencl --clean",
-    "pack:verify": "bash scripts/verify-pack-contents.sh"
+    "pack:verify": "bash scripts/verify-pack-contents.sh",
+    "test:native": "bash scripts/test_native_host.sh"
   },
   "keywords": [
     "react-native",

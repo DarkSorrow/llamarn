@@ -109,6 +109,56 @@ static bool check_stop_conditions(
     return false;
 }
 
+// llama_process: 2 = aborted, < -1 = fatal; in both cases ubatches already processed stay
+// in the KV cache, so drop everything from this batch on to keep KV in sync with n_past.
+static CompletionResult & rn_decode_failed(
+    CompletionResult & result,
+    rn_llama_context * rn_ctx,
+    int32_t ret,
+    llama_pos first_pos,
+    const char * what) {
+    llama_memory_t mem = llama_get_memory(rn_ctx->ctx);
+    if (!llama_memory_seq_rm(mem, 0, first_pos, -1)) {
+        // recurrent / hybrid memory cannot drop a suffix: start over
+        llama_memory_clear(mem, true);
+        rn_ctx->kv_messages.clear();
+        rn_ctx->kv_has_messages = false;
+        rn_ctx->kv_render_identity.clear();
+    }
+    result.success    = false;
+    result.error_type = RN_ERROR_INFERENCE;
+    result.error_msg  = ret == 2 ? std::string("Generation aborted")
+                                 : std::string(what) + " (llama_process returned " + std::to_string(ret) + ")";
+    return result;
+}
+
+// A model's embedded jinja template can throw (missing field, wrong type, raise_exception).
+// Level 1: full jinja + autoparser (grammar, tool-call parser).
+// Level 2 (force_pure_content): jinja renders the prompt, no grammar or tool-call parser.
+// Level 3 (use_jinja=false): llama_chat_apply_template, zero jinja.
+// `inputs` keeps the level that succeeded so later renders (KV boundaries) match the prompt.
+common_chat_session rn_make_chat_session(const rn_llama_context * rn_ctx, common_chat_templates_inputs & inputs) {
+    try {
+        return common_chat_session(rn_ctx->chat_templates.get(), rn_ctx->vocab, inputs);
+    } catch (const std::exception &) {}
+    inputs.force_pure_content = true;
+    try {
+        return common_chat_session(rn_ctx->chat_templates.get(), rn_ctx->vocab, inputs);
+    } catch (const std::exception &) {}
+    inputs.use_jinja = false;
+    return common_chat_session(rn_ctx->chat_templates.get(), rn_ctx->vocab, inputs);
+}
+
+void rn_init_batches(rn_llama_context * rn_ctx) {
+    rn_ctx->gen_batch    = std::make_unique<common_batch>(rn_ctx->ctx);
+    rn_ctx->ingest_batch = std::make_unique<common_batch>(rn_ctx->ctx);
+}
+
+void rn_free_batches(rn_llama_context * rn_ctx) {
+    rn_ctx->gen_batch.reset();
+    rn_ctx->ingest_batch.reset();
+}
+
 static std::string build_kv_render_identity(
     const rn_llama_context* rn_ctx,
     const CompletionOptions& options) {
@@ -138,7 +188,7 @@ CompletionResult run_completion(
         return result;
     }
 
-    if (!rn_ctx->batches_initialized) {
+    if (!rn_ctx->gen_batch || !rn_ctx->ingest_batch) {
         result.success = false;
         result.error_msg = "Decode batches are not initialized";
         result.error_type = RN_ERROR_CONTEXT;
@@ -188,29 +238,17 @@ CompletionResult run_completion(
             sampling_params.seed = static_cast<uint32_t>(options.seed);
         }
 
-        // Merge preserved token IDs from the chat template autoparser into sampling params.
-        // These are special single-token strings (e.g. "<think>", "<|eot_id|>") that the
-        // tokenizer must not split — required for lazy grammar triggers to work correctly.
-        for (auto tok : options.preserved_tokens) {
-            sampling_params.preserved_tokens.insert(tok);
-        }
-
-        if (!options.grammar.empty()) {
-            sampling_params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_USER, options.grammar);
-            // Force grammar_lazy to false whenever tools are present to ensure strict JSON format enforcement
-            if (!options.tools.empty()) {
-                sampling_params.grammar_lazy = false;
-            } else {
-                sampling_params.grammar_lazy = options.grammar_lazy;
-            }
-            // Pass grammar_triggers if any were provided by chat_params and passed via options
-            if (!options.grammar_triggers.empty()) {
-                sampling_params.grammar_triggers = options.grammar_triggers;
-            }
+        // Chat path: the session owns grammar (user, json_schema or tool calls), lazy triggers
+        // and preserved tokens, resolved against the vocab (server: apply_chat_session).
+        if (options.chat_session) {
+            options.chat_session->apply_sampling(sampling_params);
+        } else if (!options.grammar.empty()) {
+            sampling_params.grammar      = common_grammar(COMMON_GRAMMAR_TYPE_USER, options.grammar);
+            sampling_params.grammar_lazy = options.grammar_lazy;
         }
 
         // Wire reasoning budget into sampling params.
-        // The start/end tags come from chat_params.thinking_start/end_tags (set by run_chat_completion).
+        // The start/end tags come from the chat session (set by run_chat_completion).
         // Mirrors server-common.cpp oaicompat_chat_params_parse() reasoning budget block.
         if (!options.reasoning_budget_start_tag.empty() && !options.reasoning_budget_end_tags.empty()) {
             sampling_params.reasoning_budget_tokens = options.reasoning_budget_tokens;
@@ -271,14 +309,17 @@ CompletionResult run_completion(
             result.n_prompt_tokens = 0;
         } else {
 
-        // Tokenize the prompt directly — always a string in this path
-        if (options.prompt.empty()) {
-            result.success = false;
-            result.error_msg = "No prompt provided";
-            result.error_type = RN_ERROR_INVALID_PARAM;
-            return result;
+        if (!options.prompt_tokens.empty()) {
+            state.prompt_tokens = options.prompt_tokens;
+        } else {
+            if (options.prompt.empty()) {
+                result.success = false;
+                result.error_msg = "No prompt provided";
+                result.error_type = RN_ERROR_INVALID_PARAM;
+                return result;
+            }
+            state.prompt_tokens = common_tokenize(rn_ctx->vocab, options.prompt, true, true);
         }
-        state.prompt_tokens = common_tokenize(rn_ctx->vocab, options.prompt, true, true);
         if (state.prompt_tokens.empty()) {
             result.success = false;
             result.error_msg = "Empty prompt";
@@ -328,78 +369,28 @@ CompletionResult run_completion(
         // chunk_size (distinct from n_batch) is the decode granularity; after each chunk
         // we yield to let the OS/UI thread run, preventing display fence timeouts (Android)
         // and UI starvation (CPU-only devices).
-        const int ingest_chunk = std::clamp(rn_ctx->params.chunk_size, 8, 512);
+        // A chunk must never exceed n_batch (one llama_process call per chunk).
+        const int ingest_chunk = std::min(std::clamp(rn_ctx->params.chunk_size, 8, 512),
+                                          static_cast<int>(llama_n_batch(rn_ctx->ctx)));
 
-        if (state.n_past > 0) {
-            // Prefix reuse: only encode prompt_tokens[n_past:] at positions [n_past, n_past+1, ...]
-            const int n_new = static_cast<int>(state.prompt_tokens.size()) - state.n_past;
-            if (n_new > 0) {
-                llama_batch& ingest_batch = rn_ctx->ingest_batch;
-                for (int i = 0; i < n_new; ) {
-                    if (rn_ctx->abort_generation.load(std::memory_order_relaxed)) {
-                        result.success = false;
-                        result.error_msg = "Generation aborted";
-                        result.error_type = RN_ERROR_INFERENCE;
-                        return result;
-                    }
-                    common_batch_clear(ingest_batch);
-                    int chunk = std::min(ingest_chunk, n_new - i);
-                    bool last_chunk = (i + chunk >= n_new);
-                    for (int j = 0; j < chunk; j++) {
-                        common_batch_add(ingest_batch,
-                            state.prompt_tokens[state.n_past + i + j],
-                            state.n_past + i + j,
-                            {0},
-                            last_chunk && (j == chunk - 1));
-                    }
-                    auto t0 = std::chrono::steady_clock::now();
-                    if (llama_decode(rn_ctx->ctx, ingest_batch) != 0) {
-                        result.success = false;
-                        result.error_msg = "Failed to process prompt";
-                        result.error_type = RN_ERROR_INFERENCE;
-                        return result;
-                    }
-                    const auto chunk_elapsed = std::chrono::steady_clock::now() - t0;
-                    if (rn_ctx->params.is_cpu_only) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                    } else {
-                        int chunk_gap_ms = std::max(0, rn_ctx->params.prompt_chunk_gap_ms);
-                        if (state.prompt_tokens.size() > 2048) {
-                            chunk_gap_ms += static_cast<int>(state.prompt_tokens.size() / 2048);
-                        }
-                        const auto min_chunk_gap = std::chrono::milliseconds(chunk_gap_ms);
-                        if (chunk_elapsed < min_chunk_gap) {
-                            std::this_thread::sleep_for(min_chunk_gap - chunk_elapsed);
-                        }
-                    }
-                    i += chunk;
-                }
-                state.n_past = static_cast<int>(state.prompt_tokens.size());
-            }
-        } else {
-            // Standard path: encode all tokens from position 0.
+        // With prefix reuse (n_past > 0) only prompt_tokens[n_past:] are encoded, at their own positions.
+        {
             const int n_total = static_cast<int>(state.prompt_tokens.size());
-            llama_batch& ingest_batch = rn_ctx->ingest_batch;
-            for (int i = 0; i < n_total; ) {
+            common_batch& ingest_batch = *rn_ctx->ingest_batch;
+            for (int pos = state.n_past; pos < n_total; ) {
                 if (rn_ctx->abort_generation.load(std::memory_order_relaxed)) {
-                    result.success = false;
-                    result.error_msg = "Generation aborted";
-                    result.error_type = RN_ERROR_INFERENCE;
-                    return result;
+                    return rn_decode_failed(result, rn_ctx, 2, pos, "Failed to process prompt");
                 }
-                common_batch_clear(ingest_batch);
-                int chunk = std::min(ingest_chunk, n_total - i);
-                bool last_chunk = (i + chunk >= n_total);
+                const int chunk = std::min(ingest_chunk, n_total - pos);
+                const bool last_chunk = (pos + chunk >= n_total);
+                ingest_batch.clear();
                 for (int j = 0; j < chunk; j++) {
-                    common_batch_add(ingest_batch, state.prompt_tokens[i + j], i + j,
-                                     {0}, last_chunk && (j == chunk - 1));
+                    ingest_batch.add(state.prompt_tokens[pos + j], pos + j, 0, last_chunk && (j == chunk - 1));
                 }
                 auto t0 = std::chrono::steady_clock::now();
-                if (llama_decode(rn_ctx->ctx, ingest_batch) != 0) {
-                    result.success = false;
-                    result.error_msg = "Failed to process prompt";
-                    result.error_type = RN_ERROR_INFERENCE;
-                    return result;
+                const int32_t ret = llama_process(rn_ctx->ctx, LLAMA_PROCESS_TYPE_DECODE, ingest_batch.get());
+                if (ret != 0) {
+                    return rn_decode_failed(result, rn_ctx, ret, pos, "Failed to process prompt");
                 }
                 const auto chunk_elapsed = std::chrono::steady_clock::now() - t0;
                 if (rn_ctx->params.is_cpu_only) {
@@ -414,7 +405,7 @@ CompletionResult run_completion(
                         std::this_thread::sleep_for(min_chunk_gap - chunk_elapsed);
                     }
                 }
-                i += chunk;
+                pos += chunk;
             }
             state.n_past = n_total;
         }
@@ -448,7 +439,7 @@ CompletionResult run_completion(
 
         } // end: normal tokenize + encode path (mtmd_encoded_n_past < 0)
 
-        llama_batch& gen_batch = rn_ctx->gen_batch;
+        common_batch& gen_batch = *rn_ctx->gen_batch;
 
         // Cap n_predict to the space remaining in the context window.
         // When callers set max_tokens far beyond n_ctx (e.g. 8192 tokens with n_ctx=2048),
@@ -590,13 +581,12 @@ CompletionResult run_completion(
             // step ahead of the KV cache, causing logit/sampler mismatch on Android GPU
             // backends (Vulkan/Adreno/Mali) and producing garbled output.
             // Correct order matches server-context.cpp and ai_chat.cpp: sample → decode → accept → n_past++
-            common_batch_clear(gen_batch);
-            common_batch_add(gen_batch, token_id, state.n_past, {0}, true);
-            if (llama_decode(rn_ctx->ctx, gen_batch) != 0) {
-                result.success = false;
-                result.error_msg = "Failed to decode generated token";
-                result.error_type = RN_ERROR_INFERENCE;
-                return result;
+            gen_batch.clear();
+            gen_batch.add(token_id, state.n_past, 0, true);
+            const int32_t ret = llama_process(rn_ctx->ctx, LLAMA_PROCESS_TYPE_DECODE, gen_batch.get());
+            if (ret != 0) {
+                result.content = state.generated_text;
+                return rn_decode_failed(result, rn_ctx, ret, state.n_past, "Failed to decode generated token");
             }
 
             state.n_past++;
@@ -903,19 +893,16 @@ CompletionResult run_chat_completion(
             }
         }
 
-        // Completion cache: if prompt_id changed from the cached value, the system prompt or
-        // tools have changed — the KV cache is stale and must be fully cleared.
+        // If prompt_id changed, the system prompt or tools changed: the KV cache is stale.
         // This must happen BEFORE the KV eviction block so the clear is applied correctly.
-        const bool has_cache_ids = !options.prompt_id.empty() && !options.config_id.empty();
-        if (has_cache_ids && rn_ctx->completion_cache.has_value()) {
-            if (rn_ctx->completion_cache->prompt_id != options.prompt_id) {
-                // prompt_id changed — system prompt or tools changed; KV cache is invalid.
+        if (!options.prompt_id.empty()) {
+            if (!rn_ctx->last_prompt_id.empty() && rn_ctx->last_prompt_id != options.prompt_id) {
                 llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
                 rn_ctx->kv_messages.clear();
                 rn_ctx->kv_has_messages = false;
-                // Invalidate the cache entry so config_cache_hit will be false below.
-                rn_ctx->completion_cache.reset();
+                kv_match_count = 0;
             }
+            rn_ctx->last_prompt_id = options.prompt_id;
         }
 
         // Decide the KV common position and evict stale entries.
@@ -963,20 +950,6 @@ CompletionResult run_chat_completion(
             kv_hint_pos = 0;
         }
 
-        // Completion cache lookup: if both prompt_id and config_id match the cached entry,
-        // skip the expensive common_chat_templates_apply step entirely and reuse the cached
-        // sampling params, grammar, grammar_triggers, preserved_tokens, and additional_stops.
-        // When both IDs are empty, behave identically to before (no cache lookup, no cache store).
-        // Contract: callers should roll tools + system prompt identity into config_id so
-        // completion-config changes only take effect when config_id changes.
-        bool config_cache_hit = false;
-        if (has_cache_ids && rn_ctx->completion_cache.has_value()) {
-            const auto& cached_entry = *rn_ctx->completion_cache;
-            if (cached_entry.prompt_id == options.prompt_id && cached_entry.config_id == options.config_id) {
-                config_cache_hit = true;
-            }
-        }
-
         // Build template inputs directly from options — no JSON roundtrip
         common_chat_templates_inputs template_inputs;
         template_inputs.messages             = chat_msgs;
@@ -1014,137 +987,29 @@ CompletionResult run_chat_completion(
         // Pass the trusted KV start position so run_completion skips its own KV management.
         cmpl_options.kv_hint_pos = kv_hint_pos;
 
-        common_chat_params chat_params;
-        if (config_cache_hit) {
-            // Cache hit: always render with full template inputs (including tools) so
-            // tool-aware templates remain semantically identical between miss/hit paths.
-            const auto& cached_entry = *rn_ctx->completion_cache;
-            try {
-                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-            } catch (const std::exception &) {
-                try {
-                    template_inputs.force_pure_content = true;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-                } catch (const std::exception &) {
-                    template_inputs.use_jinja = false;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-                }
-            }
+        // The session owns prompt parts, grammar, lazy triggers, preserved tokens, stops,
+        // thinking tags and the PEG parser (server: oaicompat_chat_params_parse).
+        common_chat_session session = rn_make_chat_session(rn_ctx, template_inputs);
+        cmpl_options.chat_session = &session;
+        cmpl_options.grammar.clear();
 
-            // Preserve stop strings and protected tokens from the current render.
-            for (const auto & stop : chat_params.additional_stops) {
-                cmpl_options.stop.push_back(stop);
-            }
-
-            for (const auto & pt : chat_params.preserved_tokens) {
-                auto ids = common_tokenize(rn_ctx->vocab, pt, false, true);
-                if (ids.size() == 1) {
-                    cmpl_options.preserved_tokens.insert(ids[0]);
-                }
-            }
-
-            // Conservative grammar reuse:
-            // - Reuse cached grammar only when no tool grammar is in play.
-            // - Otherwise, regenerate from current chat_params for correctness.
-            const bool grammar_inputs_unchanged =
-                template_inputs.tools.empty() &&
-                options.grammar.empty() &&
-                !chat_params.grammar.empty();
-
-            if (grammar_inputs_unchanged && !cached_entry.grammar.empty()) {
-                cmpl_options.grammar          = cached_entry.grammar;
-                cmpl_options.grammar_lazy     = cached_entry.grammar_lazy;
-                cmpl_options.grammar_triggers = cached_entry.grammar_triggers;
-            } else if (!chat_params.grammar.empty()) {
-                cmpl_options.grammar = chat_params.grammar;
-                if (!template_inputs.tools.empty()) {
-                    cmpl_options.grammar_lazy = false;
-                } else {
-                    cmpl_options.grammar_lazy = chat_params.grammar_lazy;
-                }
-                cmpl_options.grammar_triggers = chat_params.grammar_triggers;
-            }
-        } else {
-            // Cache miss (or IDs empty): run full common_chat_templates_apply as before.
-            //
-            // common_chat_templates_apply_jinja renders the template twice against real messages
-            // (add_generation_prompt=false then true) to extract the generation-prompt suffix before
-            // invoking either the specialized handler or the auto-parser.  If the model's embedded
-            // jinja template references a field that is absent or a wrong type (e.g. calls .lstrip()
-            // on a non-string), the runtime throws std::runtime_error.
-            //
-            // Level 1: full jinja path — autoparser generates a grammar/parser for structured output.
-            // Level 2 (force_pure_content): skips the autoparser; jinja still renders the prompt but
-            //          no grammar constraint is produced.  Tool calls still appear in the prompt via
-            //          the template itself; only grammar-constrained sampling is lost.
-            // Level 3 (use_jinja=false): the C++ llama_chat_apply_template path — zero jinja.
-            //          Last resort to prevent a hard crash when jinja itself cannot execute the
-            //          template.  Produces a usable prompt; tool-call grammar/parser is not available.
-            try {
-                chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-            } catch (const std::exception & e) {
-                try {
-                    template_inputs.force_pure_content = true;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-                } catch (const std::exception &) {
-                    template_inputs.use_jinja = false;
-                    chat_params = common_chat_templates_apply(rn_ctx->chat_templates.get(), template_inputs);
-                }
-            }
-
-            // Add extra stop strings emitted by the chat format (e.g. EOS variants, special separators).
-            // Mirrors server-common.cpp: llama_params["stop"].push_back(stop)
-            for (const auto & stop : chat_params.additional_stops) {
-                cmpl_options.stop.push_back(stop);
-            }
-
-            // Tokenize preserved_tokens strings from the chat template and insert single-token IDs
-            // into sampling params so the tokenizer never splits them mid-sequence.
-            // Mirrors server-task.cpp: common_tokenize → insert if size() == 1.
-            for (const auto & pt : chat_params.preserved_tokens) {
-                auto ids = common_tokenize(rn_ctx->vocab, pt, false, true);
-                if (ids.size() == 1) {
-                    cmpl_options.preserved_tokens.insert(ids[0]);
-                }
-            }
-
-            if (!chat_params.grammar.empty()) {
-                cmpl_options.grammar = chat_params.grammar;
-                // Always force grammar_lazy to false when tools are present
-                if (!template_inputs.tools.empty()) {
-                    cmpl_options.grammar_lazy = false;
-                } else {
-                    // Only use chat_params.grammar_lazy if no tools are present
-                    cmpl_options.grammar_lazy = chat_params.grammar_lazy;
-                }
-                // Default to grammar_triggers provided by chat_params
-                cmpl_options.grammar_triggers = chat_params.grammar_triggers;
-            }
-
-            // Store new cache entry when both IDs are provided.
-            if (has_cache_ids) {
-                rn_llama_context::completion_cache_entry new_entry;
-                new_entry.prompt_id        = options.prompt_id;
-                new_entry.config_id        = options.config_id;
-                new_entry.grammar          = cmpl_options.grammar;
-                new_entry.grammar_lazy     = cmpl_options.grammar_lazy;
-                new_entry.grammar_triggers = cmpl_options.grammar_triggers;
-                new_entry.preserved_tokens = cmpl_options.preserved_tokens;
-                new_entry.additional_stops = chat_params.additional_stops;
-                rn_ctx->completion_cache   = std::move(new_entry);
-            }
+        for (const auto & stop : session.additional_stops()) {
+            cmpl_options.stop.push_back(stop);
         }
 
-        cmpl_options.prompt = chat_params.prompt;
+        if (has_media) {
+            // mtmd_tokenize takes a single text with one parse_special flag, so special tokens
+            // are parsed in the whole prompt on media turns.
+            cmpl_options.prompt = session.prompt().str();
+        } else {
+            cmpl_options.prompt_tokens = rn_tokenize_chat_prompt(rn_ctx->vocab, session.prompt(), true);
+        }
 
-        // Wire reasoning budget from chat template into completion options.
-        // Mirrors server-common.cpp: reads thinking_start/end_tag from chat_params and
-        // passes them through to the sampler via reasoning_budget_* fields.
-        if (chat_params.supports_thinking && !chat_params.thinking_end_tags.empty()) {
+        // Same rule as the server: budget tags are wired whenever the template has thinking end tags.
+        if (!session.thinking_end_tags().empty()) {
             cmpl_options.reasoning_budget_tokens    = rn_ctx->params.reasoning_budget;
-            cmpl_options.reasoning_budget_start_tag = chat_params.thinking_start_tag;
-            cmpl_options.reasoning_budget_end_tags  = chat_params.thinking_end_tags;
-            // reasoning_budget_message is not exposed via JS yet; leave empty (sampler uses end tag only)
+            cmpl_options.reasoning_budget_start_tag = session.thinking_start_tag();
+            cmpl_options.reasoning_budget_end_tags  = session.thinking_end_tags();
         }
 
         // Multimodal: tokenize + eval the full prompt (text + images) via mtmd.
@@ -1241,7 +1106,9 @@ CompletionResult run_chat_completion(
                 // ARE encoded in the actual KV cache. Using false would make kv_hint_pos point
                 // before those tokens, causing the next call to re-encode them at occupied
                 // KV positions and misaligning all subsequent RoPE position embeddings.
-                common_chat_templates_inputs tinput;
+                // Same inputs (tools, kwargs, fallback level) as the session render, so the
+                // boundaries line up with the tokens actually in the KV cache.
+                common_chat_templates_inputs tinput = template_inputs;
                 tinput.messages               = std::vector<common_chat_msg>(chat_msgs.begin(),
                                                                               chat_msgs.begin() + k + 1);
                 // Always false: we want the token boundary after the message content, not after
@@ -1249,12 +1116,9 @@ CompletionResult run_chat_completion(
                 // in token_end, but on the next turn that suffix is part of the assistant message
                 // tokens — causing kv_hint_pos to point into the wrong position.
                 tinput.add_generation_prompt  = false;
-                tinput.use_jinja              = rn_ctx->params.use_jinja;
-                tinput.reasoning_format       = rn_ctx->params.reasoning_format;
-                tinput.chat_template_kwargs   = rn_ctx->params.default_template_kwargs;
                 try {
                     auto partial = common_chat_templates_apply(rn_ctx->chat_templates.get(), tinput);
-                    auto partial_tokens = common_tokenize(rn_ctx->vocab, partial.prompt, true, true);
+                    auto partial_tokens = rn_tokenize_chat_prompt(rn_ctx->vocab, partial.prompt, true);
                     rn_ctx->kv_messages.push_back({msg_ids[k],
                                                    static_cast<int32_t>(partial_tokens.size())});
                 } catch (...) {
@@ -1267,37 +1131,25 @@ CompletionResult run_chat_completion(
             rn_ctx->kv_messages.clear();
             rn_ctx->kv_has_messages = false;
             rn_ctx->kv_render_identity.clear();
+        } else if (!result.success && rn_ctx->kv_messages.size() > kv_match_count) {
+            // Only the matched prefix is guaranteed to still be in the KV cache.
+            rn_ctx->kv_messages.resize(kv_match_count);
         }
 
         if (result.success) {
-            // Parse the generated content for tool calls and structured responses
+            // One full parse of the final output (server: task_result_state::update with is_partial=false).
+            // Splits reasoning from content even without tools.
             common_chat_msg parsed_msg;
             bool has_parsed_content = false;
-            
-            // Only parse if we have tools available and the response isn't empty
-            if (!template_inputs.tools.empty() && !result.content.empty()) {
+            if (!result.content.empty()) {
                 try {
-                    // Construct parser params from the applied chat params, then override reasoning format.
-                    // The common_chat_parser_params(chat_params) constructor only copies format and
-                    // generation_prompt — it does NOT copy the PEG arena.  Load it explicitly so that
-                    // common_chat_parse uses the autoparser's generated PEG grammar for tool-call
-                    // parsing instead of the fallback pure-content parser.
-                    // Mirrors server-task.cpp: params.chat_parser_params.parser.load(data["chat_parser"])
-                    common_chat_parser_params parser_params(chat_params);
-                    parser_params.reasoning_format = rn_ctx->params.reasoning_format;
-                    if (!chat_params.parser.empty()) {
-                        parser_params.parser.load(chat_params.parser);
-                    }
-
-                    // Parse the generated content for tool calls
-                    parsed_msg = common_chat_parse(result.content, false, parser_params);
+                    parsed_msg = session.finish(common_chat_input(result.content));
                     has_parsed_content = true;
-                    
                 } catch (const std::exception& e) {
-                    // If parsing fails, treat as regular content
-                    has_parsed_content = false;
-                    result.tool_call_parse_failed = true;
-                    result.tool_call_parse_error = e.what();
+                    if (!template_inputs.tools.empty()) {
+                        result.tool_call_parse_failed = true;
+                        result.tool_call_parse_error = e.what();
+                    }
                 }
             }
             
@@ -1329,9 +1181,12 @@ CompletionResult run_chat_completion(
                 choice["message"]["content"] = result.content;
                 choice["finish_reason"] = "tool_call_parse_error";
                 choice["tool_call_parse_error"] = result.tool_call_parse_error;
-            } else if (has_parsed_content && !parsed_msg.content.empty()) {
-                // Regular text response with parsed content
+            } else if (has_parsed_content &&
+                       (!parsed_msg.content.empty() || !parsed_msg.reasoning_content.empty())) {
                 choice["message"]["content"] = parsed_msg.content;
+                if (!parsed_msg.reasoning_content.empty()) {
+                    choice["message"]["reasoning_content"] = parsed_msg.reasoning_content;
+                }
             } else {
                 // Fallback to raw content if parsing failed or no tools
                 choice["message"]["content"] = result.content;

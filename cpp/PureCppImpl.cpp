@@ -694,9 +694,7 @@ static ModelInitResult do_init_llama(
     rn_ctx->model_loaded = true;
     rn_ctx->vocab        = llama_model_get_vocab(rn_ctx->model);
     rn_ctx->params       = rn_params;
-    rn_ctx->gen_batch    = llama_batch_init(1, 0, 1);
-    rn_ctx->ingest_batch = llama_batch_init(rn_ctx->params.n_batch, 0, 1);
-    rn_ctx->batches_initialized = true;
+    rn_init_batches(rn_ctx.get());
 
     llama_set_abort_callback(
         rn_ctx->ctx,
@@ -766,7 +764,7 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   std::string chat_template;
   
   // Thinking and reasoning options
-  int reasoning_budget = 0;  // -1 = unlimited, 0 = disabled, >0 = limited
+  int reasoning_budget = 0;  // 0 = thinking off (template), -1 = no budget sampler, >0 = token budget
   common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
   bool thinking_forced_open = false;
   bool parse_tool_calls = true;  // Enabled by default for better tool support

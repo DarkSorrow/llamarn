@@ -30,10 +30,8 @@ struct rn_common_params : common_params {
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
     bool use_jinja = false;
 
-    // Reasoning budget: -1 = unlimited thinking, 0 = disabled, >0 = token limit.
-    // Stored here because upstream moved this out of common_params into common_params_sampling
-    // (as reasoning_budget_tokens). We keep it here for JS-layer parsing and apply it to
-    // sampling.reasoning_budget_tokens during do_init_llama.
+    // Reasoning budget from JS. 0 renders the template with enable_thinking=false; otherwise it
+    // becomes sampling.reasoning_budget_tokens on chat calls (-1 = no budget sampler, >0 = limit).
     int reasoning_budget = 0;
 
     // Cooperative prompt-ingestion loop settings (set at initLlama time).
@@ -90,25 +88,22 @@ struct rn_llama_context {
     bool                      kv_has_messages = false;
     std::string               kv_render_identity;
 
-    // Completion cache: stores the resolved sampling params and grammar state from the last
-    // run_chat_completion call. When prompt_id and config_id both match on the next call,
-    // the expensive common_chat_templates_apply step is skipped entirely.
-    struct completion_cache_entry {
-        std::string                          prompt_id;
-        std::string                          config_id;
-        std::string                          grammar;
-        bool                                 grammar_lazy = false;
-        std::vector<common_grammar_trigger>  grammar_triggers;
-        std::set<llama_token>                preserved_tokens;
-        std::vector<std::string>             additional_stops;
-    };
-    std::optional<completion_cache_entry> completion_cache;
+    // prompt_id of the last chat call; a change means system prompt or tools changed, so the KV cache is stale.
+    std::string last_prompt_id;
 
-    // Reused decode batches to avoid per-request alloc/free churn.
-    llama_batch gen_batch = {};
-    llama_batch ingest_batch = {};
-    bool batches_initialized = false;
+    // Reused decode batches (one per context) to avoid per-request alloc/free churn.
+    // Must be released (rn_free_batches) before the llama_context is freed.
+    std::unique_ptr<common_batch> gen_batch;
+    std::unique_ptr<common_batch> ingest_batch;
 };
+
+void rn_init_batches(rn_llama_context* rn_ctx);
+void rn_free_batches(rn_llama_context* rn_ctx);
+
+// Builds the chat session, falling back to force_pure_content and then to the non-jinja
+// template path when the model's jinja template throws. On return, `inputs` holds the
+// settings that succeeded so later renders (KV boundaries) match the decoded prompt.
+common_chat_session rn_make_chat_session(const rn_llama_context* rn_ctx, common_chat_templates_inputs& inputs);
 
 // Core completion functions
 CompletionResult run_completion(

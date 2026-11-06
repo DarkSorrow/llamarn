@@ -74,8 +74,12 @@ struct CompletionOptions {
     int seed = -1;  // -1 = leave model's default seed unchanged; >=0 overrides (applied in run_completion)
     json tools;         // tools for function calling
     std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
-    std::vector<common_grammar_trigger> grammar_triggers; // For lazy grammar
-    std::set<llama_token> preserved_tokens; // single-token IDs that must not be split (from chat_params)
+
+    // Internal: set by run_chat_completion.
+    // prompt_tokens: part-aware tokenized chat prompt; when non-empty it replaces tokenizing `prompt`.
+    // chat_session: owns grammar, triggers and preserved tokens; applied to the sampler via apply_sampling.
+    llama_tokens prompt_tokens;
+    const common_chat_session * chat_session = nullptr;
 
     // KV cache control
     bool    reset_kv_cache = false; // force full KV cache clear even when message IDs match
@@ -96,9 +100,10 @@ struct CompletionOptions {
     // system prompt + tools identity, so config changes only apply when this key changes.
     std::string config_id;
 
-    // Reasoning budget: passed from chat_params.thinking_start/end_tag after template apply.
-    // When non-empty, the sampler enforces a token budget on the thinking block.
-    // -1 = unlimited (thinking enabled, no cap), 0 = disabled, >0 = token limit.
+    // Reasoning budget: passed from the chat session's thinking tags after template apply.
+    // Matches common/sampling.cpp: -1 = no budget sampler (unlimited thinking),
+    // >= 0 = token budget. Thinking itself is turned off at the template level
+    // (enable_thinking=false) when the JS reasoning_budget is 0.
     int32_t                  reasoning_budget_tokens  = -1;
     std::string              reasoning_budget_start_tag;  // e.g. "<think>"
     std::vector<std::string> reasoning_budget_end_tags;   // e.g. {"</think>"} — plural for parity
@@ -245,6 +250,36 @@ inline llama_tokens tokenize_mixed(const llama_vocab * vocab, const json & json_
     }
 
     return prompt_tokens;
+}
+
+// Tokenize a rendered chat prompt part by part: special tokens are parsed only in
+// template parts, never in user-input parts (is_input), so typed control tokens stay text.
+inline llama_tokens rn_tokenize_chat_prompt(const llama_vocab * vocab, const common_chat_prompt & prompt, bool add_special) {
+    llama_tokens tokens;
+    bool first = true;
+    for (const auto & part : prompt.parts) {
+        if (part.text.empty()) {
+            continue;
+        }
+        auto part_tokens = common_tokenize(vocab, part.text, first && add_special, !part.is_input);
+        tokens.insert(tokens.end(), part_tokens.begin(), part_tokens.end());
+        first = false;
+    }
+    return tokens;
+}
+
+inline void rn_batch_clear(llama_batch & batch) {
+    batch.n_tokens = 0;
+}
+
+inline void rn_batch_add(llama_batch & batch, llama_token id, llama_pos pos, llama_seq_id seq_id, bool logits) {
+    const int32_t i = batch.n_tokens;
+    batch.token[i]     = id;
+    batch.pos[i]       = pos;
+    batch.n_seq_id[i]  = 1;
+    batch.seq_id[i][0] = seq_id;
+    batch.logits[i]    = logits;
+    batch.n_tokens++;
 }
 
 /**

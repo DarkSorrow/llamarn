@@ -96,11 +96,7 @@ void LlamaCppModel::release() {
   if (rn_ctx_) {
     std::lock_guard<std::mutex> lock(rn_ctx_->mutex);
 
-    if (rn_ctx_->batches_initialized) {
-      llama_batch_free(rn_ctx_->gen_batch);
-      llama_batch_free(rn_ctx_->ingest_batch);
-      rn_ctx_->batches_initialized = false;
-    }
+    rn_free_batches(rn_ctx_);
 
     // Clear KV cache before context is freed (following server.cpp pattern)
     // This is safe even if context will be freed later by init_result_
@@ -548,7 +544,7 @@ jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args
 
     // CC-P1 FIX: Acquire inference_mutex_ before calling completion() so that
     // completionJsi (sync path) cannot race with completionAsyncJsi (async path)
-    // on kv_messages / completion_cache inside run_chat_completion().
+    // on kv_messages / last_prompt_id inside run_chat_completion().
     // Lock order: inference_mutex_ > rn_ctx_->mutex (consistent with all call sites).
     CompletionResult result;
     {
@@ -968,10 +964,10 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     // Enable embedding mode
     llama_set_embeddings(rn_ctx_->ctx, true);
 
-    // Create and populate batch using common_batch functions (following embedding.cpp pattern)
+    // Plain llama_batch + llama_decode: the llama_batch_ext embedding getters are not upstream yet.
     llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
-    
-    common_batch_clear(batch);
+
+    rn_batch_clear(batch);
     const llama_seq_id seq_id = 0;
     // For embeddings, we need logits for the token(s) that will produce embeddings
     // For pooling models: typically only the last token needs logits (sequence-level embedding)
@@ -980,7 +976,7 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     for (int i = 0; i < (int)tokens.size(); i++) {
       // Set logits for the last token (for both pooling and non-pooling, we want the final embedding)
       bool needs_logits = (i == (int)tokens.size() - 1);
-      common_batch_add(batch, tokens[i], i, {seq_id}, needs_logits);
+      rn_batch_add(batch, tokens[i], i, seq_id, needs_logits);
     }
 
     if (llama_decode(rn_ctx_->ctx, batch) != 0) {
