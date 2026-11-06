@@ -25,6 +25,8 @@
     "INTERFACE.md",
     "react-native.config.js",
     "!ios/build",
+    "!ios/libs/llama-dSYMs",
+    "!ios/libs/**/dSYMs",
     "!android/build",
     "!android/gradle",
     "!android/gradlew",

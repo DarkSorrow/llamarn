@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(RN_CPP_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(RN_LLAMA_DIR "${RN_CPP_DIR}/llama.cpp")
 
-set(LLAMA_BUILD_COMMON   ON  CACHE BOOL "" FORCE)
-set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_MTMD     OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -20,6 +20,26 @@ set(GGML_NATIVE          ON  CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${RN_LLAMA_DIR} llama.cpp-build EXCLUDE_FROM_ALL)
+
+# Same common/mtmd source list as the Android build, so a missing source fails here first.
+set(LLAMA_CPP_DIR ${RN_LLAMA_DIR})
+include(${RN_CPP_DIR}/rn-common-sources.cmake)
+
+add_library(rn_common STATIC ${RN_COMMON_SOURCES} ${RN_CPP_DIR}/build-info.cpp)
+target_include_directories(rn_common PUBLIC
+    ${RN_LLAMA_DIR}/common
+    ${RN_LLAMA_DIR}/vendor
+)
+target_link_libraries(rn_common PUBLIC llama)
+
+add_library(rn_mtmd STATIC ${RN_MTMD_SOURCES})
+target_include_directories(rn_mtmd PUBLIC ${RN_LLAMA_DIR}/tools/mtmd)
+target_include_directories(rn_mtmd PRIVATE
+    ${RN_LLAMA_DIR}/vendor/hash
+    ${RN_LLAMA_DIR}/src
+)
+target_link_libraries(rn_mtmd PUBLIC rn_common llama)
+set_source_files_properties(${RN_LLAMA_DIR}/vendor/hash/sha256/sha256.c PROPERTIES COMPILE_OPTIONS "-w")
 
 option(RN_TESTS_WITH_BRIDGE "compile rn-completion.cpp into the tests" ON)
 
@@ -50,7 +70,7 @@ target_compile_definitions(rn_bridge_tests PRIVATE
     RN_TEST_ROOT="${RN_LLAMA_DIR}"
     $<$<BOOL:${RN_TESTS_WITH_BRIDGE}>:RN_TESTS_WITH_BRIDGE=1>
 )
-target_link_libraries(rn_bridge_tests PRIVATE llama-common mtmd llama)
+target_link_libraries(rn_bridge_tests PRIVATE rn_mtmd rn_common llama)
 if (APPLE)
     target_link_libraries(rn_bridge_tests PRIVATE "-framework CoreVideo" "-framework CoreFoundation")
 endif()

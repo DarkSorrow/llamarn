@@ -58,6 +58,7 @@ copy_header_files() {
   cp -f "$CPP_DIR/llama.cpp/common/sampling.h" "$INCLUDE_DIR/"
   cp -f "$CPP_DIR/llama.cpp/common/chat.h" "$INCLUDE_DIR/"
   cp -f "$CPP_DIR/llama.cpp/common/ngram-cache.h" "$INCLUDE_DIR/"
+  cp -f "$CPP_DIR/llama.cpp/common/json-schema.h" "$INCLUDE_DIR/"
   cp -f "$CPP_DIR/llama.cpp/common/json-schema-to-grammar.h" "$INCLUDE_DIR/"
   cp -f "$CPP_DIR/llama.cpp/common/speculative.h" "$INCLUDE_DIR/"
   
@@ -69,6 +70,34 @@ copy_header_files() {
   # in common/jinja/ and compiled directly into the bridge (no copy needed).
   
   echo -e "${GREEN}Header files copied successfully${NC}"
+  return 0
+}
+
+# Move the dSYMs (~180 MB) out of the xcframework so they are not shipped in the npm
+# package, and drop DebugSymbolsPath so Info.plist does not point at missing folders.
+# They stay in ios/libs/llama-dSYMs/<slice>/ for local symbolication.
+extract_dsyms() {
+  local fw="$PREBUILT_DIR/llama.xcframework"
+  local out="$PREBUILT_DIR/llama-dSYMs"
+  local plist="$fw/Info.plist"
+  rm -rf "$out"
+  local slice
+  for slice in "$fw"/*/; do
+    slice="${slice%/}"
+    if [ -d "$slice/dSYMs" ]; then
+      mkdir -p "$out/$(basename "$slice")"
+      mv "$slice/dSYMs" "$out/$(basename "$slice")/"
+    fi
+  done
+  local i=0
+  while /usr/libexec/PlistBuddy -c "Print :AvailableLibraries:$i" "$plist" >/dev/null 2>&1; do
+    /usr/libexec/PlistBuddy -c "Delete :AvailableLibraries:$i:DebugSymbolsPath" "$plist" >/dev/null 2>&1 || true
+    i=$((i + 1))
+  done
+  if find "$fw" -name "*.dSYM" | grep -q .; then
+    echo -e "${RED}Error: dSYMs still inside $fw${NC}"
+    return 1
+  fi
   return 0
 }
 
@@ -174,6 +203,7 @@ build_ios_framework() {
     return 1
   fi
 
+  extract_dsyms || return 1
   copy_header_files
 
   echo -e "${GREEN}iOS framework built and installed successfully to:${NC}"

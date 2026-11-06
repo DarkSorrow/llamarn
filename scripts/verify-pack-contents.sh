@@ -31,24 +31,30 @@ fi
 TARBALL_PATH="${PACKED_TARBALLS[0]}"
 tar -tf "$TARBALL_PATH" >"$TMP_LIST_FILE"
 
-# android/CMakeLists.txt uses CMake file(GLOB ...) — those patterns are not tarball paths.
-# Mirror the same rules: tools/mtmd/*.cpp except mtmd-cli.cpp, plus tools/mtmd/models/*.cpp
-# (see RNLlamaCpp.podspec + mtmd target in android/CMakeLists.txt).
+# cpp/rn-common-sources.cmake uses CMake file(GLOB ...) — those patterns are not tarball paths.
+# Mirror the same rules: tools/mtmd/*.cpp minus the excluded files, tools/mtmd/models/*.cpp,
+# and the chat template parsers in common/parsers/.
 collect_mtmd_source_paths() {
   local mtmd_dir="${ROOT_DIR}/cpp/llama.cpp/tools/mtmd"
   shopt -s nullglob
   local f
   for f in "${mtmd_dir}"/*.cpp; do
     case "$(basename "$f")" in
-      mtmd-cli.cpp) continue ;;
+      mtmd-cli.cpp|mtmd-helper-gen.cpp|deprecation-warning.cpp) continue ;;
     esac
     printf '%s\n' "${f#"${ROOT_DIR}/"}"
   done
-  for f in "${mtmd_dir}/models"/*.cpp; do
+  for f in "${mtmd_dir}/models"/*.cpp "${ROOT_DIR}/cpp/llama.cpp/common/parsers"/*.cpp; do
     printf '%s\n' "${f#"${ROOT_DIR}/"}"
   done
   shopt -u nullglob
 }
+
+if grep -Eq '\.dSYM/|/dSYMs/|llama-dSYMs' "$TMP_LIST_FILE"; then
+  echo "ERROR: debug symbols (dSYMs) must not be shipped in the npm package:"
+  grep -E '\.dSYM/|/dSYMs/|llama-dSYMs' "$TMP_LIST_FILE" | head -5
+  exit 1
+fi
 
 MTMD_PATHS=()
 while IFS= read -r mtmd_path; do
@@ -56,11 +62,17 @@ while IFS= read -r mtmd_path; do
 done < <(collect_mtmd_source_paths | sort -u)
 
 if [ "${#MTMD_PATHS[@]}" -eq 0 ]; then
-  echo "ERROR: Could not extract MTMD source paths from android/CMakeLists.txt."
+  echo "ERROR: Could not collect MTMD / parser source paths."
   exit 1
 fi
 
-REQUIRED_PATHS=("android/CMakeLists.txt" "${MTMD_PATHS[@]}")
+REQUIRED_PATHS=(
+  "android/CMakeLists.txt"
+  "cpp/rn-common-sources.cmake"
+  "cpp/llama.cpp/common/parsers/sources.cmake"
+  "cpp/llama.cpp/common/json-schema.cpp"
+  "${MTMD_PATHS[@]}"
+)
 MISSING_PATHS=()
 
 for path in "${REQUIRED_PATHS[@]}"; do

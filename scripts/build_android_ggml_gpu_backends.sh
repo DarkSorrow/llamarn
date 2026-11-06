@@ -380,7 +380,6 @@ build_for_abi() {
     CMAKE_ARGS+=(-DGGML_VULKAN_CHECK_RESULTS=OFF)
     CMAKE_ARGS+=(-DGGML_VULKAN_DEBUG=OFF)
     CMAKE_ARGS+=(-DVK_USE_PLATFORM_ANDROID_KHR=ON)
-    CMAKE_ARGS+=(-DGGML_VULKAN_DISABLE_FLASHATTN=ON)
     
     # Use the headers prepared by build_android_gpu_backend.sh
     GPU_CMAKE_FLAGS+=(-DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE_LOCAL")

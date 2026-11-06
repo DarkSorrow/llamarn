@@ -1,5 +1,5 @@
 {
-  "exclude": ["prebuilt", "node_modules", "cpp"],
+  "exclude": ["prebuilt", "node_modules", "cpp", "build"],
   "compilerOptions": {
     "rootDir": ".",
     "paths": {

@@ -55,64 +55,18 @@ else()
     message(STATUS "libggml-cpu.so not found (expected - CPU is statically linked into libggml.so)")
 endif()
 
-# Create a minimal common library with only essential files that don't require missing GGML symbols
-add_library(
-    common
-    STATIC
-    # Add back essential files now that we have prebuilt GGML libraries
-    # Note: build-info.cpp is NOT here - it's compiled as part of RNLlamaCpp (cpp/build-info.cpp)
-    ${CPP_DIR}/llama.cpp/common/log.cpp
-    ${CPP_DIR}/llama.cpp/common/common.cpp
-    ${CPP_DIR}/llama.cpp/common/fit.cpp
-    ${CPP_DIR}/llama.cpp/common/sampling.cpp
-    ${CPP_DIR}/llama.cpp/common/chat.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-auto-parser-generator.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-auto-parser-helpers.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-diff-analyzer.cpp
-    ${CPP_DIR}/llama.cpp/common/chat-peg-parser.cpp
-    ${CPP_DIR}/llama.cpp/common/reasoning-budget.cpp
-    ${CPP_DIR}/llama.cpp/common/debug.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/lexer.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/parser.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/runtime.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/value.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/string.cpp
-    ${CPP_DIR}/llama.cpp/common/jinja/caps.cpp
-    ${CPP_DIR}/llama.cpp/common/peg-parser.cpp
-    ${CPP_DIR}/llama.cpp/common/unicode.cpp
-    ${CPP_DIR}/llama.cpp/common/json.cpp
-    ${CPP_DIR}/llama.cpp/common/trie.cpp
-    ${CPP_DIR}/llama.cpp/common/arg.cpp
-    ${CPP_DIR}/llama.cpp/common/console.cpp
-    ${CPP_DIR}/llama.cpp/common/ngram-cache.cpp
-    ${CPP_DIR}/llama.cpp/common/ngram-map.cpp
-    ${CPP_DIR}/llama.cpp/common/ngram-mod.cpp
-    ${CPP_DIR}/llama.cpp/common/json-schema-to-grammar.cpp
-    ${CPP_DIR}/llama.cpp/common/speculative.cpp
-    ${CPP_DIR}/llama.cpp/common/llguidance.cpp
-)
+# llama.cpp common + mtmd sources (shared with the host tests in cpp/tests).
+# build-info.cpp is compiled as part of RNLlamaCpp (cpp/build-info.cpp).
+include(${CPP_DIR}/rn-common-sources.cmake)
+set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
+
+add_library(common STATIC ${RN_COMMON_SOURCES})
 
 # MTMD (Multimodal Toolkit) — vision and audio encoding
-# Match iOS RNLlamaCpp.podspec: tools/mtmd/*.cpp (excluding CLI) + tools/mtmd/models/*.cpp
-set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
-file(GLOB MTMD_ROOT_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/*.cpp")
-list(REMOVE_ITEM MTMD_ROOT_SOURCES "${MTMD_DIR}/mtmd-cli.cpp")
-file(GLOB MTMD_MODEL_SOURCES CONFIGURE_DEPENDS "${MTMD_DIR}/models/*.cpp")
-# vendor/hash is new in b10648: mtmd-helper.cpp now derives bitmap IDs from SHA-256
-# (was FNV) via hash_sha256_hex(). Upstream links it in as vendor::hash
-# (tools/mtmd/CMakeLists.txt). Only the sha256 path is reachable from hash.cpp, so
-# sha1/xxhash are deliberately not compiled here.
-set(VENDOR_HASH_SOURCES
-    ${LLAMA_CPP_DIR}/vendor/hash/hash.cpp
-    ${LLAMA_CPP_DIR}/vendor/hash/sha256/sha256.c
-)
-
 add_library(
     mtmd
     STATIC
-    ${MTMD_ROOT_SOURCES}
-    ${MTMD_MODEL_SOURCES}
-    ${VENDOR_HASH_SOURCES}
+    ${RN_MTMD_SOURCES}
     ${CPP_DIR}/rn-multimodal.cpp
 )
 
@@ -149,9 +103,6 @@ add_library(
     ${CPP_DIR}/SystemUtils.cpp
     ${CPP_DIR}/rn-completion.cpp
 )
-
-# Suppress additional warnings that are treated as errors in Expo SDK 54
-target_compile_options(common PRIVATE )
 
 # Use React Native's compile options function for proper C++ flags and RN_SERIALIZABLE_STATE
 if(ReactAndroid_VERSION_MINOR GREATER_EQUAL 80)

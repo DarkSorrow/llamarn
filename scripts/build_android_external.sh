@@ -404,9 +404,7 @@ CMAKE_ARGS=(
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_BUILD_APP=OFF
   -DGGML_OPENMP=OFF # Ensure OpenMP is disabled for prebuilts (correct flag for ggml)
-  -DLLAMA_CLBLAST=ON
   -DGGML_NATIVE=OFF  # Disable native CPU optimizations for cross-compiling
-  -DGGML_USE_K_QUANTS=ON  # Enable quantization support
   -DLLAMA_CURL=OFF
   -DCMAKE_POSITION_INDEPENDENT_CODE=ON  # Ensure PIC is enabled
   -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"  # Ignore deprecated warnings
@@ -472,11 +470,9 @@ if [ "$BUILD_VULKAN" = true ] && [ "$VULKAN_AVAILABLE" = true ]; then
     -DGGML_VULKAN_DEBUG=OFF
     -DGGML_VULKAN_MEMORY_DEBUG=OFF
     -DGGML_VULKAN_SHADER_DEBUG_INFO=OFF
-    -DGGML_VULKAN_PERF=OFF
     -DGGML_VULKAN_VALIDATE=OFF
     -DGGML_VULKAN_RUN_TESTS=OFF
     -DVK_USE_PLATFORM_ANDROID_KHR=ON
-    -DGGML_VULKAN_DISABLE_FLASHATTN=ON
   )
   
   if [ -n "$GGML_VK_DISABLE_COOPMAT" ]; then

@@ -31,7 +31,6 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/common.{h,cpp}",
                    "cpp/llama.cpp/common/fit.{h,cpp}",
                    "cpp/llama.cpp/common/log.{h,cpp}",
-                   "cpp/llama.cpp/common/arg.{h,cpp}",
                    "cpp/llama.cpp/common/sampling.{h,cpp}",
                    "cpp/llama.cpp/common/chat.{h,cpp}",
                    "cpp/llama.cpp/common/chat-auto-parser.h",
@@ -45,11 +44,12 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/unicode.{h,cpp}",
                    "cpp/llama.cpp/common/json.{h,cpp}",
                    "cpp/llama.cpp/common/trie.{h,cpp}",
-                   "cpp/llama.cpp/common/console.{h,cpp}",
                    "cpp/llama.cpp/common/ngram-cache.{h,cpp}",
                    "cpp/llama.cpp/common/ngram-map.{h,cpp}",
                    "cpp/llama.cpp/common/ngram-mod.{h,cpp}",
+                   "cpp/llama.cpp/common/json-schema.{h,cpp}",
                    "cpp/llama.cpp/common/json-schema-to-grammar.{h,cpp}",
+                   "cpp/llama.cpp/common/parsers/*.{h,cpp}",
                    "cpp/llama.cpp/common/speculative.{h,cpp}",
                    "cpp/llama.cpp/common/llguidance.{h,cpp}",
                    "cpp/llama.cpp/common/*.hpp",
@@ -67,7 +67,8 @@ Pod::Spec.new do |s|
                    # Xcode's -DDEBUG=1 macro. Use a wrapper that #undef's DEBUG first.
                    "cpp/rn-mtmd-audio-wrap.cpp",
                    "cpp/llama.cpp/tools/mtmd/mtmd-image.{h,cpp}",
-                   "cpp/llama.cpp/tools/mtmd/deprecation-warning.cpp",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-helper-common.h",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-internal.h",
                    "cpp/llama.cpp/tools/mtmd/models/*.{h,cpp}",
                    # Our multimodal bridge helpers
                    "cpp/rn-multimodal.{h,cpp}"
