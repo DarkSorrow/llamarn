@@ -20,10 +20,28 @@ class SceneDelegate: RCTDefaultReactNativeFactoryDelegate, UIWindowSceneDelegate
     reactNativeFactory = RCTReactNativeFactory(delegate: self)
     window = UIWindow(windowScene: windowScene)
 
+    #if DEBUG
+    let devMenuConfiguration = RCTDevMenuConfiguration(
+      devMenuEnabled: true,
+      shakeGestureEnabled: true,
+      keyboardShortcutsEnabled: true
+    )
+    reactNativeFactory?.devMenuConfiguration = devMenuConfiguration
+    #endif
+
     reactNativeFactory?.startReactNative(
       withModuleName: "llamarnexample",
-      in: window
+      in: window,
+      connectionOptions: connectionOptions
     )
+  }
+
+  func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    RCTLinkingManager.scene(scene, openURLContexts: URLContexts)
+  }
+
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    RCTLinkingManager.scene(scene, continue: userActivity)
   }
 
   override func sourceURL(for bridge: RCTBridge) -> URL? {

@@ -10,7 +10,6 @@ import {
   Platform,
   TouchableOpacity,
   KeyboardAvoidingView,
-  InteractionManager,
 } from 'react-native';
 import { initLlama, loadLlamaModelInfo } from '@novastera-oss/llamarn';
 import type { LlamaModel, LlamaMessage, LlamaTool } from '@novastera-oss/llamarn';
@@ -70,7 +69,7 @@ const extractResponseText = (response: any): string => {
 /** Lets the native thread paint so batched chat updates appear step-by-step on device. */
 const yieldToUI = () =>
   new Promise<void>(resolve => {
-    InteractionManager.runAfterInteractions(() => {
+    requestAnimationFrame(() => {
       setTimeout(resolve, 50);
     });
   });

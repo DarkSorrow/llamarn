@@ -4,6 +4,22 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
+## React Native 0.88.1 and llama.cpp b12177
+
+- The library is built and tested against React Native `0.88.1` and React `19.3.0`, the versions used by Expo SDK 58.
+- The iOS minimum is now `15.1` (`RNLlamaCpp.podspec`), matching React Native 0.88.
+- Apps built with Xcode 27 (iOS 27 SDK) must use the UIScene lifecycle, or UIKit traps at launch. The example app shows the React Native 0.88 `SceneDelegate` setup.
+- The jest preset moved: use `"preset": "@react-native/jest-preset"` instead of `"react-native"`.
+
+### Dev dependency advisories
+
+`npm audit --omit=dev` on the library reports nothing that reaches consumers, because the library has only `peerDependencies`. The remaining advisories come from dev tooling and have no fixed upstream release:
+
+- `deepmerge` 4.3.1 (GHSA-gcqx-w48m-w2h4, low), via `jest` → `jest-config`, and via `@react-native-community/cli` → `cli-config` in the example app. 4.3.1 is the latest release. `npm audit fix --force` would downgrade the CLI to 11.4.1.
+- `glob` 13 and `minimatch` 10 (moderate), via `react-native-builder-bob` 0.44.1, which pins `glob@^13`. They only run at build time to compile `lib/`.
+
+---
+
 ## Streaming API simplification
 
 ### Removed: `token_rate_cap` and `token_buffer_size`

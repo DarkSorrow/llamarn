@@ -536,6 +536,7 @@
 					"$(inherited)",
 					" ",
 				);
+				PODFILE_DIR = "$(SRCROOT)";
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = llamarnexample;
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../../node_modules/react-native";
@@ -596,6 +597,7 @@
 					"$(inherited)",
 					" ",
 				);
+				PODFILE_DIR = "$(SRCROOT)";
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = llamarnexample;
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../../node_modules/react-native";

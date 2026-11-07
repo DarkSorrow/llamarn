@@ -84,7 +84,10 @@ export default function VisionChatScreen() {
       if (Platform.OS === 'android') {
         await RNFS.copyFileAssets('dataset.png', dest);
       } else {
-        const { uri } = Image.resolveAssetSource(require('../assets/dataset.png'));
+        const uri = Image.resolveAssetSource(require('../assets/dataset.png'))?.uri;
+        if (!uri) {
+          throw new Error('Bundled test image could not be resolved');
+        }
         if (uri.startsWith('http')) {
           await RNFS.downloadFile({ fromUrl: uri, toFile: dest }).promise;
         } else {

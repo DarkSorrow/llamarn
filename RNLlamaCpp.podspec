@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
 
-  s.platforms    = { :ios => "13.0" }
+  s.platforms    = { :ios => "15.1" }
   s.source       = { :git => "https://github.com/novastera/llamacpp-rn.git", :tag => "#{s.version}" }
   
   # Mark as static framework to resolve CocoaPods error about mixed static/dynamic frameworks

@@ -13,11 +13,9 @@
     "build:ios": "react-native build-ios --scheme llamarnexample --mode Debug --extra-params \"-sdk iphonesimulator CC=clang CPLUSPLUS=clang++ LD=clang LDPLUSPLUS=clang++ GCC_OPTIMIZATION_LEVEL=0 GCC_PRECOMPILE_PREFIX_HEADER=YES ASSETCATALOG_COMPILER_OPTIMIZATION=time DEBUG_INFORMATION_FORMAT=dwarf COMPILER_INDEX_STORE_ENABLE=NO\""
   },
   "dependencies": {
-    "@dr.pogodin/react-native-fs": "^2.39.0",
-    "install": "^0.13.0",
-    "npm": "^11.4.1",
-    "react": "19.2.3",
-    "react-native": "0.85.3"
+    "@dr.pogodin/react-native-fs": "^2.41.0",
+    "react": "19.3.0",
+    "react-native": "0.88.1"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -26,13 +24,13 @@
     "@react-native-community/cli": "20.2.0",
     "@react-native-community/cli-platform-android": "20.2.0",
     "@react-native-community/cli-platform-ios": "20.2.0",
-    "@react-native/babel-preset": "0.85.3",
-    "@react-native/metro-config": "0.85.3",
-    "@react-native/typescript-config": "0.85.3",
+    "@react-native/babel-preset": "0.88.1",
+    "@react-native/metro-config": "0.88.1",
+    "@react-native/typescript-config": "0.88.1",
     "@types/react": "^19.2.1",
-    "react-native-builder-bob": "^0.40.6"
+    "react-native-builder-bob": "^0.44.1"
   },
   "engines": {
-    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+    "node": "^22.13.0 || ^24.3.0 || >= 26.0.0"
   }
 }

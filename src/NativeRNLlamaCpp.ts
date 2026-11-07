@@ -1,6 +1,5 @@
-import type { TurboModule, EventSubscription } from 'react-native';
+import type { TurboModule, EventSubscription, CodegenTypes } from 'react-native';
 import { TurboModuleRegistry } from 'react-native';
-import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypesNamespace';
 
 /**
  * Native LlamaCppRn Module
@@ -365,7 +364,7 @@ export interface Spec extends TurboModule {
   // mmproj was supplied, the multimodal projector (phase: 'mmproj') load.
   // Purely advisory — initLlama()'s resolved Promise is the source of truth
   // for "loading finished".
-  readonly onModelLoadProgress: EventEmitter<ModelLoadProgressEvent>;
+  readonly onModelLoadProgress: CodegenTypes.EventEmitter<ModelLoadProgressEvent>;
 
   // Initialize a Llama context with the given model parameters
   initLlama(params: LlamaModelParams): Promise<LlamaContextType & LlamaContextMethods>;
