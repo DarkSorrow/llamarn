@@ -12,6 +12,7 @@
 		5CBC1BEA2F700CFD00A703A9 /* mmproj-F16.gguf in Resources */ = {isa = PBXBuildFile; fileRef = 5CBC1BE92F700CFD00A703A9 /* mmproj-F16.gguf */; };
 		750CBE78C1C2A29E28EFE37B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		7A1C5E102EB0A00100A1B2C3 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1C5E0F2EB0A00100A1B2C3 /* SceneDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		CAB278ADA6D5C00B4DA83B92 /* libPods-llamarnexample.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 33A0CC882224FE725E2EDE41 /* libPods-llamarnexample.a */; };
 /* End PBXBuildFile section */
@@ -27,6 +28,7 @@
 		5CBC1BE92F700CFD00A703A9 /* mmproj-F16.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "mmproj-F16.gguf"; sourceTree = "<group>"; };
 		6FDE3BC8A6BAF7E61BB5319F /* Pods-llamarnexample.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-llamarnexample.release.xcconfig"; path = "Target Support Files/Pods-llamarnexample/Pods-llamarnexample.release.xcconfig"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = llamarnexample/AppDelegate.swift; sourceTree = "<group>"; };
+		7A1C5E0F2EB0A00100A1B2C3 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = llamarnexample/SceneDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = llamarnexample/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -48,6 +50,7 @@
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				7A1C5E0F2EB0A00100A1B2C3 /* SceneDelegate.swift */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -256,6 +259,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				7A1C5E102EB0A00100A1B2C3 /* SceneDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
