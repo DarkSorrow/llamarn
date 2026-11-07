@@ -16,7 +16,7 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 
 # Use ANDROID_MIN_SDK from used_version.sh for consistent API level
 if [ -z "$ANDROID_MIN_SDK" ]; then
-  ANDROID_MIN_SDK=33  # Default from used_version.sh
+  ANDROID_MIN_SDK=31  # Default from used_version.sh
 fi
 
 # Colors for output
@@ -126,8 +126,7 @@ fi
 HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG"
 
 # Extract Android platform version
-# Use ANDROID_MIN_SDK from used_version.sh (API 33) for consistent builds and better Vulkan support
-# vkGetPhysicalDeviceFeatures2 requires Vulkan 1.1+ (API 24+), but higher API levels have better support
+# Same API level as the main libs (ANDROID_MIN_SDK in used_version.sh)
 ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
 
 # Verify the platform exists in NDK

@@ -161,7 +161,8 @@ jobs:
             prebuilt/gpu
             prebuilt/libs/external/opencl
             prebuilt/third_party
-          key: android-ndk-gpu-${{ runner.os }}-v4
+          # The GPU backends link against ggml-base, so a new llama.cpp commit or API level must rebuild them
+          key: android-ndk-gpu-${{ runner.os }}-v5-${{ hashFiles('scripts/used_version.sh', 'scripts/build_android_gpu_backend.sh', 'scripts/build_android_ggml_gpu_backends.sh') }}
           restore-keys: |
             android-ndk-gpu-
       

@@ -235,79 +235,10 @@ fi
 
 echo -e "${GREEN}Using NDK at: $NDK_PATH${NC}"
 
-# Extract the Android platform version from the NDK path
-# Use minSdkVersion (28) to ensure compatibility with all supported devices
-# This allows the library to work with apps using different NDK versions
-ANDROID_MIN_SDK=28
-if [ -d "$NDK_PATH/platforms" ]; then
-  # Check if android-28 is available, otherwise use the highest available
-  if [ -d "$NDK_PATH/platforms/android-28" ]; then
-    ANDROID_PLATFORM="android-28"
-    echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK) for maximum compatibility${NC}"
-  else
-    # Fallback to highest available if android-28 not found
-    ANDROID_PLATFORM=$(ls -1 "$NDK_PATH/platforms" | sort -V | tail -n 1)
-    ANDROID_MIN_SDK=${ANDROID_PLATFORM#android-}
-    echo -e "${YELLOW}android-28 not found, using highest available: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-  fi
-elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt" ]; then
-  # Try to detect from the LLVM toolchain - more reliable method
-  HOST_TAG_DIR=$(ls -1 "$NDK_PATH/toolchains/llvm/prebuilt/")
-  if [ -n "$HOST_TAG_DIR" ]; then
-    HOST_PLATFORM_DIR="$NDK_PATH/toolchains/llvm/prebuilt/$HOST_TAG_DIR"
-    
-    # For NDK r21 and higher - check the sysroot structure
-    if [ -d "$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android" ]; then
-      # List all available API levels for ARM64
-      API_LEVELS=$(find "$HOST_PLATFORM_DIR/sysroot/usr/lib/aarch64-linux-android" -maxdepth 1 -type d -name "[0-9]*" 2>/dev/null | sort -V)
-      
-      if [ -n "$API_LEVELS" ]; then
-        # Get the highest API level available
-        HIGHEST_API=$(basename $(echo "$API_LEVELS" | tail -n 1))
-        ANDROID_MIN_SDK=$HIGHEST_API
-        ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-        echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-      else
-        # Default to API level 28 (Android 9.0) to match minSdkVersion for compatibility
-        ANDROID_MIN_SDK=28
-        ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-        echo -e "${YELLOW}Could not detect specific API level, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-      fi
-    else
-      # Direct check for highest API level in the bin directory
-      BINS=$(find "$HOST_PLATFORM_DIR/bin" -name "aarch64-linux-android*-clang" 2>/dev/null | sort -V)
-      if [ -n "$BINS" ]; then
-        # Extract API level from binary name
-        HIGHEST_BIN=$(basename $(echo "$BINS" | tail -n 1))
-        ANDROID_MIN_SDK=$(echo "$HIGHEST_BIN" | grep -o '[0-9]*' | head -n 1)
-        if [ -n "$ANDROID_MIN_SDK" ]; then
-          ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-          echo -e "${GREEN}Using Android platform from compiler: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-        else
-          # Hardcoded fallback to API level 28 to match minSdkVersion
-          ANDROID_MIN_SDK=28
-          ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-          echo -e "${YELLOW}Could not detect API level from compiler, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-        fi
-      else
-        # Hardcoded fallback to API level 28 to match minSdkVersion
-        ANDROID_MIN_SDK=28
-        ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-        echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-      fi
-    fi
-  else
-    # Hardcoded fallback to a safe API level
-    ANDROID_MIN_SDK=24
-    ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-    echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-  fi
-else
-  # Hardcoded fallback to API level 28 to match minSdkVersion
-  ANDROID_MIN_SDK=28
-  ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
-  echo -e "${YELLOW}Could not detect Android platform, defaulting to $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
-fi
+# ANDROID_MIN_SDK comes from used_version.sh. Never derive it from the NDK: the
+# highest sysroot level would stamp every .so with that API and break older devices.
+ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
+echo -e "${GREEN}Using Android platform: $ANDROID_PLATFORM (API level $ANDROID_MIN_SDK)${NC}"
 
 # Determine the host tag based on the OS
 HOST_TAG=""

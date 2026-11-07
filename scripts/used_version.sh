@@ -31,7 +31,9 @@ OPENCL_ICD_LOADER_TAG="v2025.07.22"
 # Using NDK r28c (stable) to match llama.cpp Hexagon backend requirements
 # r28c is the stable release of r28, ensuring compatibility with Hexagon SDK
 NDK_VERSION="28.2.13676358"  # NDK r28c (stable release, compatible with Hexagon)
-ANDROID_MIN_SDK="33"
+# API level every native .so is built for. Must equal RNLlamaCpp_minSdkVersion in
+# android/gradle.properties so the libs load on every device the library installs on.
+ANDROID_MIN_SDK="31"
 ANDROID_TARGET_SDK="36"
 ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
 
