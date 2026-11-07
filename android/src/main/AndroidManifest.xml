@@ -18,7 +18,7 @@
     <!-- At runtime, libggml-hexagon.so queries the device hardware via FastRPC to detect -->
     <!-- which Hexagon version the device has, then loads the corresponding libggml-htp-vXX.so. -->
     <!-- Since we don't know the device at build time, all versions are shipped. -->
-    <!-- v73, v75, v79, v81 are commonly used on modern Snapdragon devices. -->
+    <!-- v73, v75, v79, v81, v85 are commonly used on modern Snapdragon devices. -->
     <uses-native-library
         android:name="libggml-htp-v73.so"
         android:required="false" />
@@ -30,6 +30,9 @@
         android:required="false" />
     <uses-native-library
         android:name="libggml-htp-v81.so"
+        android:required="false" />
+    <uses-native-library
+        android:name="libggml-htp-v85.so"
         android:required="false" />
 
     <!-- System libraries (provided by device/Snapdragon, not shipped with app) -->

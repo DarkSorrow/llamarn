@@ -1000,12 +1000,12 @@ SPIRVCMAKE
   done
   
   # Copy Hexagon HTP libraries (required for Hexagon backend on Snapdragon devices)
-  # These are the NPU-side libraries for different Hexagon versions (v68, v69, v73, v75, v79, v81)
+  # These are the NPU-side libraries for different Hexagon versions (v73, v75, v79, v81, v85)
   # The HTP libraries are built as ExternalProjects and installed to ggml-hexagon binary directory
   # They must be in the same directory as libggml-hexagon.so for the backend to find them at runtime
   if [ "$ABI" = "arm64-v8a" ] && [ "$BUILD_HEXAGON" = true ] && [ "$HEXAGON_AVAILABLE" = true ]; then
     HTP_LIBS_COPIED=0
-    for htp_lib in libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+    for htp_lib in libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so libggml-htp-v85.so; do
       # Check multiple possible locations (order matters - check most likely first)
       if [ -f "$BUILD_DIR/ggml/src/ggml-hexagon/$htp_lib" ]; then
         # Most likely location - ExternalProject installs here during build

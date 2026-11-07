@@ -35,6 +35,11 @@ ANDROID_MIN_SDK="33"
 ANDROID_TARGET_SDK="36"
 ANDROID_PLATFORM="android-$ANDROID_MIN_SDK"
 
+# Hexagon SDK (optional Snapdragon backend). Must match the SDK llama.cpp targets:
+# ggml-hexagon's CMake expects the toolv21 prebuilts and the v85 HVX intrinsics,
+# which older SDKs (6.4.x, tools 19) do not provide.
+HEXAGON_SDK_VERSION="6.7.0.0"
+
 # Export all variables
 export VULKAN_SDK_VERSION
 export VULKAN_HEADERS_TAG
@@ -45,5 +50,6 @@ export NDK_VERSION
 export ANDROID_MIN_SDK
 export ANDROID_TARGET_SDK
 export ANDROID_PLATFORM
+export HEXAGON_SDK_VERSION
 export LLAMA_CPP_COMMIT
 export LLAMA_CPP_TAG

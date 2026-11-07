@@ -113,7 +113,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: repo-state
-          path: .
+          # Artifacts drop the executable bit, which breaks native binaries such as
+          # TypeScript 7's tsc. Every job that needs node_modules runs npm install.
+          path: |
+            .
+            !**/node_modules/**
           retention-days: 1
   
   # Android build job
@@ -291,8 +295,8 @@ jobs:
         continue-on-error: true
         run: |
           # Download Hexagon SDK from GitHub releases (same approach as llama.cpp CI)
-          HEXSDK_VER=6.4.0.2
-          HEXTLS_VER=19.0.04
+          source scripts/used_version.sh
+          HEXSDK_VER=${HEXAGON_SDK_VERSION}
           
           echo "Downloading Hexagon SDK v${HEXSDK_VER}..."
           curl -L -o hex-sdk.tar.xz https://github.com/snapdragon-toolchain/hexagon-sdk/releases/download/v${HEXSDK_VER}/hexagon-sdk-v${HEXSDK_VER}-amd64-lnx.tar.xz || {
@@ -316,11 +320,23 @@ jobs:
             exit 0
           }
           
+          # The SDK ships exactly one tools version (llama.cpp's sdk.py relies on this too)
+          TOOLS_DIRS=(/opt/hexagon/${HEXSDK_VER}/tools/HEXAGON_Tools/*/)
+          if [ ${#TOOLS_DIRS[@]} -ne 1 ] || [ ! -d "${TOOLS_DIRS[0]}" ]; then
+            echo "⚠️  Expected one tools directory under /opt/hexagon/${HEXSDK_VER}/tools/HEXAGON_Tools"
+            ls -la /opt/hexagon/${HEXSDK_VER}/tools/HEXAGON_Tools || true
+            echo "hexagon_available=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          HEXTLS_ROOT=${TOOLS_DIRS[0]%/}
+          HEXTLS_VER=$(basename "$HEXTLS_ROOT")
+          echo "Hexagon tools ${HEXTLS_VER} (toolv${HEXTLS_VER%%.*})"
+
           # Set environment variables
           echo "HEXAGON_SDK_ROOT=/opt/hexagon/${HEXSDK_VER}" >> $GITHUB_ENV
-          echo "HEXAGON_TOOLS_ROOT=/opt/hexagon/${HEXSDK_VER}/tools/HEXAGON_Tools/${HEXTLS_VER}" >> $GITHUB_ENV
+          echo "HEXAGON_TOOLS_ROOT=${HEXTLS_ROOT}" >> $GITHUB_ENV
           echo "DEFAULT_HLOS_ARCH=64" >> $GITHUB_ENV
-          echo "DEFAULT_TOOLS_VARIANT=toolv19" >> $GITHUB_ENV
+          echo "DEFAULT_TOOLS_VARIANT=toolv${HEXTLS_VER%%.*}" >> $GITHUB_ENV
           echo "DEFAULT_NO_QURT_INC=0" >> $GITHUB_ENV
           echo "DEFAULT_DSP_ARCH=v73" >> $GITHUB_ENV
           
@@ -386,7 +402,7 @@ jobs:
               echo "✅ Copied libggml-hexagon.so to jniLibs/arm64-v8a/"
               
               # Also copy HTP libraries if they exist
-              for htp_lib in libggml-htp-v68.so libggml-htp-v69.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+              for htp_lib in libggml-htp-v68.so libggml-htp-v69.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so libggml-htp-v85.so; do
                 if [ -f "$HEXAGON_BUILD_DIR/$htp_lib" ]; then
                   cp "$HEXAGON_BUILD_DIR/$htp_lib" "android/src/main/jniLibs/arm64-v8a/"
                   echo "✅ Copied $htp_lib to jniLibs/arm64-v8a/"
