@@ -21,6 +21,7 @@
 #include "SystemUtils.h"
 // Include our custom headers - this was missing!
 #include "rn-llama.h"
+#include "rn-kv.h"
 #include "LlamaCppModel.h"
 // Include the llama.cpp common headers
 #include "chat.h"
@@ -414,6 +415,11 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
           read_f(LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT_ETA,   gs.mirostat_eta);
           read_i(LLAMA_MODEL_META_KEY_SAMPLING_MIROSTAT,       gs.mirostat);
 
+          const auto kv_bytes = rn_kv_bytes_per_token(model);
+          const bool has_kv_bytes = kv_bytes.has_value();
+          const double kv_bytes_per_token = has_kv_bytes ? static_cast<double>(*kv_bytes) : 0.0;
+          const double total_memory_bytes = static_cast<double>(SystemUtils::getTotalPhysicalMemory());
+
           // Free the model
           llama_model_free(model);
 
@@ -422,7 +428,8 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
                                 gpuSupported, optimalGpuLayers, quantType, n_layers,
                                 model_size_bytes, architecture,
                                 available_memory_mb, estimated_vram_mb,
-                                mmproj_size_mb, is_cpu_only, chunk_size, gs, runtimePtr]() {
+                                mmproj_size_mb, is_cpu_only, chunk_size, gs,
+                                has_kv_bytes, kv_bytes_per_token, total_memory_bytes, runtimePtr]() {
             try {
               jsi::Object result(*runtimePtr);
               result.setProperty(*runtimePtr, "n_params",            jsi::Value(n_params));
@@ -440,6 +447,10 @@ jsi::Value PureCppImpl::loadLlamaModelInfo(jsi::Runtime &runtime, jsi::String mo
               result.setProperty(*runtimePtr, "estimatedVramMB",     jsi::Value(estimated_vram_mb));
               result.setProperty(*runtimePtr, "suggestedChunkSize",  jsi::Value(static_cast<double>(chunk_size)));
               result.setProperty(*runtimePtr, "isCpuOnly",           jsi::Value(is_cpu_only));
+              result.setProperty(*runtimePtr, "totalMemoryBytes",    jsi::Value(total_memory_bytes));
+              if (has_kv_bytes) {
+                result.setProperty(*runtimePtr, "kvBytesPerToken",   jsi::Value(kv_bytes_per_token));
+              }
               if (mmproj_size_mb >= 0.0) {
                 result.setProperty(*runtimePtr, "mmprojSizeMB",      jsi::Value(mmproj_size_mb));
               }
@@ -721,6 +732,8 @@ static ModelInitResult do_init_llama(
     rn_ctx->vocab        = llama_model_get_vocab(rn_ctx->model);
     rn_ctx->params       = rn_params;
     rn_init_batches(rn_ctx.get());
+    // One check, as the server does at startup. It clears the context, which is still empty here.
+    rn_ctx->kv_seq_rm_type = common_context_can_seq_rm(rn_ctx->ctx);
 
     llama_set_abort_callback(
         rn_ctx->ctx,

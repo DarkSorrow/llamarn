@@ -4,7 +4,7 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
-## React Native 0.88.1 and llama.cpp b12177
+## React Native 0.88.1 and llama.cpp b12651
 
 - The library is built and tested against React Native `0.88.1` and React `19.3.0`, the versions used by Expo SDK 58.
 - The iOS minimum is now `15.1` (`RNLlamaCpp.podspec`), matching React Native 0.88.
@@ -56,9 +56,11 @@ Partial stop-word characters (e.g. the `<` in `<|im_end|>`) are now correctly he
 
 | Field | Pass as | What it does |
 |-------|---------|--------------|
-| `optimalGpuLayers` | `n_gpu_layers` | GPU layer count computed from 15% of device RAM + 75% layer cap — prevents Android display fence timeouts |
+| `optimalGpuLayers` | `n_gpu_layers` | GPU layer count from a RAM tier (20% at 8 GB and above, 18% at 6 GB, 15% below that), then 80% of that budget, then a 75% layer cap. A GPU that exists still gets at least one layer. The iOS simulator returns 0. |
 | `suggestedChunkSize` | `chunk_size` | Prompt-ingestion chunk size: 32 for CPU-only devices, 128 for GPU devices |
 | `isCpuOnly` | `is_cpu_only` | Enables CPU pacing path during prompt encoding (`true` = 2 ms sleep/chunk) |
+
+`loadLlamaModelInfo` also returns `totalMemoryBytes` and, for a plain attention cache, `kvBytesPerToken` (f16 K and V for one token). Hybrid and MLA models omit `kvBytesPerToken`. `initLlama` does not clamp `n_ctx`. The app applies the ceiling.
 
 ```typescript
 // Text-only model
@@ -109,61 +111,33 @@ const model = await initLlama({
 - `n_batch` is the maximum batch allocation size passed to `llama_batch_init` — it controls the internal buffer.
 - `chunk_size` is the number of tokens actually sent to `llama_decode` per call during **prompt ingestion only** (generation is unaffected). Smaller chunks let the OS scheduler run between GPU submits, preventing SurfaceFlinger fence timeouts on Android (`mLastRetireFence not released during 40ms`) and keeping the UI runloop alive on CPU-only devices.
 
-## Completion cache keys and migration checklist
+## Completion cache keys
 
-If you rely on chat/template/tool caching, pass both `prompt_id` and `config_id` on each `completion()` call.
+`config_id`, `token_rate_cap`, and `token_buffer_size` are removed. Do not send them.
+
+Reuse uses the message `id` and an optional `prompt_id`. Sampling changes do not clear KV. Tools and `enable_thinking` are already in the render identity. A chat result includes `timings.prompt_n` (tokens evaluated this call), `context_shifted`, `kv_cleared_reason`, and `reasoning_budget_active`. `usage.prompt_tokens` stays the full prompt length. A context shift keeps the leading message ids that still sit inside the kept head.
 
 ### Completion request naming (snake_case only)
 
-Completion parameters are now documented and consumed as snake_case keys. If your app sends camelCase aliases, migrate to canonical names.
+Completion parameters are consumed as snake_case keys. If your app sends camelCase aliases, migrate to canonical names.
 
 - Use `reset_kv_cache` (not `resetKvCache`).
 - Use canonical sampling keys like `top_p`, `top_k`, `min_p`, `repeat_penalty`, `frequency_penalty`, `presence_penalty`.
 
-### What app teams must add
+### What app teams must know
 
-- Add `prompt_id` and `config_id` to your completion request payload.
-- Recompute `prompt_id` when system prompt, template, or tools change.
-- Recompute `config_id` when sampling/grammar/response-format changes.
-- Treat `config_id` as the effective completion-config identity (include tools + main system prompt identity).
-- Completion config changes are expected to take effect when `config_id` changes.
+- Pass a stable `id` on each message that should be reused. Change the id when that message's content changes.
+- `prompt_id` is optional. A change from the previous non-empty value clears KV. An empty value does not.
+- Do not hash tools or sampling into a second cache key.
 - Update finish-reason handling to include `tool_call_parse_error`.
-
-### `config_id` example recipe
-
-Build a stable object from the knobs that change model behavior, then hash it:
-
-```ts
-const configSignature = {
-  model: 'qwen3-8b-q4_k_m',
-  temperature: 0.6,
-  top_p: 0.95,
-  top_k: 40,
-  min_p: 0.05,
-  repeat_penalty: 1.05,
-  repeat_last_n: 64,
-  frequency_penalty: 0.0,
-  presence_penalty: 0.0,
-  tool_choice: 'auto',
-  response_format: 'text',
-};
-
-const stableJson = (value: object) =>
-  JSON.stringify(Object.keys(value).sort().reduce((acc, key) => {
-    acc[key] = (value as Record<string, unknown>)[key];
-    return acc;
-  }, {} as Record<string, unknown>));
-
-const config_id = `config-${sha256Hex(stableJson(configSignature)).slice(0, 16)}`;
-```
 
 ### Behavioral updates in this release
 
-- Cache-hit path now renders with full tool/template inputs (tools are no longer stripped).
+- Cache-hit path renders with full tool and template inputs.
 - Tool-call parse failures are surfaced as:
   - `finish_reason: "tool_call_parse_error"`
   - `tool_call_parse_error: "<parser message>"`
-- Prompt ingestion pacing now uses deterministic sleeps:
+- Prompt ingestion pacing uses deterministic sleeps:
   - CPU: fixed 2 ms per chunk
   - GPU: `prompt_chunk_gap_ms` minimum inter-chunk gap
 
@@ -173,13 +147,17 @@ If your client only accepts `finish_reason` in `stop | length | tool_calls`, add
 
 ---
 
+## llama.cpp b12651 chat parse
+
+Tool-call and thinking splits follow llama.cpp `tools/server`: the native side passes the sampled token ids into the chat parser. Callers do not pass token ids. No completion field was added or removed for this.
+
 ---
 
 ## Multi-turn conversations with thinking models
 
 **Breaking change**: The bridge returns the model's raw output in `content`, which for thinking models (Qwen3, DeepSeek-R1, etc.) includes `<think>…</think>` blocks. You **must** strip these and store the thinking separately in `reasoning_content` before feeding the message back as history. If you pass the raw content back unchanged, the chat template receives malformed input and the app crashes on the second turn.
 
-**Native behavior (KV cache):** The same `llama_context` is reused across calls; each completion run clears the KV cache at the start of `run_completion` (`llama_memory_clear(llama_get_memory(ctx), false)` in `cpp/rn-completion.cpp`). That way every call processes the **full** prompt from position 0. Without clearing, stale KV entries from the previous turn could cause assertion failures or incorrect decoding in `llama_decode` on the second and later turns.
+**Native behavior (KV cache):** The same `llama_context` is reused. A leading run of messages with the same non-empty `id` is not re-encoded. The first empty id, a `prompt_id` change, a render-identity change (Jinja, reasoning format, template, tool choice, grammar, or tools), media, or `reset_kv_cache: true` clears and encodes again. A context shift still drops the id index, so the next turn re-encodes. Do not assume every call clears the cache, and do not assume a shift keeps the prefix index.
 
 **Example app:** `example/src/ModelChatTestScreen.tsx` shows the full pattern: `reasoning_content` on the `Message` type, an `extractThinking()` helper, `messageToApiPayload` forwarding `reasoning_content` to native, and assistant messages built with clean `content` + optional `reasoning_content` for normal replies, tool-call turns, and the final reply after tools.
 
@@ -246,7 +224,7 @@ Use this section as the basis for release notes when publishing **v0.7.0**.
 ### Breaking / migration
 
 - **Thinking models (multi-turn):** Same as [Multi-turn conversations with thinking models](#multi-turn-conversations-with-thinking-models) above: assistant `content` may include embedded thinking tags; strip them and pass **`reasoning_content`** when updating history, or the chat template can break and the app may crash on later turns.
-- **KV cache:** Completions clear the context KV cache at the start of each run so the full prompt is evaluated from position 0; integrators should not assume incremental KV reuse across `completion` calls for the same session in the current API shape.
+- **KV cache:** A matching message-id prefix is reused. See the KV paragraph in [Multi-turn conversations with thinking models](#multi-turn-conversations-with-thinking-models). The older "every completion clears the cache" note does not describe this tree.
 
 ### Compatibility / operational
 

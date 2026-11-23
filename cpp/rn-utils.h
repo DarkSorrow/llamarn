@@ -24,6 +24,7 @@
 #include <unordered_map>
 #include <functional>
 #include <limits>
+#include <optional>
 
 using json = nlohmann::ordered_json;
 
@@ -88,17 +89,21 @@ struct CompletionOptions {
     // When >= 0, run_completion skips KV management and uses this value directly as n_past.
     int32_t kv_hint_pos = -1;
 
+    // Internal: token_end of the first cached message, or -1 when there is no index.
+    // A context shift with n_keep == 0 keeps this boundary instead of half the context.
+    int32_t kv_prefix_end = -1;
+
     // Set by run_chat_completion after mtmd_helper_eval_chunks so run_completion
     // skips its own encode step (prompt + images already in KV cache, logits ready).
     int32_t mtmd_encoded_n_past = -1;
 
-    // Completion cache key for system prompt + tools identity.
+    // Optional. A change from the previous non-empty value clears KV. Empty does not.
+    // Tools are not part of this id; they live in the render identity.
     std::string prompt_id;
 
-    // Completion cache key for effective completion config identity.
-    // Caller should include all knobs that change generation behavior, including
-    // system prompt + tools identity, so config changes only apply when this key changes.
-    std::string config_id;
+    // Per-call sampler cap. Unset means "use the initLlama budget".
+    // A positive value applies only when init turned thinking on. 0 and -1 do not.
+    std::optional<int32_t> reasoning_budget;
 
     // Reasoning budget: passed from the chat session's thinking tags after template apply.
     // Matches common/sampling.cpp: -1 = no budget sampler (unlimited thinking),
@@ -136,6 +141,11 @@ struct CompletionResult {
     bool tool_call_parse_failed = false;
     std::string tool_call_parse_error;
     bool context_shifted = false;  // true if context shift occurred during generation
+    int shift_n_keep = 0;          // keep count used by the shift, 0 when the call did not shift
+    // Why this call encoded from the start of the cache. "none" means a prefix hit.
+    std::string kv_cleared_reason = "none";
+    // True only when this call installed a positive thinking-token cap.
+    bool reasoning_budget_active = false;
     // Reply as the server keeps it: pieces plus the token id that produced each one.
     // session.finish reads this. Do not rebuild it from `content`.
     common_chat_input generated;

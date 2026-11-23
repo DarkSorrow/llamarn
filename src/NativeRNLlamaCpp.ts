@@ -77,7 +77,7 @@ export interface LlamaModelParams {
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
   // Thinking and reasoning options
-  reasoning_budget?: number;  // Controls thinking functionality: -1 = unlimited, 0 = disabled, >0 = limited
+  reasoning_budget?: number;  // Omitted or 0 turns thinking off. -1 is unlimited. >0 is the sampler cap. A completion cannot turn thinking on.
   reasoning_format?: string;  // Reasoning format: 'none', 'auto', 'deepseek', 'deepseek-legacy'
   thinking_forced_open?: boolean; // Force reasoning models to always output thinking
   parse_tool_calls?: boolean; // Enable tool call parsing (auto-enabled when use_jinja is true)
@@ -106,15 +106,14 @@ export interface LlamaModelParams {
 export interface LlamaCompletionParams {
   // Basic completion parameters
   prompt?: string;            // text promp
-  system_prompt?: string;     // system prompt for chat mode (alternative to including it in messages)
-  messages?: LlamaMessage[];  // chat messages
+  messages?: LlamaMessage[];  // chat messages. Put the system text here, with an id.
   temperature?: number;        // sampling temperature (default: 0.8)
   top_p?: number;              // top-p sampling (native default: 0.9)
   top_k?: number;              // top-k sampling (default: 40)
   min_p?: number;              // min-p sampling floor (native default: 0.05)
   n_predict?: number;          // max tokens to predict (default: -1, infinite)
   max_tokens?: number;         // alias for n_predic
-  n_keep?: number;             // parsed by native completion options (currently reserved/no-op in generation path)
+  n_keep?: number;             // context-shift keep. 0 = first message boundary when it fits, else half the context. >0 = token count. -1 = stop when the context is full
   stop?: string[];             // stop sequences
   stream?: boolean;            // advisory; callback presence controls streaming behavior
   ignore_eos?: boolean;        // ignore EOS/EOG termination checks
@@ -133,13 +132,16 @@ export interface LlamaCompletionParams {
   presence_penalty?: number;    // presence penalty (default: 0.0)
   seed?: number;                // RNG seed (default: -1, random)
   grammar?: string;             // GBNF grammar for structured outpu
-  prompt_id?: string;           // cache key for system prompt/tools identity
-  config_id?: string;           // cache key for effective completion config (include tools + main system prompt identity)
+  prompt_id?: string;           // optional. A change from the previous non-empty value clears KV. Empty does not.
+  reasoning_budget?: number;    // sampler cap for this call when init turned thinking on. >0 replaces the init cap. 0 and -1 do not, and cannot turn thinking on.
 }
 
 export interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: LlamaMessageContent;
+  // Prefix key. A leading run of equal non-empty ids is reused. The first empty id ends the run.
+  // Reuse an id only when role, content, reasoning_content, and the tool-call payload are unchanged.
+  id?: string;
   tool_call_id?: string;
   name?: string;
 }
@@ -176,15 +178,32 @@ export interface LlamaTool {
   };
 }
 
+export type KvClearedReason =
+  | 'none'             // a prefix matched and the tail was dropped
+  | 'reset'            // reset_kv_cache was true
+  | 'media'            // the turn had image or audio
+  | 'prompt_id'        // both calls set prompt_id and they differed
+  | 'render_identity'  // Jinja, reasoning format, template, tool choice, grammar, tools, or enable_thinking changed
+  | 'no_prefix'        // no leading id matched
+  | 'seq_rm';          // a prefix matched and the backend could not drop the tail, so the cache was cleared
+
 export interface LlamaCompletionResult {
   text: string;                          // The generated completion tex
   tokens_predicted: number;              // Number of tokens generated
   timings: {
     predicted_n: number;                 // Number of tokens predicted
     predicted_ms: number;                // Time spent generating tokens (ms)
-    prompt_n: number;                    // Number of tokens in the promp
+    prompt_n: number;                    // Tokens evaluated into KV this call. A hit is a small prompt_n beside a large usage.prompt_tokens.
     prompt_ms: number;                   // Time spent processing prompt (ms)
     total_ms: number;                    // Total time spent (ms)
+  };
+  context_shifted?: boolean;             // true on the call whose generation slid the context window
+  kv_cleared_reason?: KvClearedReason;   // why this call encoded from the start of the cache
+  reasoning_budget_active?: boolean;     // true only when this call installed a positive thinking-token cap
+  usage?: {
+    prompt_tokens: number;               // full rendered prompt, hit or miss
+    completion_tokens: number;
+    total_tokens: number;
   };
 
   // OpenAI-compatible response fields
@@ -387,6 +406,8 @@ export interface Spec extends TurboModule {
     mmprojSizeMB?: number;      // present when mmprojPath was supplied
     suggestedChunkSize: number; // recommended chunk_size for initLlama (32=CPU, 128=GPU)
     isCpuOnly: boolean;         // true when optimalGpuLayers == 0
+    totalMemoryBytes: number;   // physical device memory. The context ceiling uses this, not free memory.
+    kvBytesPerToken?: number;   // f16 K+V bytes for one token. Absent for hybrid and MLA models. initLlama does not clamp n_ctx.
     samplingDefaults?: {
       temperature?: number;
       top_p?: number;
@@ -472,6 +493,8 @@ export function loadLlamaModelInfo(
   mmprojSizeMB?: number;
   suggestedChunkSize: number;
   isCpuOnly: boolean;
+  totalMemoryBytes: number;
+  kvBytesPerToken?: number;
   samplingDefaults?: {
     temperature?: number;
     top_p?: number;

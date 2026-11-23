@@ -48,6 +48,12 @@ public:
   static int64_t getAvailableMemoryBytes();
 
   /**
+   * Total physical memory of the device, in bytes.
+   * This is the input for a context-size ceiling. Free memory at call time is not.
+   */
+  static int64_t getTotalPhysicalMemory();
+
+  /**
    * Helper functions to easily set values from a JSI object if the property exists.
    * Returns true if the property was found and the value was set.
    */

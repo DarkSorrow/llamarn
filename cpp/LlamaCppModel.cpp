@@ -237,8 +237,8 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     options.prompt_id = obj.getProperty(rt, "prompt_id").asString(rt).utf8(rt);
   }
 
-  if (obj.hasProperty(rt, "config_id") && !obj.getProperty(rt, "config_id").isUndefined()) {
-    options.config_id = obj.getProperty(rt, "config_id").asString(rt).utf8(rt);
+  if (obj.hasProperty(rt, "reasoning_budget") && !obj.getProperty(rt, "reasoning_budget").isUndefined()) {
+    options.reasoning_budget = static_cast<int32_t>(obj.getProperty(rt, "reasoning_budget").asNumber());
   }
 
   // Extract stop sequences

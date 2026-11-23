@@ -88,8 +88,18 @@ struct rn_llama_context {
     bool                      kv_has_messages = false;
     std::string               kv_render_identity;
 
-    // prompt_id of the last chat call; a change means system prompt or tools changed, so the KV cache is stale.
+    // prompt_id of the last chat call. A change from a previous non-empty value clears KV.
+    // An empty prompt_id does not. Tools are compared in kv_render_identity, not here.
     std::string last_prompt_id;
+
+    // Result of common_context_can_seq_rm, taken once when the context is created.
+    // The server uses the same check. PART and RS can drop a suffix; FULL and NO cannot.
+    common_context_seq_rm_type kv_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+
+    // Test seam. Null in production. When set, prefix eviction calls this instead of
+    // llama_memory_seq_rm so a test can force the full-clear path.
+    bool (*kv_seq_rm)(void * data, llama_pos p0, llama_pos p1) = nullptr;
+    void * kv_seq_rm_data = nullptr;
 
     // Reused decode batches (one per context) to avoid per-request alloc/free churn.
     // Must be released (rn_free_batches) before the llama_context is freed.

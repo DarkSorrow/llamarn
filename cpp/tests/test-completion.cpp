@@ -1,4 +1,5 @@
 #include "fixtures.h"
+#include "rn-kv.h"
 #include "rn-test.h"
 
 using namespace facebook::react;
@@ -260,6 +261,225 @@ RN_TEST(chat_tool_call_example_settings) {
             throw rn_test_failure("run " + std::to_string(run) + " no tool call: " + choice.dump());
         }
     }
+}
+
+static std::string cleared_reason(const CompletionResult & r) {
+    return r.chat_response.at("kv_cleared_reason").get<std::string>();
+}
+
+static bool fail_seq_rm(void *, llama_pos, llama_pos) {
+    return false;
+}
+
+RN_TEST(chat_result_reports_a_prefix_hit) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+
+    auto first = chat({ { "system", "You are terse." }, { "user", "Name a fruit." } }, 8);
+    auto r1 = run_chat_completion(rn, first, no_stream);
+    RN_CHECK(r1.success);
+    RN_CHECK(r1.chat_response.contains("timings"));
+    RN_CHECK(r1.chat_response["timings"].contains("prompt_n"));
+    RN_CHECK_EQ(cleared_reason(r1), std::string("no_prefix"));
+    RN_CHECK(r1.timings.prompt_n + 1 >= r1.n_prompt_tokens);
+
+    first.temperature = 0.8f;
+    auto reused = run_chat_completion(rn, first, no_stream);
+    RN_CHECK(reused.success);
+    RN_CHECK(reused.chat_response["usage"]["prompt_tokens"].get<int>() == reused.n_prompt_tokens);
+    const std::string why = cleared_reason(reused);
+    // Temperature is not a cache key. none means the suffix was dropped. Anything else re-encodes the prompt.
+    RN_CHECK(why != "render_identity");
+    if (why == "none") {
+        RN_CHECK(reused.timings.prompt_n < reused.n_prompt_tokens);
+    } else {
+        RN_CHECK(reused.timings.prompt_n + 1 >= reused.n_prompt_tokens);
+    }
+
+    auto with_tools = first;
+    with_tools.tools = example_tools();
+    auto missed = run_chat_completion(rn, with_tools, no_stream);
+    RN_CHECK(missed.success);
+    RN_CHECK_EQ(cleared_reason(missed), std::string("render_identity"));
+    RN_CHECK(missed.timings.prompt_n * 2 > missed.n_prompt_tokens);
+}
+
+RN_TEST(chat_prompt_id_change_clears) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+    auto first = chat({ { "user", "Name a fruit." } }, 4);
+    first.prompt_id = "prompt-a";
+    auto r1 = run_chat_completion(rn, first, no_stream);
+    RN_CHECK(r1.success);
+
+    first.prompt_id = "prompt-b";
+    auto r2 = run_chat_completion(rn, first, no_stream);
+    RN_CHECK(r2.success);
+    RN_CHECK_EQ(cleared_reason(r2), std::string("prompt_id"));
+}
+
+RN_TEST(chat_missing_ids_report_no_prefix) {
+    auto m = load_or_skip();
+    CompletionOptions o = greedy(4);
+    o.messages = json::array({ { { "role", "user" }, { "content", "Name a fruit." } } });
+    auto r = run_chat_completion(m->rn.get(), o, no_stream);
+    RN_CHECK(r.success);
+    RN_CHECK_EQ(cleared_reason(r), std::string("no_prefix"));
+    RN_CHECK(r.timings.prompt_n + 1 >= r.n_prompt_tokens);
+}
+
+RN_TEST(chat_seq_rm_failure_is_visible) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+    // A single user message is a prefix the template can render, so the suffix drop is actually attempted.
+    auto first = chat({ { "user", "Name a fruit." } }, 4);
+    auto r1 = run_chat_completion(rn, first, no_stream);
+    RN_CHECK(r1.success);
+    RN_CHECK(!rn->kv_messages.empty());
+
+    rn->kv_seq_rm = fail_seq_rm;
+    auto second = chat({ { "user", "Name a fruit." }, { "user", "Name a color." } }, 4);
+    auto r2 = run_chat_completion(rn, second, no_stream);
+    RN_CHECK(r2.success);
+    RN_CHECK_EQ(cleared_reason(r2), std::string("seq_rm"));
+    RN_CHECK(r2.timings.prompt_n + 1 >= r2.n_prompt_tokens);
+}
+
+RN_TEST(chat_shift_keeps_the_first_message) {
+    auto m = load_or_skip(96, 64, 64);
+    auto * rn = m->rn.get();
+    if (!llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+        RN_SKIP("memory cannot shift");
+    }
+
+    auto seeded = chat({ { "system", "You are terse." }, { "user", "Say hi." } }, 4);
+    auto seed = run_chat_completion(rn, seeded, no_stream);
+    RN_CHECK(seed.success);
+    RN_CHECK(!rn->kv_messages.empty());
+    const int32_t system_end = rn->kv_messages.front().token_end;
+
+    auto filling = chat({
+        { "system", "You are terse." },
+        { "user", "Say hi." },
+        { "assistant", chat_content(seed) },
+        { "user", "Keep talking about rivers and mountains." },
+    }, -1);
+    filling.ignore_eos = true;
+    int generated = 0;
+    auto shifted = run_chat_completion(rn, filling, [&](const std::string &, bool done) {
+        if (done) return true;
+        return ++generated < 80;
+    });
+    RN_CHECK(shifted.success);
+    RN_CHECK(shifted.context_shifted);
+    RN_CHECK(shifted.chat_response["context_shifted"].get<bool>());
+    RN_CHECK(!rn->kv_messages.empty());
+    RN_CHECK_EQ(rn->kv_messages.front().id, std::string("m0"));
+    RN_CHECK_EQ(rn->kv_messages.front().token_end, system_end);
+    RN_CHECK(rn->kv_messages.front().token_end <= shifted.shift_n_keep);
+
+    auto follow = chat({ { "system", "You are terse." }, { "user", "Name one sea." } }, 4);
+    auto hit = run_chat_completion(rn, follow, no_stream);
+    RN_CHECK(hit.success);
+    RN_CHECK_EQ(cleared_reason(hit), std::string("none"));
+    RN_CHECK(hit.timings.prompt_n < hit.n_prompt_tokens);
+    RN_CHECK(hit.timings.prompt_n <= hit.n_prompt_tokens - system_end + 8);
+}
+
+RN_TEST(chat_shift_without_ids_keeps_half_the_context) {
+    auto m = load_or_skip(96, 64, 64);
+    auto * rn = m->rn.get();
+    if (!llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+        RN_SKIP("memory cannot shift");
+    }
+    CompletionOptions o = greedy(-1);
+    o.ignore_eos = true;
+    o.messages = json::array({ { { "role", "user" }, { "content", "Count upward." } } });
+    int generated = 0;
+    auto r = run_chat_completion(rn, o, [&](const std::string &, bool done) {
+        if (done) return true;
+        return ++generated < 80;
+    });
+    RN_CHECK(r.success);
+    RN_CHECK(r.context_shifted);
+    const int expected = rn_shift_n_keep(0, llama_n_ctx(rn->ctx), -1, llama_vocab_get_add_bos(rn->vocab));
+    RN_CHECK_EQ(r.shift_n_keep, expected);
+}
+
+RN_TEST(chat_n_keep_negative_stops_without_a_shift) {
+    auto m = load_or_skip(96, 64, 64);
+    auto * rn = m->rn.get();
+    if (!llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+        RN_SKIP("memory cannot shift");
+    }
+    auto o = chat({ { "user", "Count upward." } }, -1);
+    o.ignore_eos = true;
+    o.n_keep = -1;
+    auto r = run_chat_completion(rn, o, no_stream);
+    RN_CHECK(r.success);
+    RN_CHECK(!r.context_shifted);
+    RN_CHECK(r.stopped_by_length);
+}
+
+RN_TEST(kv_bytes_track_the_evaluated_prompt) {
+    auto m = load_or_skip(2048, 512, 128);
+    auto * rn = m->rn.get();
+    RN_CHECK_EQ((int) llama_n_ctx(rn->ctx), 2048);
+    const auto bytes = rn_kv_bytes_per_token(rn->model);
+    if (!bytes.has_value()) {
+        // Hybrid and MLA models omit the field. init still honored the requested context.
+        return;
+    }
+    RN_CHECK(*bytes > 0);
+
+    auto o = greedy(1);
+    o.prompt = "The capital of France is";
+    auto r = run_completion(rn, o, no_stream);
+    RN_CHECK(r.success);
+    RN_CHECK(r.n_prompt_tokens > 0);
+    const int64_t expect = *bytes * r.n_prompt_tokens;
+    const int64_t state = static_cast<int64_t>(llama_state_get_size(rn->ctx));
+    RN_CHECK(state > expect / 4);
+    RN_CHECK(state < expect * 4 + (1 << 20));
+}
+
+RN_TEST(chat_reasoning_budget_active_follows_the_cap) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+    try {
+        rn->chat_templates = common_chat_templates_init(rn->model, rn_test_template("Qwen3.5-4B.jinja"));
+    } catch (const std::exception &) {
+        RN_SKIP("thinking template did not load");
+    }
+    rn->params.reasoning_budget = 128;
+    rn->params.default_template_kwargs["enable_thinking"] = "true";
+
+    auto capped = chat({ { "user", "Say hi." } }, 1);
+    capped.reasoning_budget = 32;
+    auto r = run_chat_completion(rn, capped, no_stream);
+    if (!r.success) {
+        RN_SKIP(r.error_msg.c_str());
+    }
+    RN_CHECK(r.chat_response["reasoning_budget_active"].get<bool>());
+
+    capped.reasoning_budget = 64;
+    auto hit = run_chat_completion(rn, capped, no_stream);
+    RN_CHECK(hit.success);
+    RN_CHECK(hit.chat_response["reasoning_budget_active"].get<bool>());
+    const std::string why = cleared_reason(hit);
+    // The cap is not part of the cache key. Hybrid memory still cannot drop the tail.
+    RN_CHECK(why == "none" || why == "seq_rm");
+    if (why == "none") {
+        RN_CHECK(hit.timings.prompt_n < hit.n_prompt_tokens);
+    }
+
+    rn->params.reasoning_budget = 0;
+    rn->params.default_template_kwargs["enable_thinking"] = "false";
+    capped.reasoning_budget = 32;
+    auto off = run_chat_completion(rn, capped, no_stream);
+    RN_CHECK(off.success);
+    RN_CHECK(!off.chat_response["reasoning_budget_active"].get<bool>());
+    RN_CHECK_EQ(cleared_reason(off), std::string("render_identity"));
 }
 
 RN_TEST(chat_reasoning_and_content_split) {

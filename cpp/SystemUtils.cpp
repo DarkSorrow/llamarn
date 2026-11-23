@@ -41,11 +41,11 @@ void SystemUtils::normalizeFilePath(std::string& path) {
 }
 
 // Get total physical memory of the device in bytes
-int64_t getTotalPhysicalMemory() {
+int64_t SystemUtils::getTotalPhysicalMemory() {
     int64_t total_memory = 0;
 
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    // For iOS devices
+#if defined(__APPLE__)
+    // iOS, the simulator, and macOS.
     int mib[2] = {CTL_HW, HW_MEMSIZE};
     size_t length = sizeof(int64_t);
     sysctl(mib, 2, &total_memory, &length, NULL, 0);
@@ -139,7 +139,7 @@ int SystemUtils::getOptimalGpuLayers(struct llama_model* model,
 #endif
     const int n_layer = llama_model_n_layer(model);
     int64_t bytes_per_layer = (int64_t)llama_model_size(model) / n_layer;
-    int64_t total_memory = getTotalPhysicalMemory();
+    int64_t total_memory = SystemUtils::getTotalPhysicalMemory();
 
     int64_t available_vram = 0;
 #if (defined(__APPLE__) && TARGET_OS_IPHONE) || defined(__ANDROID__)

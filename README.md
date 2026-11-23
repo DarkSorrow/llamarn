@@ -16,7 +16,7 @@ A thin, reliable React Native Turbo Module wrapping [llama.cpp](https://github.c
 
 ## Breaking changes
 
-See **[BREAKING.md](./BREAKING.md)** for migration notes (thinking models / `reasoning_content`, KV cache behavior, GGUF + Jinja + tools pitfalls) and the **v0.7.0** release summary.
+See **[BREAKING.md](./BREAKING.md)** for the current migration notes: KV prefix reuse, thinking models and `reasoning_content`, sampling defaults, and llama.cpp `b12651`.
 
 ## Installation
 
@@ -140,7 +140,7 @@ const context = await initLlama({
   model: '/path/to/reasoning-model.gguf',
   n_ctx: 4096,
   use_jinja: true,
-  reasoning_budget: -1,          // -1 = unlimited, 0 = disabled, >0 = token limit
+  reasoning_budget: 0,            // omitted or 0 = thinking off, -1 = unlimited, >0 = token limit
   reasoning_format: 'deepseek',  // 'none' | 'auto' | 'deepseek' | 'deepseek-legacy'
   thinking_forced_open: true,
 });
@@ -380,6 +380,8 @@ console.log(info.architecture);        // e.g. "llama", "qwen2", "mistral"
 console.log(info.gpuSupported);        // true if GPU offload is available
 console.log(info.suggestedChunkSize);  // 32 (CPU-only) or 128 (GPU) — pass as chunk_size
 console.log(info.isCpuOnly);           // true when optimalGpuLayers == 0
+console.log(info.totalMemoryBytes);    // physical RAM. Size the context from this, not from free memory.
+console.log(info.kvBytesPerToken);     // f16 K+V per token for a plain attention cache. Absent for hybrid and MLA models.
 console.log(info.mmprojSizeMB);        // present only when mmprojPath was supplied
 console.log(info.samplingDefaults);    // GGUF-embedded sampling params (see below)
 ```
@@ -446,68 +448,36 @@ These control how the prompt is encoded into the KV cache — smaller chunks wit
 | `is_cpu_only` | `false` | `true` → 2 ms sleep after each chunk |
 | `prompt_chunk_gap_ms` | `5` | GPU minimum inter-chunk gap; increase on thermally constrained devices |
 
-### Completion pacing and cache keys
+### Completion cache keys
 
-`completion()` now supports runtime pacing and cache-key controls:
+Reuse is by message `id`, not by a hashed completion config.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `token_rate_cap` | `30` | Max generated tokens/sec (`0` = uncapped) |
-| `token_buffer_size` | `4` | Stream callback flush cadence in tokens |
-| `prompt_id` | `""` | Cache key for prompt/template/tool identity |
-| `config_id` | `""` | Cache key for effective completion config identity (include tools + main system prompt identity) |
+| `prompt_id` | `""` | Optional. A change from the previous non-empty value clears KV. Empty does not clear. |
+| `id` on a message | none | Prefix key. A leading run of equal non-empty ids is reused. The first empty id ends the run. |
 
-Use `prompt_id` and `config_id` together. If either is missing, config-cache reuse is skipped.
-Changes to completion config are expected to take effect when `config_id` changes.
+- Sampling fields are not part of the cache key. Omitting `temperature` keeps the GGUF default. Sending a new temperature does not clear KV.
+- Tools, grammar, `tool_choice`, the chat template, Jinja, the reasoning format, and `enable_thinking` are already in the render identity. Do not hash them into another key.
+- `reset_kv_cache: true` forces a full clear.
+- A chat result includes `timings`, `context_shifted`, and `kv_cleared_reason`. `timings.prompt_n` is the tokens evaluated into KV this call. A hit is a small `prompt_n` beside a large `usage.prompt_tokens`. `kv_cleared_reason` is `none` on a hit, or `reset`, `media`, `prompt_id`, `render_identity`, `no_prefix`, or `seq_rm`.
+- `n_keep: 0` keeps the first message when that boundary fits, otherwise half the context. `n_keep: -1` stops instead of shifting. A shift keeps the leading ids that are still inside that head, and sets `context_shifted` on the call that slid.
 
 ```ts
-const promptSignature = {
-  systemPromptVersion: 'support-bot-v3',
-  toolNames: tools.map(t => t.function.name).sort(),
-  template: 'chatml',
-};
-
-const configSignature = {
-  model: 'qwen3-8b-q4_k_m',
-  temperature: 0.6,
-  top_p: 0.95,
-  top_k: 40,
-  min_p: 0.05,
-  repeat_penalty: 1.05,
-  repeat_last_n: 64,
-  frequency_penalty: 0.0,
-  presence_penalty: 0.0,
-  tool_choice: 'auto',
-  response_format: 'text',
-};
-
-// Use any stable JSON + hash utility available in your app.
-const stableJson = (value: object) =>
-  JSON.stringify(Object.keys(value).sort().reduce((acc, key) => {
-    acc[key] = (value as Record<string, unknown>)[key];
-    return acc;
-  }, {} as Record<string, unknown>));
-
-const prompt_id = `prompt-${sha256Hex(stableJson(promptSignature)).slice(0, 16)}`;
-const config_id = `config-${sha256Hex(stableJson(configSignature)).slice(0, 16)}`;
-
 const result = await model.completion({
-  messages,
+  messages, // each message that should be reused has a stable id
   tools,
-  prompt_id,
-  config_id,
-  token_rate_cap: 30,
-  token_buffer_size: 4,
+  prompt_id: 'support-bot-v3',
 });
 ```
 
-When tool-call parsing fails, `finish_reason` can now be `tool_call_parse_error` and `tool_call_parse_error` will contain the parser error message.
+When tool-call parsing fails, `finish_reason` can be `tool_call_parse_error` and `tool_call_parse_error` contains the parser error message.
 
 ### Thinking and Reasoning Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `reasoning_budget` | `-1` | Token budget for thinking: `-1` unlimited, `0` disabled, `>0` limited |
+| `reasoning_budget` | `0` | Omitted or `0` turns thinking off at load. `-1` is unlimited. `>0` is the sampler cap. A completion may pass a positive cap when init turned thinking on. `0` or `-1` on a completion does not change the template. `reasoning_budget_active` is true only when that cap was installed. |
 | `reasoning_format` | `'auto'` | `'none'` \| `'auto'` \| `'deepseek'` \| `'deepseek-legacy'` |
 | `thinking_forced_open` | `false` | Force thinking tags in every response |
 | `parse_tool_calls` | `true` | Parse tool call JSON from output (auto-enabled with `use_jinja`) |
@@ -533,7 +503,7 @@ When tool-call parsing fails, `finish_reason` can now be `tool_call_parse_error`
 
 - [Interface Documentation](INTERFACE.md) — Detailed API interfaces
 - [Breaking Changes](BREAKING.md) — Migration notes
-- [Example App](example/) — Working example with text chat and vision demo
+- [Example App](example/) — Simulator and emulator screens. They force `n_gpu_layers: 0` because those targets have no usable GPU. A device app still passes `optimalGpuLayers` from `loadLlamaModelInfo`.
 - [Contributing Guide](CONTRIBUTING.md)
 
 ---

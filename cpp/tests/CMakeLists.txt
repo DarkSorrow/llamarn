@@ -48,6 +48,7 @@ set(RN_TEST_SOURCES
     fixtures.cpp
     test-smoke.cpp
     test-tokenize.cpp
+    test-kv.cpp
 )
 
 if (RN_TESTS_WITH_BRIDGE)

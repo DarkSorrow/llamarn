@@ -94,6 +94,7 @@ std::unique_ptr<rn_test_model> rn_test_load_model(int n_ctx, int n_batch, int ch
     m->rn->params.prompt_chunk_gap_ms = 0;
     m->rn->chat_templates = common_chat_templates_init(m->rn->model, "");
     rn_init_batches(m->rn.get());
+    m->rn->kv_seq_rm_type = common_context_can_seq_rm(m->rn->ctx);
 
     llama_set_abort_callback(
         m->rn->ctx,

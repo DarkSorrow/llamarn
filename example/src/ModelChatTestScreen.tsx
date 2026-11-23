@@ -644,7 +644,6 @@ Rules:
       };
 
       const prompt_id = `prompt-${hashString(stableStringify(promptSignature))}`;
-      const config_id = `config-${hashString(stableStringify(baseConfig))}`;
 
       const history: Message[] = [
         { id: 'chk-sys', role: 'system', content: 'You are a concise assistant.' },
@@ -661,7 +660,6 @@ Rules:
         presence_penalty: baseConfig.presence_penalty,
         max_tokens:       64,
         prompt_id,
-        config_id,
       };
 
       const first = await withTimeout(
@@ -707,22 +705,20 @@ Rules:
         ...baseConfig,
         temperature: 0.3,
       };
-      const changedConfigId = `config-${hashString(stableStringify(newConfig))}`;
       const third = await withTimeout(
         modelState.instance.completion({
           ...optionsBase,
           temperature: newConfig.temperature,
-          config_id: changedConfigId,
           messages: history.map(m => messageToApiPayload(m)) as unknown as LlamaMessage[],
         }),
         25000,
-        'Config shift completion',
+        'Temperature change completion',
       );
       const thirdText = extractResponseText(third);
       if (!thirdText.trim()) {
         throw new Error('Config shift completion returned empty content');
       }
-      checkLog.push('PASS: config_id shift completion succeeded');
+      checkLog.push('PASS: temperature change completion succeeded');
 
       const abortPrompt = `${'abort-check '.repeat(4000)}END`;
       const abortStart = Date.now();

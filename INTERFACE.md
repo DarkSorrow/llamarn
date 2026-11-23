@@ -41,7 +41,9 @@ Get information about a model without loading it fully. The returned values (`op
   availableMemoryMB: number;   // current free device RAM in MB
 
   // Recommended initLlama values — pass these directly
-  optimalGpuLayers: number;    // safe GPU layer count (15% RAM budget, 75% layer cap, minus mmproj)
+  optimalGpuLayers: number;    // tiered RAM share, then 80% of that budget, then a 75% layer cap
+  totalMemoryBytes: number;   // physical device memory
+  kvBytesPerToken?: number;   // f16 K+V per token. Absent for hybrid and MLA models. n_ctx is not clamped.
   estimatedVramMB: number;     // VRAM needed for optimalGpuLayers layers
   suggestedChunkSize: number;  // 32 (CPU-only) or 128 (GPU) — pass as chunk_size to initLlama
   isCpuOnly: boolean;          // true when optimalGpuLayers == 0 — pass as is_cpu_only to initLlama
@@ -174,8 +176,7 @@ Parameters for text/chat completion.
 interface LlamaCompletionParams {
   // Basic completion parameters
   prompt?: string;            // text prompt
-  system_prompt?: string;     // system prompt for chat mode
-  messages?: LlamaMessage[];  // chat messages
+  messages?: LlamaMessage[];  // chat messages. The system text goes here, with an id.
   temperature?: number;       // sampling temperature (default: 0.8)
   top_p?: number;             // top-p sampling (default: 0.95)
   top_k?: number;             // top-k sampling (default: 40)
@@ -209,6 +210,7 @@ Chat message format.
 interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  id?: string;                // prefix key. Reuse it only when the message bytes are unchanged.
   tool_call_id?: string;
   name?: string;
 }
@@ -225,7 +227,7 @@ interface LlamaCompletionResult {
   timings: {
     predicted_n: number;                 // Number of tokens predicted
     predicted_ms: number;                // Time spent generating tokens (ms)
-    prompt_n: number;                    // Number of tokens in the prompt
+    prompt_n: number;                    // Tokens evaluated into KV this call
     prompt_ms: number;                   // Time spent processing prompt (ms)
     total_ms: number;                    // Total time spent (ms)
   };
