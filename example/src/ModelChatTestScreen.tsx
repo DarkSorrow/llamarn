@@ -271,7 +271,8 @@ const ModelLoader: React.FC<{
       
       // Initialize with mode-specific settings.
       // n_ctx: 4096 — minimum safe budget for thinking models + story-length responses.
-      // n_gpu_layers: from loadLlamaModelInfo — device-optimal, avoids the all-CPU repetition path.
+      // n_gpu_layers: 0 — this screen is the simulator and emulator test. Those targets
+      // have no usable GPU, so the device-optimal layer count from loadLlamaModelInfo is not used.
       // use_jinja: true — required for Qwen3 chat template to work correctly in all modes.
       // reasoning_budget: 0 — disables the <think> block; reclaims 300-700 tokens of context
       //   that would otherwise be consumed before any actual response content.
@@ -279,9 +280,9 @@ const ModelLoader: React.FC<{
         model:            modelPath,
         n_ctx:            mode === 'embeddings' ? 512 : 4096,
         n_batch:          128,
-        n_gpu_layers:     info.optimalGpuLayers,
+        n_gpu_layers:     0,
         chunk_size:       info.suggestedChunkSize,
-        is_cpu_only:      info.isCpuOnly,
+        is_cpu_only:      true,
         use_jinja:        mode !== 'embeddings',
         reasoning_budget: 0,
         embedding:        mode === 'embeddings',

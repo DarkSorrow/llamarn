@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "timings-1",
+  "files": {
+    "android::e2e/vision-number.e2e.ts": 43815,
+    "ios::e2e/vision-number.e2e.ts": 20796
+  }
+}

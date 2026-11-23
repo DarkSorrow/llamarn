@@ -23,6 +23,15 @@ static common_chat_tool special_function_tool() {
     };
 }
 
+// Same append the server uses: each piece carries the token id that produced it.
+static common_chat_input aligned_input(const llama_vocab * vocab, const std::string & text) {
+    common_chat_input input;
+    for (llama_token id : common_tokenize(vocab, text, false, true)) {
+        input.append(common_token_to_piece(vocab, id), id);
+    }
+    return input;
+}
+
 RN_TEST(session_parses_qwen35_tool_call) {
     auto rn = rn_test_vocab_ctx("qwen35", "Qwen3.5-4B.jinja");
     auto inputs = user_inputs(rn.get(), "Hey there!");
@@ -37,11 +46,43 @@ RN_TEST(session_parses_qwen35_tool_call) {
     session.apply_sampling(sampling);
     RN_CHECK(!sampling.grammar.empty());
 
-    const auto & msg = session.finish(common_chat_input(
-        "<tool_call>\n<function=special_function>\n<parameter=arg1>\n1\n</parameter>\n</function>\n</tool_call>"));
+    const std::string raw =
+        "<tool_call>\n<function=special_function>\n<parameter=arg1>\n1\n</parameter>\n</function>\n</tool_call>";
+    const auto & msg = session.finish(aligned_input(rn->vocab, raw));
     RN_CHECK_EQ(msg.tool_calls.size(), (size_t) 1);
     RN_CHECK_EQ(msg.tool_calls[0].name, std::string("special_function"));
     RN_CHECK_EQ(msg.tool_calls[0].arguments, std::string("{\"arg1\":1}"));
+}
+
+RN_TEST(session_ignores_tool_call_without_token_ids) {
+    // Qwen3.5's <tool_call> markers are plain text in this vocab, so a null-id
+    // input still parses. Gemma 4's markers are registered special tokens:
+    // p.token matches only when the input carries that id.
+    auto rn = rn_test_vocab_ctx("gemma-4", nullptr);
+    rn->chat_templates = common_chat_templates_init(
+        rn->model,
+        "{% for m in messages %}{{ m['content'] }}{% endfor %}'<|tool_call>call:'");
+    auto inputs = user_inputs(rn.get(), "Hey there!");
+    inputs.tools           = { special_function_tool() };
+    inputs.enable_thinking = false;
+
+    auto session = rn_make_chat_session(rn.get(), inputs);
+    RN_CHECK(inputs.use_jinja);
+    const auto & msg = session.finish(common_chat_input(
+        "<|tool_call>call:special_function{arg1:1}<tool_call|>"));
+    RN_CHECK_EQ(msg.tool_calls.size(), (size_t) 0);
+}
+
+RN_TEST(generated_input_truncates_like_the_server) {
+    auto rn = rn_test_vocab_ctx("qwen35", "Qwen3.5-4B.jinja");
+    common_chat_input hello = aligned_input(rn->vocab, "Hello");
+    common_chat_input input = hello;
+    for (llama_token id : common_tokenize(rn->vocab, "<|im_end|>", false, true)) {
+        input.append(common_token_to_piece(rn->vocab, id), id);
+    }
+    input.truncate(hello.text.size());
+    RN_CHECK_EQ(input.text, hello.text);
+    RN_CHECK(hello.text.find("Hello") != std::string::npos);
 }
 
 RN_TEST(session_splits_reasoning) {
@@ -52,7 +93,7 @@ RN_TEST(session_splits_reasoning) {
     auto session = rn_make_chat_session(rn.get(), inputs);
     RN_CHECK(!session.thinking_end_tags().empty());
 
-    const auto & msg = session.finish(common_chat_input("I'm\nthinking\n</think>\n\nHello"));
+    const auto & msg = session.finish(aligned_input(rn->vocab, "I'm\nthinking\n</think>\n\nHello"));
     RN_CHECK_EQ(msg.reasoning_content, std::string("I'm\nthinking"));
     RN_CHECK_EQ(msg.content, std::string("Hello"));
 }

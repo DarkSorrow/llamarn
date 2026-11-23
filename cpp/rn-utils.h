@@ -136,6 +136,9 @@ struct CompletionResult {
     bool tool_call_parse_failed = false;
     std::string tool_call_parse_error;
     bool context_shifted = false;  // true if context shift occurred during generation
+    // Reply as the server keeps it: pieces plus the token id that produced each one.
+    // session.finish reads this. Do not rebuild it from `content`.
+    common_chat_input generated;
 };
 
 // Utility functions

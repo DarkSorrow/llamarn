@@ -48,6 +48,10 @@ std::unique_ptr<rn_llama_context> rn_test_vocab_ctx(const char * vocab, const ch
 
 rn_test_model::~rn_test_model() {
     if (rn) {
+        if (rn->mtmd_ctx) {
+            mtmd_free(rn->mtmd_ctx);
+            rn->mtmd_ctx = nullptr;
+        }
         rn_free_batches(rn.get());
         rn->chat_templates.reset();
     }
@@ -101,11 +105,37 @@ std::unique_ptr<rn_test_model> rn_test_load_model(int n_ctx, int n_batch, int ch
     return m;
 }
 
+std::unique_ptr<rn_test_model> rn_test_load_vision() {
+    const char * mmproj = getenv("RN_TEST_MMPROJ");
+    if (!mmproj || !*mmproj) {
+        return nullptr;
+    }
+    auto m = rn_test_load_model(2048, 512, 128);
+    if (!m) {
+        return nullptr;
+    }
+    mtmd_context_params mparams = mtmd_context_params_default();
+    mparams.use_gpu       = false;
+    mparams.n_threads     = 4;
+    mparams.print_timings = false;
+    mparams.warmup        = false;
+    m->rn->mtmd_ctx = mtmd_init_from_file(mmproj, m->rn->model, mparams);
+    if (!m->rn->mtmd_ctx) {
+        throw std::runtime_error(std::string("failed to load mmproj ") + mmproj);
+    }
+    m->rn->multimodal_loaded = true;
+    return m;
+}
+
 #else
 
 rn_test_model::~rn_test_model() = default;
 
 std::unique_ptr<rn_test_model> rn_test_load_model(int, int, int) {
+    return nullptr;
+}
+
+std::unique_ptr<rn_test_model> rn_test_load_vision() {
     return nullptr;
 }
 

@@ -22,3 +22,6 @@ struct rn_test_model {
 
 // full model from env RN_TEST_MODEL, nullptr when unset
 std::unique_ptr<rn_test_model> rn_test_load_model(int n_ctx, int n_batch, int chunk_size);
+
+// RN_TEST_MODEL plus RN_TEST_MMPROJ. nullptr when either is unset.
+std::unique_ptr<rn_test_model> rn_test_load_vision();

@@ -1,0 +1,341 @@
+{
+  "schemaVersion": "report-1",
+  "run": {
+    "id": "01a20908-c148-7b73-b121-e8e18469cd47",
+    "specVersion": "0.1",
+    "runner": {
+      "name": "e2e",
+      "version": "0.24.0"
+    },
+    "status": "passed",
+    "exitCode": 0,
+    "startedAt": "2026-11-23T15:31:53.350Z",
+    "finishedAt": "2026-11-23T15:32:12.234Z",
+    "project": {
+      "id": "@novastera-oss/llamarn",
+      "configDigest": "901d02e8c600e206873ce7167ec6633a3b1159ce0e06d6abe5f759336f6febf6"
+    },
+    "environment": {
+      "ci": false,
+      "trustNoticeShown": false,
+      "os": "darwin 27.2.0",
+      "arch": "arm64",
+      "runtime": "node v26.13.1"
+    },
+    "vcs": {
+      "commit": "2ac5ab930eff327f6f8fb9ee796d2cd2aac6ebc7",
+      "branch": "main",
+      "dirty": true
+    },
+    "targets": [
+      {
+        "id": "ios",
+        "index": 0,
+        "platform": "ios",
+        "environment": "test",
+        "engine": {
+          "name": "mobile",
+          "version": "0.12.8",
+          "spiVersion": 1
+        },
+        "capabilities": [
+          "actions",
+          "artifacts",
+          "device",
+          "keyboard",
+          "location",
+          "observation",
+          "pointer"
+        ],
+        "artifactCapabilities": [
+          "screenshot",
+          "video"
+        ],
+        "stateCapability": false
+      },
+      {
+        "id": "android",
+        "index": 1,
+        "platform": "android",
+        "environment": "test",
+        "engine": {
+          "name": "mobile",
+          "version": "0.12.8",
+          "spiVersion": 1
+        },
+        "capabilities": [
+          "actions",
+          "artifacts",
+          "device",
+          "keyboard",
+          "location",
+          "observation",
+          "pointer"
+        ],
+        "artifactCapabilities": [
+          "screenshot",
+          "video"
+        ],
+        "stateCapability": false
+      }
+    ],
+    "serialGroups": [],
+    "results": [
+      {
+        "id": "439e6484aaa439caea451d7dfa2361fd2f7445e9fce0eafd99c2163afb6dbaf0",
+        "testId": "e2e/vision-number.e2e.ts::vision%20screen%20loads%20the%20number%20image",
+        "kind": "test",
+        "declarationIndex": 0,
+        "titlePath": [
+          "vision screen loads the number image"
+        ],
+        "file": "e2e/vision-number.e2e.ts",
+        "source": {
+          "file": "e2e/vision-number.e2e.ts",
+          "line": 4,
+          "column": 1
+        },
+        "targetId": "ios",
+        "platform": "ios",
+        "agent": "default",
+        "repeat": 0,
+        "tags": [],
+        "selected": true,
+        "status": "passed",
+        "attempts": [
+          {
+            "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b",
+            "index": 0,
+            "status": "passed",
+            "startedAt": "2026-11-23T15:31:54.490Z",
+            "durationMs": 17690,
+            "artifacts": [],
+            "secondaryErrors": [],
+            "cleanup": "complete",
+            "environment": {
+              "platform": "ios",
+              "device": "iPhone 17"
+            },
+            "steps": [
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:0",
+                "index": 0,
+                "kind": "resource",
+                "api": "device.installApp",
+                "label": "example/ios/build/Build/Products/Debug-iphonesimulator/llamarnexample.app",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:31:58.339Z",
+                "durationMs": 2679,
+                "events": [],
+                "artifacts": [],
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 5,
+                  "column": 16
+                }
+              },
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:1",
+                "index": 1,
+                "kind": "app",
+                "api": "app.open",
+                "label": "",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:32:01.024Z",
+                "durationMs": 4961,
+                "events": [],
+                "artifacts": [],
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 6,
+                  "column": 13
+                }
+              },
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:2",
+                "index": 2,
+                "kind": "locator",
+                "api": "locator.tap",
+                "label": "getByRole(\"button\", name: /vision chat demo/i)",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:32:10.457Z",
+                "durationMs": 621,
+                "events": [
+                  {
+                    "kind": "engine",
+                    "name": "tap",
+                    "startedAt": "2026-11-23T15:32:10.457Z",
+                    "durationMs": 621,
+                    "status": "passed",
+                    "detail": "tap button \"Vision Chat Demo\""
+                  }
+                ],
+                "artifacts": [],
+                "screen": {
+                  "location": "org.reactjs.native.example.llamarnexample",
+                  "nodes": 13,
+                  "changes": []
+                },
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 11,
+                  "column": 57
+                }
+              },
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:3",
+                "index": 3,
+                "kind": "locator",
+                "api": "locator.tap",
+                "label": "getByTestId(\"vision-use-image\")",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:32:11.079Z",
+                "durationMs": 950,
+                "events": [
+                  {
+                    "kind": "engine",
+                    "name": "tap",
+                    "startedAt": "2026-11-23T15:32:11.079Z",
+                    "durationMs": 950,
+                    "status": "passed",
+                    "detail": "tap other \"Use Test Image\""
+                  }
+                ],
+                "artifacts": [],
+                "screen": {
+                  "location": "org.reactjs.native.example.llamarnexample",
+                  "nodes": 25,
+                  "since": 2,
+                  "changes": [
+                    "added button \"Back to Menu\"",
+                    "added text \"Vision Chat Demo\"",
+                    "added text \"Vision Chat Demo\"",
+                    "added text \"Model path\"",
+                    "added text \"Model path\"",
+                    "added textbox value=\"/Users/hassan/Library/Developer/CoreSimulator/Devices/8737954C-FA72-4F0D-B852-5AA2A921C951/data/Containers/Bundle/Application/FDBB7914-2E2A-4D88-8E63-C7305977B594/llamarnexample.…",
+                    "added text \"Mmproj path (optional — vision models only)\"",
+                    "added text \"Mmproj path (optional — vision models only)\"",
+                    "added textbox placeholder=\"leave blank for text-only test\" value=\"/Users/hassan/Library/Developer/CoreSimulator/Devices/8737954C-FA72-4F0D-B852-5AA2A921C951/data/Containers/Bundle/Application/FDBB791…",
+                    "added text \"○ Model not loaded — loads automatically on first use\"",
+                    "added text \"○ Model not loaded — loads automatically on first use\"",
+                    "added button \"Pre-load Model\""
+                  ],
+                  "more": 10
+                },
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 12,
+                  "column": 48
+                }
+              },
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:4",
+                "index": 4,
+                "kind": "assertion",
+                "api": "expect.toContainText",
+                "label": "getByTestId(\"vision-status\")",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:32:12.031Z",
+                "durationMs": 80,
+                "events": [
+                  {
+                    "kind": "poll",
+                    "name": "expect",
+                    "startedAt": "2026-11-23T15:32:12.031Z",
+                    "durationMs": 80,
+                    "status": "passed",
+                    "count": 1
+                  }
+                ],
+                "artifacts": [],
+                "screen": {
+                  "location": "org.reactjs.native.example.llamarnexample",
+                  "nodes": 28,
+                  "since": 3,
+                  "changes": [
+                    "added text \"Test image ready: 7\" testid=\"vision-status\"",
+                    "added text \"Test image ready: 7\"",
+                    "added textbox placeholder=\"or paste file:///path/to/image.jpg\" value=\"file:///Users/hassan/Library/Developer/CoreSimulator/Devices/8737954C-FA72-4F0D-B852-5AA2A921C951/data/Containers/Data/Applicatio…",
+                    "added image testid=\"vision-preview\"",
+                    "added button \"Describe\"",
+                    "added button \"Embed\"",
+                    "removed textbox placeholder=\"or paste file:///path/to/image.jpg\"",
+                    "removed button \"Describe\" [disabled]",
+                    "removed button \"Embed\" [disabled]"
+                  ]
+                },
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 13,
+                  "column": 53
+                }
+              },
+              {
+                "id": "01a20908-fff9-762f-ab6e-2cfa32f0967b:5",
+                "index": 5,
+                "kind": "assertion",
+                "api": "expect.toBeVisible",
+                "label": "getByTestId(\"vision-preview\")",
+                "status": "passed",
+                "startedAt": "2026-11-23T15:32:12.112Z",
+                "durationMs": 68,
+                "events": [
+                  {
+                    "kind": "poll",
+                    "name": "expect",
+                    "startedAt": "2026-11-23T15:32:12.112Z",
+                    "durationMs": 68,
+                    "status": "passed",
+                    "count": 1
+                  }
+                ],
+                "artifacts": [],
+                "screen": {
+                  "location": "org.reactjs.native.example.llamarnexample",
+                  "nodes": 28,
+                  "since": 4,
+                  "changes": []
+                },
+                "source": {
+                  "file": "e2e/vision-number.e2e.ts",
+                  "line": 14,
+                  "column": 54
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "errors": [],
+    "summary": {
+      "discovered": 1,
+      "selected": 1,
+      "executed": 1,
+      "passed": 1,
+      "failed": 0,
+      "interrupted": 0,
+      "flaky": 0,
+      "skipped": 0
+    },
+    "limits": {
+      "maxAgentContextBytes": 16384,
+      "maxLedgerBytes": 8192,
+      "maxObservationBytes": 262144,
+      "maxEventsPerStep": 1000,
+      "maxModelTokensPerCall": 64000
+    },
+    "usage": {
+      "discoveredResults": 1,
+      "maxAgentContextBytes": 0,
+      "maxLedgerBytes": 0,
+      "maxObservationBytes": 0,
+      "artifactBytes": 0,
+      "downloads": 0,
+      "events": 4,
+      "modelTokens": 0,
+      "maxModelCallsInStep": 0,
+      "maxActionStepsInStep": 0
+    }
+  }
+}

@@ -13,6 +13,7 @@
 #include <thread>
 #include <mutex>
 #include <cstdio>
+#include <cinttypes>
 #include <cstring>
 #include <cerrno>
 #include <cstdlib>  // for setenv
@@ -508,11 +509,35 @@ static bool progress_trampoline(float progress, void* user_data) {
 
 // Returns a valid init result or throws std::runtime_error.
 // Attempts GPU first if params.n_gpu_layers > 0; downgrades to CPU on failure.
+static void log_context_fit(const rn_common_params & requested, const common_init_result_ptr & result) {
+    if (!result || !result->context()) {
+        return;
+    }
+    const int32_t got_ctx = llama_n_ctx(result->context());
+    if (got_ctx != requested.n_ctx) {
+        fprintf(stderr, "fit changed n_ctx from %" PRId32 " to %" PRId32 "\n", requested.n_ctx, got_ctx);
+    }
+    // common_init_from_params fits a copy of the model params. There is no public getter
+    // for the offloaded layer count; the loader logs "offloaded N/M layers" when it differs.
+    const int32_t gpu_default = llama_model_default_params().n_gpu_layers;
+    if (requested.n_gpu_layers == gpu_default) {
+        fprintf(stderr, "n_gpu_layers left at the llama default (%" PRId32 "); device fit selects the offload count\n",
+                requested.n_gpu_layers);
+    }
+}
+
+// Returns a valid init result or throws std::runtime_error.
+// Attempts GPU first if params.n_gpu_layers > 0; downgrades to CPU on failure.
+// fit_params stays at the upstream default so common_init_from_params matches the server.
 static common_init_result_ptr try_init_with_gpu_fallback(rn_common_params& params) {
+    const rn_common_params requested = params;
     if (params.n_gpu_layers > 0) {
         try {
             auto r = common_init_from_params(params);
-            if (r && r->model() && r->context()) return r;
+            if (r && r->model() && r->context()) {
+                log_context_fit(requested, r);
+                return r;
+            }
         } catch (const std::exception&) {
             // GPU init failed — fall through to CPU
         }
@@ -521,6 +546,7 @@ static common_init_result_ptr try_init_with_gpu_fallback(rn_common_params& param
     auto r = common_init_from_params(params);
     if (!r || !r->model() || !r->context())
         throw std::runtime_error("model initialization failed (CPU)");
+    log_context_fit(requested, r);
     return r;
 }
 

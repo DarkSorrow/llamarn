@@ -3,6 +3,7 @@ import {
   View,
   Text,
   Button,
+  Pressable,
   TextInput,
   ScrollView,
   Image,
@@ -54,13 +55,14 @@ export default function VisionChatScreen() {
     }
 
     // Vision models need larger context: image tokens alone can be 256–784 for a 448px image.
-    // n_gpu_layers: 0 ensures CPU fallback on iOS simulator where Metal embedding-input
-    // compute paths may not be fully supported.
+    // These screens run on the iOS simulator and the Android emulator. Neither has a usable
+    // GPU for llama.cpp, so the test stays on CPU.
     const params: Parameters<typeof initLlama>[0] = {
       model: mp,
       n_ctx: 4096,
       use_jinja: true,
       n_gpu_layers: 0,
+      is_cpu_only: true,
     };
     const mmproj = resolvedMmproj;
     if (mmproj) {
@@ -80,11 +82,11 @@ export default function VisionChatScreen() {
 
   async function useTestImage() {
     try {
-      const dest = `${RNFS.CachesDirectoryPath}/dataset.png`;
+      const dest = `${RNFS.CachesDirectoryPath}/number-7.png`;
       if (Platform.OS === 'android') {
-        await RNFS.copyFileAssets('dataset.png', dest);
+        await RNFS.copyFileAssets('number-7.png', dest);
       } else {
-        const uri = Image.resolveAssetSource(require('../assets/dataset.png'))?.uri;
+        const uri = Image.resolveAssetSource(require('../assets/number-7.png'))?.uri;
         if (!uri) {
           throw new Error('Bundled test image could not be resolved');
         }
@@ -95,7 +97,7 @@ export default function VisionChatScreen() {
         }
       }
       setImage(`file://${dest}`);
-      setStatus('Test image ready');
+      setStatus('Test image ready: 7');
     } catch (e: any) {
       setStatus(`Failed to load test image: ${e.message}`);
     }
@@ -192,11 +194,13 @@ export default function VisionChatScreen() {
         <Button title="Release"        onPress={releaseModel} disabled={!model || loading} />
       </View>
 
-      {!!status && <Text style={styles.status}>{status}</Text>}
+      {!!status && <Text testID="vision-status" style={styles.status}>{status}</Text>}
       {loading && <ActivityIndicator style={styles.spinner} />}
 
       <View style={styles.row}>
-        <Button title="Use Test Image" onPress={useTestImage} disabled={loading} />
+        <Pressable testID="vision-use-image" onPress={useTestImage} disabled={loading} style={styles.imageButton}>
+          <Text>Use Test Image</Text>
+        </Pressable>
       </View>
 
       <TextInput
@@ -209,7 +213,7 @@ export default function VisionChatScreen() {
       />
 
       {!!imagePath && (
-        <Image source={{ uri: imagePath }} style={styles.preview} resizeMode="contain" />
+        <Image testID="vision-preview" source={{ uri: imagePath }} style={styles.preview} resizeMode="contain" />
       )}
 
       <View style={styles.row}>
@@ -231,6 +235,7 @@ const styles = StyleSheet.create({
   title:        { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
   label:        { fontSize: 12, color: '#666', marginBottom: 2 },
   row:          { flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 8 },
+  imageButton:  { paddingVertical: 8, paddingHorizontal: 12, backgroundColor: '#e8e8e8', borderRadius: 6 },
   status:       { fontSize: 13, color: '#555', marginBottom: 4 },
   badgeOk:      { fontSize: 12, color: '#2a8a2a', fontWeight: '600', marginBottom: 6 },
   badgeOff:     { fontSize: 12, color: '#999',    marginBottom: 6 },

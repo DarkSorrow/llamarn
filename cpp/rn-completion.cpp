@@ -52,6 +52,9 @@ struct completion_state {
     size_t n_sent_text = 0;
 
     std::string generated_text;
+    // Same bytes as generated_text, with the token id on the first byte of each piece.
+    // Mirrors server_slot::generated in server-context.cpp process_token.
+    common_chat_input generated;
     std::string stopping_word;
     bool stopped_by_limit = false;
     bool context_shifted = false;  // true if at least one context shift occurred
@@ -63,6 +66,27 @@ struct completion_state {
     std::vector<std::string> antiprompt;
 
 };
+
+// Keep generated_text, generated, and generated_tokens on the same kept prefix.
+// generated.tokens stores the id on the first byte of a piece and LLAMA_TOKEN_NULL on the rest.
+static void rn_truncate_generated(completion_state & state, size_t keep) {
+    state.generated.truncate(keep);
+    state.generated_text = state.generated.text;
+    if (state.n_sent_text > state.generated_text.size()) {
+        state.n_sent_text = state.generated_text.size();
+    }
+    state.generated_tokens.clear();
+    for (size_t i = 0; i < state.generated.tokens.size();) {
+        const llama_token id = state.generated.tokens[i];
+        if (id != LLAMA_TOKEN_NULL) {
+            state.generated_tokens.push_back(id);
+        }
+        ++i;
+        while (i < state.generated.tokens.size() && state.generated.tokens[i] == LLAMA_TOKEN_NULL) {
+            ++i;
+        }
+    }
+}
 
 // Helper function to check for stopping criteria
 static bool check_stop_conditions(
@@ -90,13 +114,8 @@ static bool check_stop_conditions(
     }
 
     if (stop_pos != std::string::npos) {
-        state.generated_text.erase(
-            state.generated_text.begin() + stop_pos,
-            state.generated_text.end()
-        );
-        if (state.n_sent_text > state.generated_text.size()) {
-            state.n_sent_text = state.generated_text.size();
-        }
+        // Server: slot.generated.truncate(pos + stop_pos). Drop the stop string and its token ids.
+        rn_truncate_generated(state, stop_pos);
         state.has_next_token = false;
         return true;
     }
@@ -567,8 +586,9 @@ CompletionResult run_completion(
             // Extract the token text
             std::string token_text = common_token_to_piece(rn_ctx->vocab, token_id);
 
-            // Add to generated text
-            state.generated_text += token_text;
+            // Server process_token: slot.generated.append(token_str, result.tok).
+            state.generated.append(token_text, token_id);
+            state.generated_text = state.generated.text;
             state.generated_tokens.push_back(token_id);
 
             // Update state
@@ -585,7 +605,8 @@ CompletionResult run_completion(
             gen_batch.add(token_id, state.n_past, 0, true);
             const int32_t ret = llama_process(rn_ctx->ctx, LLAMA_PROCESS_TYPE_DECODE, gen_batch.get());
             if (ret != 0) {
-                result.content = state.generated_text;
+                result.content = state.generated.text;
+                result.generated = state.generated;
                 return rn_decode_failed(result, rn_ctx, ret, state.n_past, "Failed to decode generated token");
             }
 
@@ -600,17 +621,10 @@ CompletionResult run_completion(
             // Also erase the EOG token text from generated_text so it does not appear in
             // result.content or any streamed batch: EOG tokens are control tokens, not content.
             if (!options.ignore_eos && llama_vocab_is_eog(rn_ctx->vocab, token_id)) {
-                if (state.generated_text.size() >= token_text.size()) {
-                    state.generated_text.erase(state.generated_text.size() - token_text.size());
-                } else {
-                    state.generated_text.clear();
-                }
-                if (state.n_sent_text > state.generated_text.size()) {
-                    state.n_sent_text = state.generated_text.size();
-                }
-                if (!state.generated_tokens.empty()) {
-                    state.generated_tokens.pop_back();
-                }
+                const size_t keep = state.generated_text.size() >= token_text.size()
+                    ? state.generated_text.size() - token_text.size()
+                    : 0;
+                rn_truncate_generated(state, keep);
                 state.has_next_token = false;
                 // Flush any buffered tokens before breaking on EOS
                 if (callback && state.n_sent_text < state.generated_text.size()) {
@@ -668,8 +682,9 @@ CompletionResult run_completion(
             result.timings.total_ms     = perf.t_p_eval_ms + perf.t_eval_ms;
         }
 
-        // Set the result
-        result.content = state.generated_text;
+        // Set the result. content is the kept text; generated carries the token ids for session.finish.
+        result.content = state.generated.text;
+        result.generated = state.generated;
         result.tokens = state.generated_tokens;
         result.n_prompt_tokens = state.prompt_tokens.size();
         result.n_predicted_tokens = state.n_decoded;
@@ -1141,9 +1156,10 @@ CompletionResult run_chat_completion(
             // Splits reasoning from content even without tools.
             common_chat_msg parsed_msg;
             bool has_parsed_content = false;
-            if (!result.content.empty()) {
+            if (!result.generated.text.empty()) {
                 try {
-                    parsed_msg = session.finish(common_chat_input(result.content));
+                    // One finish of the token-aligned reply. Do not re-tokenize result.content.
+                    parsed_msg = session.finish(result.generated);
                     has_parsed_content = true;
                 } catch (const std::exception& e) {
                     if (!template_inputs.tools.empty()) {

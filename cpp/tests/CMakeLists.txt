@@ -54,6 +54,7 @@ if (RN_TESTS_WITH_BRIDGE)
     list(APPEND RN_TEST_SOURCES
         test-chat-session.cpp
         test-completion.cpp
+        test-image.cpp
         ${RN_CPP_DIR}/rn-completion.cpp
         ${RN_CPP_DIR}/rn-multimodal.cpp
     )

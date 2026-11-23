@@ -965,6 +965,9 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     llama_set_embeddings(rn_ctx_->ctx, true);
 
     // Plain llama_batch + llama_decode: the llama_batch_ext embedding getters are not upstream yet.
+    // Android builds this file with -Werror. Keep the deprecated batch API and silence that warning here.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
 
     rn_batch_clear(batch);
@@ -1014,6 +1017,7 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
     }
 
     llama_batch_free(batch);
+#pragma clang diagnostic pop
 
     if (!embd) {
       throw std::runtime_error("Failed to extract embeddings - model may not support embeddings or pooling configuration is invalid");

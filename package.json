@@ -1,6 +1,6 @@
 {
   "name": "@novastera-oss/llamarn",
-  "version": "0.8.11",
+  "version": "0.11.3",
   "description": "React Native library for on-device LLM inference using llama.cpp. Part of Novastera CRM/ERP platform ecosystem.",
   "source": "./src/index.tsx",
   "main": "./lib/module/index.js",
@@ -89,7 +89,11 @@
     "build-android-clean": "bash scripts/build_android_external.sh --clean-prebuilt",
     "build-android-macos": "npm run clean-android && npm run clean-prebuilt && bash scripts/build_android_gpu_backend.sh --no-vulkan --no-opencl --clean && bash scripts/build_android_external.sh --no-vulkan --no-opencl --clean",
     "pack:verify": "bash scripts/verify-pack-contents.sh",
-    "test:native": "bash scripts/test_native_host.sh"
+    "test:native": "bash scripts/test_native_host.sh",
+    "test:number-png": "node scripts/write-number-png.mjs",
+    "test:e2e": "e2e run e2e/vision-number.e2e.ts",
+    "test:e2e:ios": "e2e run e2e/vision-number.e2e.ts --target ios",
+    "test:e2e:android": "e2e run e2e/vision-number.e2e.ts --target android"
   },
   "keywords": [
     "react-native",
@@ -135,11 +139,13 @@
     "registry": "https://registry.npmjs.org/"
   },
   "devDependencies": {
+    "@e2e-dev/mobile": "^0.12.8",
     "@react-native/gradle-plugin": "0.88.1",
     "@react-native/jest-preset": "0.88.1",
     "@types/jest": "^29.5.14",
     "@types/react": "^19.2.1",
     "del-cli": "^6.0.0",
+    "e2e": "^0.24.0",
     "jest": "^29.7.0",
     "prettier": "^3.0.3",
     "react": "19.3.0",

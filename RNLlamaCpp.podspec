@@ -33,6 +33,7 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/log.{h,cpp}",
                    "cpp/llama.cpp/common/sampling.{h,cpp}",
                    "cpp/llama.cpp/common/chat.{h,cpp}",
+                   "cpp/llama.cpp/common/chat-tts-norm.{h,cpp}",
                    "cpp/llama.cpp/common/chat-auto-parser.h",
                    "cpp/llama.cpp/common/chat-auto-parser-generator.cpp",
                    "cpp/llama.cpp/common/chat-auto-parser-helpers.{h,cpp}",
@@ -55,12 +56,14 @@ Pod::Spec.new do |s|
                    "cpp/llama.cpp/common/*.hpp",
                    "cpp/llama.cpp/common/jinja/*.cpp",
                    "cpp/llama.cpp/vendor/nlohmann/*.hpp",
+                   "cpp/llama.cpp/vendor/hash/hash.cpp",
+                   "cpp/llama.cpp/vendor/hash/sha256/sha256.c",
                    # MTMD Multimodal Toolkit
-                   "cpp/llama.cpp/tools/mtmd/clip.{h,cpp}",
-                   "cpp/llama.cpp/tools/mtmd/clip-impl.h",
-                   "cpp/llama.cpp/tools/mtmd/clip-model.h",
-                   "cpp/llama.cpp/tools/mtmd/clip-graph.h",
                    "cpp/llama.cpp/tools/mtmd/mtmd.{h,cpp}",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-graph.{h,cpp}",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-model.{h,cpp}",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-subcontext.{h,cpp}",
+                   "cpp/llama.cpp/tools/mtmd/mtmd-impl.h",
                    "cpp/llama.cpp/tools/mtmd/mtmd-helper.{h,cpp}",
                    "cpp/llama.cpp/tools/mtmd/mtmd-audio.h",
                    # mtmd-audio.cpp uses `constexpr bool DEBUG = false;` which conflicts with
@@ -85,7 +88,7 @@ Pod::Spec.new do |s|
 
   # Compiler settings
   s.pod_target_xcconfig = {
-    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/tools/mtmd\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
+    "HEADER_SEARCH_PATHS" => "\"$(PODS_TARGET_SRCROOT)/ios/include\" \"$(PODS_TARGET_SRCROOT)/cpp\" \"$(PODS_TARGET_SRCROOT)/ios/generated/RNLlamaCppSpec\" \"$(PODS_TARGET_SRCROOT)/ios/generated\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/ggml/include\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/common\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/vendor/hash\" \"$(PODS_TARGET_SRCROOT)/cpp/llama.cpp/tools/mtmd\" \"$(PODS_ROOT)/Headers/Public/React-bridging\" \"$(PODS_ROOT)/Headers/Public/React\"",
     "CLANG_ENABLE_MODULES" => "NO",
     # USE_HEADERMAP=NO: Xcode's hmap system maps "ggml.h" to the xcframework Headers path (since the
     # xcframework is a vendored_framework and its headers land in all-target-headers.hmap). But

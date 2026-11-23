@@ -21,6 +21,7 @@ set(RN_COMMON_SOURCES
     ${_RN_COMMON_DIR}/fit.cpp
     ${_RN_COMMON_DIR}/sampling.cpp
     ${_RN_COMMON_DIR}/chat.cpp
+    ${_RN_COMMON_DIR}/chat-tts-norm.cpp
     ${_RN_COMMON_DIR}/chat-auto-parser-generator.cpp
     ${_RN_COMMON_DIR}/chat-auto-parser-helpers.cpp
     ${_RN_COMMON_DIR}/chat-diff-analyzer.cpp
