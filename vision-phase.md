@@ -70,3 +70,5 @@
 | MiniCPM-V | vision-chat | Mobile-optimised |
 | Whisper | audio-transcribe | As standalone or mmproj sidecar |
 | CLIP | image-encode | Embeddings only |
+
+Still not done
