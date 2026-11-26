@@ -1924,7 +1924,7 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
-  - RNLlamaCpp (0.11.3):
+  - RNLlamaCpp (0.11.4):
     - hermes-engine
     - RCTRequired
     - RCTTypeSafety
@@ -2302,7 +2302,7 @@ SPEC CHECKSUMS:
   ReactCommon: 74339d6220b072716ad634726f5bf509ef5c8dbd
   ReactNativeDependencies: a5164c3ebbe90d992022b5d9cbabbf770a6d7d05
   ReactNativeFs: b97730a245ed9c42ad0e585d6dd187531d5ed8a9
-  RNLlamaCpp: 482ea9c822cb4cb16c6ce6929e71c5817c24cff4
+  RNLlamaCpp: b5c812a807030d36497e39cff7007a2eb2f90432
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   Yoga: cfbf768b8188dd8031d170316047010a4092581f
 

@@ -455,22 +455,22 @@ These control how the prompt is encoded into the KV cache — smaller chunks wit
 
 ### Completion cache keys
 
-Reuse is by message `id`, not by a hashed completion config.
+Reuse is by tokens, as llama-server's `cache_prompt`: the cache keeps the longest common token prefix of what it holds (the previous prompt and its reply) and the new prompt, and encodes the rest. Nothing to key.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `prompt_id` | `""` | Optional. A change from the previous non-empty value clears KV. Empty does not clear. |
-| `id` on a message | none | Prefix key. A leading run of equal non-empty ids is reused. The first empty id ends the run. |
 
 - Sampling fields are not part of the cache key. Omitting `temperature` keeps the GGUF default. Sending a new temperature does not clear KV.
 - Tools, grammar, `tool_choice`, the chat template, Jinja, the reasoning format, and `enable_thinking` are already in the render identity. Do not hash them into another key.
 - `reset_kv_cache: true` forces a full clear.
 - A chat result includes `timings`, `context_shifted`, and `kv_cleared_reason`. `timings.prompt_n` is the tokens evaluated into KV this call. A hit is a small `prompt_n` beside a large `usage.prompt_tokens`. `kv_cleared_reason` is `none` on a hit, or `reset`, `media`, `prompt_id`, `render_identity`, `no_prefix`, or `seq_rm`.
-- `n_keep: 0` keeps the first message when that boundary fits, otherwise half the context. `n_keep: -1` stops instead of shifting. A shift keeps the leading ids that are still inside that head, and sets `context_shifted` on the call that slid.
+- `n_keep: 0` keeps the system message when it is first and its own render is a token prefix of the prompt, otherwise half the context. `n_keep: -1` stops instead of shifting. The kept head stays reusable by the next call; `context_shifted` is set on the call that slid.
+- Hybrid / recurrent models (Qwen3.5) drop the previous reply but cannot roll back into an earlier prompt: editing an earlier message re-encodes everything (`seq_rm`).
 
 ```ts
 const result = await model.completion({
-  messages, // each message that should be reused has a stable id
+  messages, // the same history as last turn plus the new message: the shared token prefix is reused
   tools,
   prompt_id: 'support-bot-v3',
 });

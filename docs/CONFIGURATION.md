@@ -165,7 +165,7 @@ Notes:
 - **Forced-open thinking.** The template's generation prompt already ends with `<think>`, so the model's output begins with the reasoning text and contains only `</think>`. The parser accounts for this. Do not look for an opening `<think>` in the stream. Use the `reasoning_content` stream field ([section 7](#7-streaming)).
 - **Budget per call.** With thinking on at init, a completion may pass `reasoning_budget: N` (> 0) to replace the cap for that call. `0` or `-1` on a completion cannot turn thinking off or on. `reasoning_budget_active` in the result says whether a cap was installed.
 - **Repetition.** If a quantized model loops while thinking, the Qwen card suggests `presence_penalty` between 0 and 2 (try 1.0–1.5). Raise `n_ctx` before raising penalties.
-- **History.** When you send an assistant turn back, send its `content`. You may also send `reasoning_content`, and the template decides whether to render it. Keep the message `id` the same only when nothing in that message changed.
+- **History.** When you send an assistant turn back, send its `content`. You may also send `reasoning_content`, and the template decides whether to render it. The cache compares tokens, so a template that renders an earlier turn differently is handled: reuse stops where the tokens differ.
 
 ### 3.3 Vision chat
 
@@ -316,13 +316,14 @@ Pacing applies only to prompt encoding, not to token generation. None of these s
 | `tools` | none | OpenAI function tools. Needs `use_jinja: true` at init. |
 | `tool_choice` | `'auto'` | `'auto'`, `'none'`, `'required'`, `{ type: 'function', function: { name } }`, or `{ type: 'allowed_tools', allowed_tools: { mode: 'auto' \| 'required', tools: [{ type: 'function', function: { name } }] } }`. A name that does not match exactly one tool fails the call with an invalid-parameter error and leaves the cache untouched. Required mode is always enforced. Whether the grammar also excludes the other tools depends on the model's template handler upstream (at b12780 Qwen3.5 still allows every listed tool), so pass only the tools you want when it matters. |
 | `reasoning_budget` | init cap | See [recipe 3.2](#32-thinking-models-qwen3-qwen35-qwq-deepseek-r1-distills). |
-| `n_keep` | `0` | Context shift: `0` keeps the first message boundary when it fits, else half the context. `> 0` keeps that many tokens. `-1` stops instead of shifting. |
-| message `id` | none | KV reuse key. A leading run of unchanged ids is not re-encoded. |
+| `n_keep` | `0` | Context shift: `0` keeps the system message when it is first and its render is a token prefix of the prompt, else half the context. `> 0` keeps that many tokens. `-1` stops instead of shifting. |
 | `prompt_id` | `''` | A change from the previous non-empty value clears the KV cache. |
 | `reset_kv_cache` | `false` | Force a full clear. |
 | `ignore_eos` | `false` | Ignore end-of-generation tokens. |
 
 `timings.prompt_n` is llama.cpp's own counter of tokens evaluated into KV this call. It can read one token high, because upstream counts per sync and the first generated token can land in it. Treat a hit as "small `prompt_n` next to a large `usage.prompt_tokens`", not an exact difference. Outputs can also differ slightly between `chunk_size` values and between a cache hit and a full encode: llama.cpp does not promise identical logits across batch sizes (`tools/server/README.md`, `cache_prompt`).
+
+KV reuse is by tokens, as llama-server's `cache_prompt`: the cache keeps the longest common prefix of what it holds (the previous prompt and its reply) and the new prompt's tokens, and encodes the rest. There is no message key to manage. Hybrid / recurrent models (Qwen3.5) can drop the previous reply but cannot roll back into an earlier prompt: an edited earlier message re-encodes from the start (`seq_rm`).
 
 The result's `kv_cleared_reason` says why a call re-encoded from the start: `none`, `reset`, `media`, `prompt_id`, `render_identity` (Jinja, reasoning format, template, tools, `tool_choice`, `parallel_tool_calls`, grammar, or `enable_thinking` changed), `no_prefix`, or `seq_rm`.
 

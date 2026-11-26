@@ -4,6 +4,16 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
+## 0.11.4: KV reuse by tokens, message `id` removed
+
+- **The KV cache is reused by token prefix**, as llama-server's `cache_prompt`. The native side keeps the tokens it holds (the last prompt and every decoded reply token) and, on the next chat call, keeps the longest common prefix with the new prompt's tokens. Up to 0.11.3, reuse went by message `id` and each message's boundary came from rendering the messages up to it on their own. A template that renders a turn differently once more messages follow (Qwen3 / Qwen3.5 drop an earlier turn's think block) then made the next call reuse KV that did not match the prompt, with no error. Token reuse cannot do that: a position is reused only when its token is the same.
+- **`LlamaMessage.id` is removed.** Passing it is a TypeScript error; at runtime it is ignored. **Migration:** stop sending ids. Send the same history each turn; reuse stops where the tokens differ.
+- `kv_cleared_reason` keeps its values. `no_prefix` now means no common token prefix. `seq_rm` also covers hybrid / recurrent models (Qwen3.5) asked to roll back into an earlier prompt (an edited earlier message): they can drop the previous reply, not more.
+- `n_keep: 0` keeps the system message when it is first and its own render is a token prefix of the prompt, else half the context.
+- **Fixed:** an embedding call cleared the cache but left the chat's reuse state, so the next chat call could reuse the embedding's KV.
+
+---
+
 ## llama.cpp b12780: model defaults, reasoning, tool_choice, streaming
 
 Configuration guide: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).

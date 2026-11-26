@@ -27,7 +27,7 @@ static CompletionOptions chat(std::vector<std::pair<std::string, std::string>> m
     CompletionOptions o = greedy(n_predict);
     o.messages = json::array();
     for (size_t i = 0; i < msgs.size(); i++) {
-        o.messages.push_back({ { "role", msgs[i].first }, { "content", msgs[i].second }, { "id", "m" + std::to_string(i) } });
+        o.messages.push_back({ { "role", msgs[i].first }, { "content", msgs[i].second } });
     }
     return o;
 }
@@ -42,6 +42,12 @@ static std::string long_prompt(int sentences) {
 
 static std::string chat_content(const CompletionResult & r) {
     return r.chat_response["choices"][0]["message"].value("content", std::string());
+}
+
+// The token list describes the cache: as many tokens as seq 0 has positions.
+static bool kv_in_sync(rn_llama_context * rn) {
+    const llama_pos pos_max = llama_memory_seq_pos_max(llama_get_memory(rn->ctx), 0);
+    return static_cast<size_t>(pos_max + 1) == rn->kv_tokens.size();
 }
 
 RN_TEST(completion_short_prompt) {
@@ -149,7 +155,8 @@ RN_TEST(chat_kv_reuse_matches_full_encode) {
     auto t1 = chat({ { "system", "You are terse." }, { "user", "Name a fruit." } }, 16);
     auto r1 = run_chat_completion(rn, t1, no_stream);
     RN_CHECK(r1.success);
-    RN_CHECK(rn->kv_has_messages);
+    RN_CHECK(!rn->kv_tokens.empty());
+    RN_CHECK(kv_in_sync(rn));
 
     auto t2 = chat({ { "system", "You are terse." },
                      { "user", "Name a fruit." },
@@ -181,7 +188,8 @@ RN_TEST(chat_abort_keeps_matched_prefix) {
         return true;
     });
     RN_CHECK(!aborted.success);
-    RN_CHECK(rn->kv_messages.size() <= t1.messages.size());
+    // The cache keeps what was decoded before the abort, and the list says exactly that.
+    RN_CHECK(kv_in_sync(rn));
     rn->abort_generation = false;
 
     auto rerun = run_chat_completion(rn, t2, no_stream);
@@ -363,7 +371,7 @@ RN_TEST(chat_seq_rm_failure_is_visible) {
     auto first = chat({ { "user", "Name a fruit." } }, 4);
     auto r1 = run_chat_completion(rn, first, no_stream);
     RN_CHECK(r1.success);
-    RN_CHECK(!rn->kv_messages.empty());
+    RN_CHECK(!rn->kv_tokens.empty());
 
     rn->kv_seq_rm = fail_seq_rm;
     auto second = chat({ { "user", "Name a fruit." }, { "user", "Name a color." } }, 4);
@@ -383,8 +391,6 @@ RN_TEST(chat_shift_keeps_the_first_message) {
     auto seeded = chat({ { "system", "You are terse." }, { "user", "Say hi." } }, 4);
     auto seed = run_chat_completion(rn, seeded, no_stream);
     RN_CHECK(seed.success);
-    RN_CHECK(!rn->kv_messages.empty());
-    const int32_t system_end = rn->kv_messages.front().token_end;
 
     auto filling = chat({
         { "system", "You are terse." },
@@ -404,17 +410,18 @@ RN_TEST(chat_shift_keeps_the_first_message) {
     RN_CHECK(shifted.success);
     RN_CHECK(shifted.context_shifted);
     RN_CHECK(shifted.chat_response["context_shifted"].get<bool>());
-    RN_CHECK(!rn->kv_messages.empty());
-    RN_CHECK_EQ(rn->kv_messages.front().id, std::string("m0"));
-    RN_CHECK_EQ(rn->kv_messages.front().token_end, system_end);
-    RN_CHECK(rn->kv_messages.front().token_end <= shifted.shift_n_keep);
+    // The system message's boundary, not half the window
+    RN_CHECK(shifted.shift_n_keep > 0);
+    RN_CHECK(shifted.shift_n_keep < static_cast<int>(llama_n_ctx(rn->ctx)) / 2);
+    // The list shifted with the cache
+    RN_CHECK(kv_in_sync(rn));
 
     auto follow = chat({ { "system", "You are terse." }, { "user", "Name one sea." } }, 4);
     auto hit = run_chat_completion(rn, follow, no_stream);
     RN_CHECK(hit.success);
     RN_CHECK_EQ(cleared_reason(hit), std::string("none"));
     RN_CHECK(hit.timings.prompt_n < hit.n_prompt_tokens);
-    RN_CHECK(hit.timings.prompt_n <= hit.n_prompt_tokens - system_end + 8);
+    RN_CHECK(hit.timings.prompt_n <= hit.n_prompt_tokens - shifted.shift_n_keep + 8);
 }
 
 RN_TEST(chat_shift_without_ids_keeps_half_the_context) {
@@ -597,3 +604,96 @@ RN_TEST(chat_stream_deltas_sum_to_final_message) {
     RN_CHECK_EQ(reasoning, msg.value("reasoning_content", std::string()));
 }
 
+
+// Three turns, each sending the previous reply back with reasoning_content, as an app does.
+// Qwen3-style templates render that reply differently once a new user message follows; the
+// token prefix still reuses the whole history up to that reply.
+RN_TEST(chat_multi_turn_reuses_history) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+
+    std::vector<std::pair<std::string, std::string>> history = { { "system", "You are terse." }, { "user", "Name a fruit." } };
+    auto first = run_chat_completion(rn, chat(history, 12), no_stream);
+    RN_CHECK(first.success);
+    RN_CHECK(kv_in_sync(rn));
+    RN_CHECK_EQ(rn->kv_tokens.size(), static_cast<size_t>(first.n_prompt_tokens + first.n_predicted_tokens));
+
+    CompletionResult previous = first;
+    for (const char * next : { "Name a color.", "Name an animal." }) {
+        auto turn = chat(history, 12);
+        turn.messages.push_back({ { "role", "assistant" }, { "content", chat_content(previous) }, { "reasoning_content", "Short answer." } });
+        turn.messages.push_back({ { "role", "user" }, { "content", next } });
+        history.push_back({ "assistant", chat_content(previous) });
+        history.push_back({ "user", next });
+
+        auto r = run_chat_completion(rn, turn, no_stream);
+        RN_CHECK(r.success);
+        RN_CHECK(kv_in_sync(rn));
+        const std::string why = cleared_reason(r);
+        if (why == "seq_rm" && !llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+            // Hybrid / recurrent memory (Qwen3.5) cannot drop the previous reply: known limit.
+            RN_SKIP("memory cannot drop a suffix: every turn re-encodes");
+        }
+        RN_CHECK_EQ(why, std::string("none"));
+        // Everything before the previous turn's generation header is reused.
+        RN_CHECK(r.timings.prompt_n <= r.n_prompt_tokens - (previous.n_prompt_tokens - 8));
+        previous = r;
+    }
+}
+
+RN_TEST(chat_edit_earlier_message_reencodes_from_the_edit) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+
+    auto t1 = chat({ { "system", "You are terse." }, { "user", "Name a fruit." } }, 8);
+    auto r1 = run_chat_completion(rn, t1, no_stream);
+    RN_CHECK(r1.success);
+
+    // The user message changed: only the system part is reused.
+    auto t2 = chat({ { "system", "You are terse." }, { "user", "Name a river in Europe." } }, 8);
+    auto r2 = run_chat_completion(rn, t2, no_stream);
+    RN_CHECK(r2.success);
+    RN_CHECK(kv_in_sync(rn));
+    if (cleared_reason(r2) == "seq_rm" && !llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+        // Hybrid / recurrent memory (Qwen3.5) drops the last reply but cannot roll back into an
+        // earlier prompt: an edited message re-encodes everything. The cache stays consistent.
+        RN_SKIP("memory cannot roll back into the prompt");
+    }
+    RN_CHECK_EQ(cleared_reason(r2), std::string("none"));
+    RN_CHECK(r2.timings.prompt_n < r2.n_prompt_tokens);
+
+    t2.reset_kv_cache = true;
+    auto cold = run_chat_completion(rn, t2, no_stream);
+    RN_CHECK(cold.success);
+    RN_CHECK_EQ(cleared_reason(cold), std::string("reset"));
+    // The reuse encoded strictly less than the cold run
+    RN_CHECK(r2.timings.prompt_n < cold.timings.prompt_n);
+}
+
+RN_TEST(chat_kv_tokens_follow_a_shift) {
+    auto m = load_or_skip(96, 64, 64);
+    auto * rn = m->rn.get();
+    if (!llama_memory_can_shift(llama_get_memory(rn->ctx))) {
+        RN_SKIP("memory cannot shift");
+    }
+    CompletionOptions o = greedy(-1);
+    o.ignore_eos = true;
+    o.messages = json::array({ { { "role", "user" }, { "content", "Count upward." } } });
+    const int budget = static_cast<int>(llama_n_ctx(rn->ctx)) + 16;
+    int generated = 0;
+    auto r = run_chat_completion(rn, o, [&](const rn_stream_chunk &, bool done) {
+        if (done) return true;
+        return ++generated < budget;
+    });
+    RN_CHECK(r.success);
+    RN_CHECK(r.context_shifted);
+    RN_CHECK(kv_in_sync(rn));
+
+    // The kept head is still this prompt's start: the same request reuses it.
+    CompletionOptions again = o;
+    again.n_predict = 2;
+    auto hit = run_chat_completion(rn, again, no_stream);
+    RN_CHECK(hit.success);
+    RN_CHECK_EQ(cleared_reason(hit), std::string("none"));
+    RN_CHECK(kv_in_sync(rn));
+}

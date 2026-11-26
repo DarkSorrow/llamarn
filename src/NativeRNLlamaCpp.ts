@@ -139,7 +139,7 @@ export interface LlamaModelParams {
 export interface LlamaCompletionParams {
   // Basic completion parameters
   prompt?: string;            // text promp
-  messages?: LlamaMessage[];  // chat messages. Put the system text here, with an id.
+  messages?: LlamaMessage[];  // chat messages, system text first. The KV cache reuses the longest common token prefix.
   temperature?: number;        // sampling temperature (default: 0.8)
   top_p?: number;              // top-p sampling (native default: 0.95)
   top_k?: number;              // top-k sampling (default: 40)
@@ -170,9 +170,6 @@ export interface LlamaCompletionParams {
 export interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: LlamaMessageContent;
-  // Prefix key. A leading run of equal non-empty ids is reused. The first empty id ends the run.
-  // Reuse an id only when role, content, reasoning_content, and the tool-call payload are unchanged.
-  id?: string;
   tool_call_id?: string;
   name?: string;
 }

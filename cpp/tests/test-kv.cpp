@@ -8,11 +8,6 @@
 
 using namespace facebook::react;
 
-struct kv_row {
-    std::string id;
-    int32_t     token_end = 0;
-};
-
 RN_TEST(shift_keep_uses_the_first_message_boundary) {
     RN_CHECK_EQ(rn_shift_n_keep(-1, 128, 20, false), -1);
     RN_CHECK_EQ(rn_shift_n_keep(0, 128, -1, false), 64);
@@ -23,21 +18,37 @@ RN_TEST(shift_keep_uses_the_first_message_boundary) {
     RN_CHECK_EQ(rn_shift_n_keep(0, 128, 0, true), 64);
 }
 
-RN_TEST(trim_keeps_only_the_unmoved_prefix) {
-    std::vector<kv_row> rows = { { "a", 10 }, { "b", 40 }, { "c", 80 } };
-    rn_trim_kv_prefix(rows, 40);
-    RN_CHECK(rows.size() == 2);
-    RN_CHECK_EQ(rows[0].id, std::string("a"));
-    RN_CHECK_EQ(rows[1].id, std::string("b"));
+RN_TEST(common_prefix_and_reuse_length) {
+    const std::vector<llama_token> cached = { 1, 2, 3, 4, 5 };
+    RN_CHECK_EQ(rn_common_prefix(cached, { 1, 2, 3, 9 }), static_cast<size_t>(3));
+    RN_CHECK_EQ(rn_common_prefix(cached, { 9 }), static_cast<size_t>(0));
+    RN_CHECK_EQ(rn_common_prefix({}, { 1 }), static_cast<size_t>(0));
+    // A prompt that extends the cache reuses all of it
+    RN_CHECK_EQ(rn_reuse_len(cached, { 1, 2, 3, 4, 5, 6, 7 }), static_cast<size_t>(5));
+    // The whole prompt cached: its last token is encoded again for fresh logits
+    RN_CHECK_EQ(rn_reuse_len(cached, { 1, 2, 3 }), static_cast<size_t>(2));
+    RN_CHECK_EQ(rn_reuse_len(cached, {}), static_cast<size_t>(0));
+}
 
-    rows = { { "a", 10 }, { "b", 80 }, { "c", 20 } };
-    rn_trim_kv_prefix(rows, 40);
-    RN_CHECK(rows.size() == 1);
-    RN_CHECK_EQ(rows[0].id, std::string("a"));
+RN_TEST(token_list_mirrors_a_shift) {
+    std::vector<llama_token> tokens = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    rn_kv_tokens_shift(tokens, 2, 3);
+    RN_CHECK((tokens == std::vector<llama_token>{ 0, 1, 5, 6, 7 }));
 
-    rows = { { "a", 0 }, { "b", 10 } };
-    rn_trim_kv_prefix(rows, 40);
-    RN_CHECK(rows.empty());
+    tokens = { 0, 1, 2 };
+    rn_kv_tokens_shift(tokens, 1, 10);
+    RN_CHECK((tokens == std::vector<llama_token>{ 0 }));
+
+    tokens = { 0, 1, 2 };
+    rn_kv_tokens_shift(tokens, 5, 1);
+    RN_CHECK((tokens == std::vector<llama_token>{ 0, 1, 2 }));
+}
+
+RN_TEST(token_prefix_check) {
+    RN_CHECK(rn_is_token_prefix({ 1, 2 }, { 1, 2, 3 }));
+    RN_CHECK(!rn_is_token_prefix({ 1, 3 }, { 1, 2, 3 }));
+    RN_CHECK(!rn_is_token_prefix({}, { 1 }));
+    RN_CHECK(!rn_is_token_prefix({ 1, 2, 3, 4 }, { 1, 2, 3 }));
 }
 
 RN_TEST(reasoning_cap_cannot_turn_thinking_on) {

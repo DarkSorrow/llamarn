@@ -172,11 +172,14 @@ static CompletionResult & rn_decode_failed(
     llama_pos first_pos,
     const char * what) {
     llama_memory_t mem = llama_get_memory(rn_ctx->ctx);
-    if (!llama_memory_seq_rm(mem, 0, first_pos, -1)) {
+    if (llama_memory_seq_rm(mem, 0, first_pos, -1)) {
+        if (rn_ctx->kv_tokens.size() > static_cast<size_t>(std::max<llama_pos>(first_pos, 0))) {
+            rn_ctx->kv_tokens.resize(static_cast<size_t>(std::max<llama_pos>(first_pos, 0)));
+        }
+    } else {
         // recurrent / hybrid memory cannot drop a suffix: start over
         llama_memory_clear(mem, true);
-        rn_ctx->kv_messages.clear();
-        rn_ctx->kv_has_messages = false;
+        rn_ctx->kv_tokens.clear();
         rn_ctx->kv_render_identity.clear();
     }
     result.success    = false;
@@ -360,6 +363,8 @@ CompletionResult run_completion(
             // via mtmd_helper_eval_chunks. Logits are ready; skip tokenize and KV encode.
             state.n_past      = options.mtmd_encoded_n_past;
             state.n_ctx       = llama_n_ctx(rn_ctx->ctx);
+            // The cache holds media embeddings: no token list describes it.
+            rn_ctx->kv_tokens.clear();
             if (options.n_predict >= 0) {
                 state.n_predict = options.n_predict;
             } else if (params.n_predict >= 0) {
@@ -389,21 +394,18 @@ CompletionResult run_completion(
             return result;
         }
 
-        // KV cache: run_chat_completion already evicted stale entries and passes the
-        // trusted common prefix length via kv_hint_pos. We just apply it here.
-        // Direct callers (no kv_hint_pos) always start from position 0 with a full clear.
-        if (options.kv_hint_pos >= 0) {
-            size_t kv_common_len = static_cast<size_t>(options.kv_hint_pos);
-            // Safety: need at least 1 new token to encode for valid logits.
-            // Clamp to size-1 rather than resetting to 0 — if the hint equals the full
-            // prompt length (all tokens already cached), we still need to encode the last
-            // token to produce logits for the first generated token.
-            if (kv_common_len >= state.prompt_tokens.size()) {
-                kv_common_len = state.prompt_tokens.size() - 1;
-            }
-            state.n_past = static_cast<int>(kv_common_len);
+        // KV cache: run_chat_completion compared kv_tokens with this prompt, dropped the cache
+        // after their common prefix and passes that length as kv_hint_pos. Positions below it
+        // hold exactly prompt_tokens[0, hint). Direct callers (no hint) start from a full clear.
+        bool hint_ok = options.kv_hint_pos >= 0 &&
+            static_cast<size_t>(options.kv_hint_pos) < state.prompt_tokens.size() &&
+            static_cast<size_t>(options.kv_hint_pos) <= rn_ctx->kv_tokens.size();
+        if (hint_ok) {
+            state.n_past = options.kv_hint_pos;
+            rn_ctx->kv_tokens.resize(static_cast<size_t>(state.n_past));
         } else {
             llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            rn_ctx->kv_tokens.clear();
             state.n_past = 0;
         }
 
@@ -454,6 +456,9 @@ CompletionResult run_completion(
                 if (ret != 0) {
                     return rn_decode_failed(result, rn_ctx, ret, pos, "Failed to process prompt");
                 }
+                rn_ctx->kv_tokens.insert(rn_ctx->kv_tokens.end(),
+                                         state.prompt_tokens.begin() + pos,
+                                         state.prompt_tokens.begin() + pos + chunk);
                 const auto chunk_elapsed = std::chrono::steady_clock::now() - t0;
                 if (rn_ctx->params.is_cpu_only) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -617,6 +622,10 @@ CompletionResult run_completion(
                 // (std::length_error) once the reply outgrew the prompt. Its only later reader is
                 // usage.prompt_tokens, which stays the full rendered prompt.
 
+                // kv_tokens holds the prompt and the reply, the same positions as the cache.
+                // Empty on a media turn (it never shifts), so this is then a no-op.
+                rn_kv_tokens_shift(rn_ctx->kv_tokens, n_keep, n_discard);
+
                 state.n_past -= n_discard;
                 state.truncated = true;
                 state.context_shifted = true;
@@ -666,6 +675,11 @@ CompletionResult run_completion(
             }
 
             state.n_past++;
+            // The token is in the cache now, end-of-generation tokens included. Media turns keep
+            // no list: their positions hold embeddings, not tokens.
+            if (options.mtmd_encoded_n_past < 0) {
+                rn_ctx->kv_tokens.push_back(token_id);
+            }
 
             // Accept the token into the sampler AFTER decode and n_past increment.
             // token_id is a plain int32 captured before llama_decode — safe to pass here.
@@ -738,7 +752,7 @@ CompletionResult run_completion(
         result.n_prompt_tokens = state.prompt_tokens.size();
         result.n_predicted_tokens = state.n_decoded;
 
-        // KV state is owned by run_chat_completion (kv_messages). Nothing to update here.
+        // rn_ctx->kv_tokens now matches the cache: the prompt plus every decoded reply token.
 
         // Flush any tokens not yet sent due to buffering (e.g. when generation ended before
         // the next buf_size boundary — EOS, stop string, or n_predict limit).
@@ -878,6 +892,28 @@ static int32_t mtmd_eval_chunks_batched(
     return 0;
 }
 
+// Token count of the first message when it is a system message whose own render is a token
+// prefix of the prompt; -1 otherwise (a shift then keeps half the context).
+static int32_t rn_system_prefix_end(
+    const rn_llama_context * rn_ctx,
+    const common_chat_templates_inputs & inputs,
+    const llama_tokens & prompt_tokens) {
+    if (inputs.messages.empty() || inputs.messages.front().role != "system") {
+        return -1;
+    }
+    common_chat_templates_inputs head = inputs;
+    head.messages.resize(1);
+    head.add_generation_prompt = false;
+    try {
+        const auto partial = common_chat_templates_apply(rn_ctx->chat_templates.get(), head);
+        const auto tokens = rn_tokenize_chat_prompt(rn_ctx->vocab, partial.prompt, true);
+        return rn_is_token_prefix(tokens, prompt_tokens) ? static_cast<int32_t>(tokens.size()) : -1;
+    } catch (...) {
+        // Some templates refuse a conversation with no user message.
+        return -1;
+    }
+}
+
 CompletionResult run_chat_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
@@ -916,7 +952,7 @@ CompletionResult run_chat_completion(
         }
 
         // Tools and tool_choice are parsed before any KV change, so a bad request leaves the
-        // cache and kv_messages as they were. tool_choice is parsed against the tools
+        // cache and kv_tokens as they were. tool_choice is parsed against the tools
         // (server: oaicompat_chat_params_parse). A named function must match exactly one
         // supplied tool; upstream throws std::invalid_argument otherwise. Null / "" = "auto".
         std::vector<common_chat_tool> parsed_tools;
@@ -945,109 +981,6 @@ CompletionResult run_chat_completion(
         }
 
         const std::string kv_render_identity = build_kv_render_identity(rn_ctx, options);
-        // First cause wins. A later full clear is the consequence, not a second reason.
-        std::string cleared = "none";
-        auto note_clear = [&](const char * reason) {
-            if (cleared == "none") {
-                cleared = reason;
-            }
-        };
-        if (has_media) {
-            note_clear("media");
-        }
-        if (options.reset_kv_cache) {
-            note_clear("reset");
-        }
-        if (rn_ctx->kv_has_messages &&
-            !rn_ctx->kv_render_identity.empty() &&
-            rn_ctx->kv_render_identity != kv_render_identity) {
-            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
-            rn_ctx->kv_messages.clear();
-            rn_ctx->kv_has_messages = false;
-            note_clear("render_identity");
-        }
-
-        // --- Per-message KV cache prefix reuse ---
-        // Extract optional "id" fields from each message in the JSON array.
-        // IDs are an optional caller-supplied field (not part of the OpenAI spec);
-        // they let the native layer skip re-encoding messages that haven't changed
-        // without doing a full token-by-token comparison.
-        std::vector<std::string> msg_ids;
-        if (!effective_messages.is_null() && effective_messages.is_array()) {
-            for (const auto& msg : effective_messages) {
-                if (msg.is_object() && msg.contains("id") && msg["id"].is_string()) {
-                    msg_ids.push_back(msg["id"].get<std::string>());
-                } else {
-                    msg_ids.push_back(""); // message has no ID — cannot be reused by lookup
-                }
-            }
-        }
-
-        // Find how many leading messages have IDs that match the cached sequence.
-        // A message with an empty ID never matches (we can't trust it's unchanged).
-        size_t kv_match_count = 0;
-        if (!has_media && !msg_ids.empty() && rn_ctx->kv_has_messages && !options.reset_kv_cache) {
-            const auto& cached = rn_ctx->kv_messages;
-            while (kv_match_count < msg_ids.size()
-                   && kv_match_count < cached.size()
-                   && !msg_ids[kv_match_count].empty()
-                   && msg_ids[kv_match_count] == cached[kv_match_count].id) {
-                kv_match_count++;
-            }
-        }
-
-        // A prompt_id change drops the prefix. Tools are not part of this id.
-        if (!options.prompt_id.empty()) {
-            if (!rn_ctx->last_prompt_id.empty() && rn_ctx->last_prompt_id != options.prompt_id) {
-                llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
-                rn_ctx->kv_messages.clear();
-                rn_ctx->kv_has_messages = false;
-                kv_match_count = 0;
-                note_clear("prompt_id");
-            }
-            rn_ctx->last_prompt_id = options.prompt_id;
-        }
-
-        auto drop_kv_from = [&](llama_pos pos) -> bool {
-            if (rn_ctx->kv_seq_rm) {
-                return rn_ctx->kv_seq_rm(rn_ctx->kv_seq_rm_data, pos, -1);
-            }
-            return llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, pos, -1);
-        };
-
-        // Decide the KV common position and evict stale entries.
-        int32_t kv_hint_pos = 0; // default: full encode from position 0
-        if (has_media) {
-            // Images invalidate KV prefix reuse — always do a full clear.
-            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
-        } else if (kv_match_count > 0) {
-            const int32_t kv_common_len = rn_ctx->kv_messages[kv_match_count - 1].token_end;
-            // Clamp against actual context size: persisted metadata may be stale if the
-            // context was shifted or cleared externally.
-            const int32_t n_ctx_size = static_cast<int32_t>(llama_n_ctx(rn_ctx->ctx));
-            const int32_t safe_kv_len = std::min(kv_common_len, n_ctx_size);
-            // Drop KV after the matched prefix (the previous reply, or messages no longer present).
-            // seq_rm returns false on recurrent models and some GPU backends.
-            // Same split the server records at startup. FULL and NO cannot drop a suffix.
-            const bool can_drop_suffix =
-                rn_ctx->kv_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
-                rn_ctx->kv_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;
-            if (safe_kv_len <= 0 || !can_drop_suffix || !drop_kv_from(safe_kv_len)) {
-                llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
-                rn_ctx->kv_messages.clear();
-                rn_ctx->kv_has_messages = false;
-                kv_match_count = 0;
-                kv_hint_pos = 0;
-                note_clear(safe_kv_len <= 0 ? "no_prefix" : "seq_rm");
-            } else {
-                kv_hint_pos = safe_kv_len;
-            }
-        } else {
-            // No matching prefix (or no IDs provided): full clear.
-            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
-            kv_hint_pos = 0;
-            note_clear("no_prefix");
-        }
 
         // Build template inputs directly from options — no JSON roundtrip
         common_chat_templates_inputs template_inputs;
@@ -1074,8 +1007,6 @@ CompletionResult run_chat_completion(
         template_inputs.tool_choice = parsed_tool_choice;
 
         CompletionOptions cmpl_options = options;
-        // Pass the trusted KV start position so run_completion skips its own KV management.
-        cmpl_options.kv_hint_pos = kv_hint_pos;
 
         // The session owns prompt parts, grammar, lazy triggers, preserved tokens, stops,
         // thinking tags and the PEG parser (server: oaicompat_chat_params_parse).
@@ -1116,6 +1047,76 @@ CompletionResult run_chat_completion(
             cmpl_options.reasoning_budget_start_tag = session.thinking_start_tag();
             cmpl_options.reasoning_budget_end_tags  = session.thinking_end_tags();
         }
+
+        // --- KV cache prefix reuse (server: cache_prompt) ---
+        // Decided once the prompt is rendered and tokenized, so a request that fails before this
+        // point leaves the cache as it was. The cache keeps the longest common token prefix of
+        // what it holds (kv_tokens: the last prompt and its reply) and this prompt. That is exact
+        // by construction: no message ids, and no template has to render a message the same
+        // way twice (Qwen3 drops an earlier turn's think block once a new user message follows).
+        // First cause wins. A later full clear is the consequence, not a second reason.
+        std::string cleared = "none";
+        auto note_clear = [&](const char * reason) {
+            if (cleared == "none") {
+                cleared = reason;
+            }
+        };
+        auto clear_kv = [&](const char * reason) {
+            llama_memory_clear(llama_get_memory(rn_ctx->ctx), true);
+            rn_ctx->kv_tokens.clear();
+            note_clear(reason);
+        };
+        if (has_media) {
+            clear_kv("media");
+        }
+        if (options.reset_kv_cache) {
+            clear_kv("reset");
+        }
+        if (!rn_ctx->kv_tokens.empty() &&
+            !rn_ctx->kv_render_identity.empty() &&
+            rn_ctx->kv_render_identity != kv_render_identity) {
+            clear_kv("render_identity");
+        }
+        // A prompt_id change drops the prefix. Tools are not part of this id.
+        if (!options.prompt_id.empty()) {
+            if (!rn_ctx->last_prompt_id.empty() && rn_ctx->last_prompt_id != options.prompt_id) {
+                clear_kv("prompt_id");
+            }
+            rn_ctx->last_prompt_id = options.prompt_id;
+        }
+
+        auto drop_kv_from = [&](llama_pos pos) -> bool {
+            if (rn_ctx->kv_seq_rm) {
+                return rn_ctx->kv_seq_rm(rn_ctx->kv_seq_rm_data, pos, -1);
+            }
+            return llama_memory_seq_rm(llama_get_memory(rn_ctx->ctx), 0, pos, -1);
+        };
+
+        int32_t kv_hint_pos = 0; // default: full encode from position 0
+        if (!has_media) {
+            // At most prompt size - 1: the last prompt token is always encoded for fresh logits.
+            const size_t reuse = rn_reuse_len(rn_ctx->kv_tokens, cmpl_options.prompt_tokens);
+            if (reuse == 0) {
+                clear_kv("no_prefix");
+            } else if (reuse < rn_ctx->kv_tokens.size()) {
+                // Drop the cache after the common prefix (the previous reply, or what changed).
+                // seq_rm returns false on recurrent models and some GPU backends.
+                // Same split the server records at startup. FULL and NO cannot drop a suffix.
+                const bool can_drop_suffix =
+                    rn_ctx->kv_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+                    rn_ctx->kv_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;
+                if (can_drop_suffix && drop_kv_from(static_cast<llama_pos>(reuse))) {
+                    rn_ctx->kv_tokens.resize(reuse);
+                    kv_hint_pos = static_cast<int32_t>(reuse);
+                } else {
+                    clear_kv("seq_rm");
+                }
+            } else {
+                // The cache is exactly a prefix of this prompt: nothing to drop.
+                kv_hint_pos = static_cast<int32_t>(reuse);
+            }
+        }
+        cmpl_options.kv_hint_pos = kv_hint_pos;
 
         // Multimodal: tokenize + eval the full prompt (text + images) via mtmd.
         // On success, sets cmpl_options.mtmd_encoded_n_past so run_completion skips
@@ -1178,82 +1179,20 @@ CompletionResult run_chat_completion(
             cmpl_options.kv_hint_pos = -1;
         }
 
-        // The shift keeps this boundary when the caller did not pass an explicit n_keep.
-        if (cmpl_options.n_keep == 0 && !rn_ctx->kv_messages.empty()) {
-            cmpl_options.kv_prefix_end = rn_ctx->kv_messages.front().token_end;
+        // A shift keeps the system message when it is first and its own render is a token prefix
+        // of the prompt. Only a call with no reply cap can shift: run_completion caps a positive
+        // n_predict to the free context.
+        const bool may_shift = cmpl_options.n_predict < 0 && rn_ctx->params.n_predict < 0;
+        if (cmpl_options.n_keep == 0 && !has_media && may_shift) {
+            cmpl_options.kv_prefix_end = rn_system_prefix_end(rn_ctx, template_inputs, cmpl_options.prompt_tokens);
         }
 
         // Run standard completion with the processed prompt
         result = run_completion(rn_ctx, cmpl_options, callback);
         result.kv_cleared_reason = cleared;
         result.reasoning_budget_active = budget_active;
-
-        // Update per-message KV boundaries so the next call can skip unchanged messages.
-        // We only do this when message IDs were provided (otherwise there's nothing to track).
-        if (result.success && !msg_ids.empty()) {
-            // Retain boundaries for matched messages (they're already correct in kv_messages).
-            rn_ctx->kv_messages.resize(kv_match_count);
-
-            // For each new/changed message, determine where its tokens end by applying
-            // the chat template up to that message and tokenizing the result.
-            // This is O(n_new_messages) template applications — typically 1–2 per turn.
-            const size_t n_msgs = chat_msgs.size();
-            for (size_t k = kv_match_count; k < n_msgs && k < msg_ids.size(); k++) {
-                if (msg_ids[k].empty()) {
-                    // No ID for this message — stop tracking here; subsequent messages
-                    // can't be matched by ID either.
-                    break;
-                }
-                // Apply the template to messages[0..k] to get the token boundary.
-                // Same inputs (tools, kwargs, fallback level) as the session render, so the
-                // boundaries line up with the tokens actually in the KV cache.
-                common_chat_templates_inputs tinput = template_inputs;
-                tinput.messages               = std::vector<common_chat_msg>(chat_msgs.begin(),
-                                                                              chat_msgs.begin() + k + 1);
-                // Always false: we want the token boundary after the message content, not after
-                // the generation-prompt suffix. Using true would include e.g. "<|im_start|>assistant\n"
-                // in token_end, but on the next turn that suffix is part of the assistant message
-                // tokens — causing kv_hint_pos to point into the wrong position.
-                tinput.add_generation_prompt  = false;
-                try {
-                    // The boundary is this prefix rendered by the same template as the prompt.
-                    // If the template rejects the prefix, stop. Do not invent messages to make it render.
-                    auto partial = common_chat_templates_apply(rn_ctx->chat_templates.get(), tinput);
-                    auto partial_tokens = rn_tokenize_chat_prompt(rn_ctx->vocab, partial.prompt, true);
-                    if (partial_tokens.empty()) {
-                        break;
-                    }
-                    rn_ctx->kv_messages.push_back({msg_ids[k],
-                                                   static_cast<int32_t>(partial_tokens.size())});
-                } catch (...) {
-                    break; // template rejected this prefix; next call encodes the prompt it actually has
-                }
-            }
-            if (result.context_shifted) {
-                // Positions at or below the keep count were not moved. Drop the rest:
-                // those ids now point at bytes the shift discarded or slid.
-                rn_trim_kv_prefix(rn_ctx->kv_messages, result.shift_n_keep);
-            }
-            rn_ctx->kv_has_messages = true;
-            rn_ctx->kv_render_identity = kv_render_identity;
-        } else if (result.context_shifted) {
-            if (cleared == "none") {
-                rn_trim_kv_prefix(rn_ctx->kv_messages, result.shift_n_keep);
-            } else {
-                rn_ctx->kv_messages.clear();
-            }
-            rn_ctx->kv_has_messages = !rn_ctx->kv_messages.empty();
-            if (rn_ctx->kv_messages.empty()) {
-                rn_ctx->kv_render_identity.clear();
-            }
-        } else if (options.reset_kv_cache) {
-            rn_ctx->kv_messages.clear();
-            rn_ctx->kv_has_messages = false;
-            rn_ctx->kv_render_identity.clear();
-        } else if (!result.success && rn_ctx->kv_messages.size() > kv_match_count) {
-            // Only the matched prefix is guaranteed to still be in the KV cache.
-            rn_ctx->kv_messages.resize(kv_match_count);
-        }
+        // kv_tokens now describes the cache (this prompt and its reply), or is empty.
+        rn_ctx->kv_render_identity = rn_ctx->kv_tokens.empty() ? std::string() : kv_render_identity;
 
         if (result.success) {
             // One full parse of the final output (server: task_result_state::update with is_partial=false).

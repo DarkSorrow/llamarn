@@ -109,9 +109,9 @@ const extractThinking = (content: string): { thinking: string | null; content: s
 
 /** Map our chat Message to the payload the native module expects (incl. tool_calls). */
 const messageToApiPayload = (msg: Message): Record<string, unknown> => {
+  // No `id`: the native side reuses the KV cache by token prefix (0.11.4).
   const payload: Record<string, unknown> = {
     role: msg.role,
-    ...(msg.id ? { id: msg.id } : {}),
   };
   const hasTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
   // Always use a string for `content`. The GGUF chat template (e.g. Qwen3) runs in minimal Jinja and

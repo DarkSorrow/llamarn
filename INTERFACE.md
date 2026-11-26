@@ -171,7 +171,7 @@ Parameters for text/chat completion.
 interface LlamaCompletionParams {
   // Basic completion parameters
   prompt?: string;            // text prompt
-  messages?: LlamaMessage[];  // chat messages. The system text goes here, with an id.
+  messages?: LlamaMessage[];  // chat messages, system text first. The KV cache reuses the longest common token prefix.
   temperature?: number;       // sampling temperature (default: 0.8)
   top_p?: number;             // top-p sampling (default: 0.95)
   top_k?: number;             // top-k sampling (default: 40)
@@ -205,7 +205,6 @@ Chat message format.
 interface LlamaMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
-  id?: string;                // prefix key. Reuse it only when the message bytes are unchanged.
   tool_call_id?: string;
   name?: string;
 }

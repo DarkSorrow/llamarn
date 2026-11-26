@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -73,15 +74,42 @@ inline int rn_shift_n_keep(int n_keep_option, int n_ctx, int prefix_end, bool ad
     return n_keep;
 }
 
-// Keep the leading run whose positions were not moved. Stop at the first message
-// that extends past n_keep; a later id would match bytes the shift discarded.
-template <typename Entry>
-inline void rn_trim_kv_prefix(std::vector<Entry> & messages, int32_t n_keep) {
-    size_t keep = 0;
-    while (keep < messages.size() && messages[keep].token_end > 0 && messages[keep].token_end <= n_keep) {
-        ++keep;
+// Length of the common leading run of two token lists (server: cache_prompt's prefix match).
+// The KV cache holds `cached` in seq 0; the first `rn_common_prefix` positions stay valid for
+// `prompt`, whatever the messages, template or tool list that rendered either one.
+inline size_t rn_common_prefix(const std::vector<llama_token> & cached, const std::vector<llama_token> & prompt) {
+    const size_t n = std::min(cached.size(), prompt.size());
+    size_t i = 0;
+    while (i < n && cached[i] == prompt[i]) {
+        ++i;
     }
-    messages.resize(keep);
+    return i;
+}
+
+// The reused length for a prompt: at most prompt.size() - 1, so at least one token is encoded and
+// the next sample has fresh logits.
+inline size_t rn_reuse_len(const std::vector<llama_token> & cached, const std::vector<llama_token> & prompt) {
+    if (prompt.empty()) {
+        return 0;
+    }
+    return std::min(rn_common_prefix(cached, prompt), prompt.size() - 1);
+}
+
+// Mirrors a context shift on the token list: positions [n_keep, n_keep + n_discard) were removed
+// and the rest slid back by n_discard.
+inline void rn_kv_tokens_shift(std::vector<llama_token> & tokens, int n_keep, int n_discard) {
+    if (n_keep < 0 || n_discard <= 0 || static_cast<size_t>(n_keep) >= tokens.size()) {
+        return;
+    }
+    const size_t end = std::min(tokens.size(), static_cast<size_t>(n_keep) + static_cast<size_t>(n_discard));
+    tokens.erase(tokens.begin() + n_keep, tokens.begin() + static_cast<std::ptrdiff_t>(end));
+}
+
+// Whether `head` is a leading run of `tokens`: the first message's render is a true prefix of
+// the prompt only when its tokens are (a template may render a message differently once more
+// messages follow).
+inline bool rn_is_token_prefix(const std::vector<llama_token> & head, const std::vector<llama_token> & tokens) {
+    return !head.empty() && head.size() <= tokens.size() && std::equal(head.begin(), head.end(), tokens.begin());
 }
 
 struct rn_reasoning_cap {

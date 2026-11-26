@@ -119,6 +119,7 @@ void LlamaCppModel::release() {
     if (rn_ctx_->ctx) {
       try {
         llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
+        rn_ctx_->kv_tokens.clear();
       } catch (...) {
         // Ignore errors during cache clearing
       }
@@ -549,7 +550,7 @@ jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args
 
     // CC-P1 FIX: Acquire inference_mutex_ before calling completion() so that
     // completionJsi (sync path) cannot race with completionAsyncJsi (async path)
-    // on kv_messages / last_prompt_id inside run_chat_completion().
+    // on kv_tokens / last_prompt_id inside run_chat_completion().
     // Lock order: inference_mutex_ > rn_ctx_->mutex (consistent with all call sites).
     CompletionResult result;
     {
@@ -967,8 +968,11 @@ jsi::Value LlamaCppModel::embeddingJsi(jsi::Runtime& rt, const jsi::Value* args,
       throw jsi::JSError(rt, "No tokens generated from input text");
     }
 
-    // Clear the context KV cache to ensure clean embedding
+    // Clear the context KV cache to ensure clean embedding. The chat's token list goes too: the
+    // cache will hold this text, and the next chat call must not reuse it as its prefix.
     llama_memory_clear(llama_get_memory(rn_ctx_->ctx), true);
+    rn_ctx_->kv_tokens.clear();
+    rn_ctx_->kv_render_identity.clear();
 
     // Enable embedding mode
     llama_set_embeddings(rn_ctx_->ctx, true);

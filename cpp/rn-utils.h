@@ -88,14 +88,14 @@ struct CompletionOptions {
     common_chat_session * stream_session = nullptr;
 
     // KV cache control
-    bool    reset_kv_cache = false; // force full KV cache clear even when message IDs match
+    bool    reset_kv_cache = false; // force a full KV cache clear even when the tokens match
 
-    // Internal: set by run_chat_completion after message-ID matching.
-    // When >= 0, run_completion skips KV management and uses this value directly as n_past.
+    // Internal: set by run_chat_completion from the common token prefix with rn_llama_context::kv_tokens.
+    // When >= 0, run_completion keeps the cache below it and encodes the prompt from there.
     int32_t kv_hint_pos = -1;
 
-    // Internal: token_end of the first cached message, or -1 when there is no index.
-    // A context shift with n_keep == 0 keeps this boundary instead of half the context.
+    // Internal: token count of the system message when it is first and a token prefix of the
+    // prompt, or -1. A context shift with n_keep == 0 keeps it instead of half the context.
     int32_t kv_prefix_end = -1;
 
     // Set by run_chat_completion after mtmd_helper_eval_chunks so run_completion

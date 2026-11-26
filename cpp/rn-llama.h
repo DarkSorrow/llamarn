@@ -88,15 +88,14 @@ struct rn_llama_context {
     std::atomic<int> requested_n_threads{-1};
 
     // KV cache prefix reuse state (guarded by mutex).
-    // Stores the token boundary after each message so the next call can skip re-encoding
-    // messages whose IDs haven't changed. IDs are supplied by the caller per message.
-    struct kv_msg_entry {
-        std::string id;         // caller-supplied message ID
-        int32_t     token_end;  // exclusive token index after this message in the KV cache
-    };
-    std::vector<kv_msg_entry> kv_messages;
-    bool                      kv_has_messages = false;
-    std::string               kv_render_identity;
+    // The tokens in seq 0, in position order: the prompt and every decoded token. The next chat
+    // call keeps the longest common prefix with its own prompt tokens and encodes the rest, as
+    // llama-server's cache_prompt does. Empty when the cache holds nothing this list can describe
+    // (cleared, media embeddings, an embedding call): the next call then encodes from 0.
+    std::vector<llama_token> kv_tokens;
+    // Render settings of the call that filled kv_tokens. A change clears the cache (reported as
+    // render_identity), even where the tokens would still match.
+    std::string              kv_render_identity;
 
     // prompt_id of the last chat call. A change from a previous non-empty value clears KV.
     // An empty prompt_id does not. Tools are compared in kv_render_identity, not here.
