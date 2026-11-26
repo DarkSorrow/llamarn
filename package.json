@@ -165,12 +165,10 @@
     "modulePathIgnorePatterns": [
       "<rootDir>/example/node_modules",
       "<rootDir>/lib/",
-      "<rootDir>/cpp/llama.cpp/tools/server/webui/",
-      "<rootDir>/cpp/llama.cpp/tools/ui/"
+      "<rootDir>/cpp/llama.cpp/"
     ],
     "testPathIgnorePatterns": [
-      "<rootDir>/cpp/llama.cpp/tools/server/webui/",
-      "<rootDir>/cpp/llama.cpp/tools/ui/"
+      "<rootDir>/cpp/llama.cpp/"
     ]
   },
   "commitlint": {

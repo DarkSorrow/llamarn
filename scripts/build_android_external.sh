@@ -513,14 +513,16 @@ build_for_abi() {
   # This builds multiple CPU backend variants (baseline + optimized) and runtime loader picks the best one
   # - Emulators get baseline variant (no crashes)
   # - Real devices get optimized variants (best performance)
-  # For Android, this builds: android_armv8.0_1, android_armv8.2_1, android_armv8.2_2, android_armv8.6_1
+  # For Android, this builds: android_armv8.0_1, android_armv8.2_1, android_armv8.2_2, android_armv8.6_1,
+  # android_armv9.0_1, android_armv9.2_1, android_armv9.2_2 (ggml/src/CMakeLists.txt). All seven are
+  # copied below and listed in load_android_cpu_backends() (cpp/PureCppImpl.cpp), best first.
   # NOTE: CPU variants are independent of Hexagon - both can be built together
   # Hexagon is for NPU acceleration, CPU variants are for different CPU instruction sets
   if [ "$ENABLE_CPU_VARIANTS" = true ]; then
     # Enable building all CPU variants - runtime will select the best one for each device
     ARCH_FLAGS+=(-DGGML_CPU_ALL_VARIANTS=ON)
     # KleidiAI: Arm's optimized AI microkernels (SVE-256, SME/SME2, Q4_0/Q8_0/Q4_K/Q5_K GEMM)
-    # Compiles into the existing armv8*.so variants — no new .so produced.
+    # Compiles into the existing CPU variant .so files — no new .so produced.
     # Runtime CPU feature detection selects the best kernel; old devices fall back safely.
     ARCH_FLAGS+=(-DGGML_CPU_KLEIDIAI=ON)
     echo -e "${YELLOW}Building all CPU variants + KleidiAI for optimal ARM64 performance${NC}"
@@ -566,6 +568,12 @@ build_for_abi() {
     fi
     
     ABI_GPU_FLAGS+=(-DGGML_OPENCL=ON)
+    # Adreno precompiled-kernel DLL (b12780, fd24ee26a): defaults ON. The fetch is Windows ARM64 only,
+    # but on Android the define makes ggml-opencl dlopen("libadreno-opencl-kernels.so"), which
+    # Qualcomm does not ship for Android. Keep the source kernels (GGML_OPENCL_USE_ADRENO_KERNELS,
+    # default ON) and turn the binary path off so the phone build does not look for it.
+    ABI_GPU_FLAGS+=(-DGGML_OPENCL_USE_ADRENO_BIN_KERNELS=OFF)
+    ABI_GPU_FLAGS+=(-DGGML_OPENCL_ADRENO_BIN_KERNELS_FETCH=OFF)
     ABI_GPU_FLAGS+=(-DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
     ABI_GPU_FLAGS+=(-DOpenCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
     ABI_GPU_FLAGS+=(-DOpenCL_LIBRARY="$OPENCL_LIB_PATH")
@@ -736,7 +744,7 @@ SPIRVCMAKE
   if [ "$ENABLE_CPU_VARIANTS" = true ]; then
     echo -e "${YELLOW}Verifying CPU variant libraries were built...${NC}"
     local VARIANT_COUNT=0
-    for variant_lib in "$BUILD_DIR/lib"/libggml-cpu-android_armv8*.so "$BUILD_DIR/bin"/libggml-cpu-android_armv8*.so; do
+    for variant_lib in "$BUILD_DIR/lib"/libggml-cpu-android_armv*.so "$BUILD_DIR/bin"/libggml-cpu-android_armv*.so; do
       if [ -f "$variant_lib" ]; then
         VARIANT_COUNT=$((VARIANT_COUNT + 1))
         echo -e "${GREEN}  Found: $(basename "$variant_lib")${NC}"

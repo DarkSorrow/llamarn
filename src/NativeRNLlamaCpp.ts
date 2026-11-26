@@ -33,6 +33,43 @@ export type LlamaMessageContentPart =
 
 export type LlamaMessageContent = string | null | LlamaMessageContentPart[];
 
+export type LlamaReasoningFormat = 'none' | 'auto' | 'deepseek' | 'deepseek-legacy';
+
+/** One OpenAI function reference, as used by tool_choice. */
+export interface LlamaToolChoiceFunction {
+  type: 'function';
+  function: { name: string };
+}
+
+/**
+ * OpenAI tool_choice. Parsed natively against `tools` by llama.cpp
+ * (common_chat_tool_choice_parse_oaicompat). A name must match exactly one supplied tool,
+ * otherwise the completion fails with an invalid-parameter error.
+ * - 'auto' (default): the model decides.
+ * - 'none': no tool call.
+ * - 'required': the reply must be a tool call.
+ * - { type: 'function', function: { name } }: required, limited to that tool.
+ * - { type: 'allowed_tools', allowed_tools: { mode, tools } }: auto or required, limited to those tools.
+ * Whether the grammar itself drops the other tools depends on the model's template handler
+ * upstream; required mode is always enforced.
+ */
+export type LlamaToolChoice =
+  | 'auto'
+  | 'none'
+  | 'required'
+  | LlamaToolChoiceFunction
+  | {
+      type: 'allowed_tools';
+      allowed_tools: { mode: 'auto' | 'required'; tools: LlamaToolChoiceFunction[] };
+    };
+
+/** Streaming payload. See docs/CONFIGURATION.md "Streaming". */
+export interface LlamaStreamChunk {
+  token: string;              // raw generated text since the previous chunk (always present)
+  content?: string;           // chat calls: answer-text delta from the chat parser
+  reasoning_content?: string; // chat calls: thinking-text delta from the chat parser
+}
+
 export interface LlamaModelParams {
   // Model loading parameters
   model: string;               // path to the model file
@@ -56,32 +93,30 @@ export interface LlamaModelParams {
   use_mlock?: boolean;        // lock model pages in RAM (prevents swapping)
 
   // Model behavior parameters
-  vocab_only?: boolean;       // only load the vocabulary, no weights
   embedding?: boolean;        // use embedding mode (default: false)
   seed?: number;              // RNG seed for reproducibility
 
-  // RoPE parameters
-  rope_freq_base?: number;    // RoPE base frequency (default: 10000.0)
-  rope_freq_scale?: number;   // RoPE frequency scaling factor (default: 1.0)
+  // RoPE parameters. Omit them: the default is the value stored in the GGUF.
+  // Setting one overrides the model's trained value (e.g. Qwen3 uses a base of 1e6).
+  rope_freq_base?: number;    // RoPE base frequency (default: 0 = from the model)
+  rope_freq_scale?: number;   // RoPE frequency scaling factor (default: 0 = from the model)
 
-  // YaRN parameters (RoPE scaling for longer contexts)
+  // YaRN parameters (RoPE scaling for longer contexts). Default -1 = from the model.
   yarn_ext_factor?: number;   // YaRN extrapolation mix factor
   yarn_attn_factor?: number;  // YaRN magnitude scaling factor
   yarn_beta_fast?: number;    // YaRN low correction dim
   yarn_beta_slow?: number;    // YaRN high correction dim
 
   // Additional options
-  logits_all?: boolean;       // return logits for all tokens
   chat_template?: string;     // override chat template
   use_jinja?: boolean;        // use Jinja template parser
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
   // Thinking and reasoning options
   reasoning_budget?: number;  // Omitted or 0 turns thinking off. -1 is unlimited. >0 is the sampler cap. A completion cannot turn thinking on.
-  reasoning_format?: string;  // Reasoning format: 'none', 'auto', 'deepseek', 'deepseek-legacy'
-  thinking_forced_open?: boolean; // Force reasoning models to always output thinking
-  parse_tool_calls?: boolean; // Enable tool call parsing (auto-enabled when use_jinja is true)
-  parallel_tool_calls?: boolean; // Enable parallel/multiple tool calls for supported models
+  // Default 'auto': thinking goes to message.reasoning_content. 'none' leaves it in content.
+  reasoning_format?: LlamaReasoningFormat;
+  parallel_tool_calls?: boolean; // more than one tool call per reply. Omitted = what the chat template supports (llama-server default)
 
   // LoRA adapters
   lora_adapters?: Array<{
@@ -89,18 +124,16 @@ export interface LlamaModelParams {
     scale?: number;           // scaling factor for the adapter (default: 1.0)
   }>;
 
-  // Grammar-based sampling
-  grammar?: string;           // GBNF grammar for grammar-based sampling
-
   // Multimodal
   mmproj?: string;               // path to multimodal projection model (.gguf)
   image_marker?: string;         // custom placeholder token (default: <__media__>)
   capabilities?: ModelCapability[]; // declare which modalities are active
 
   // Cooperative prompt-ingestion loop (values from loadLlamaModelInfo.suggestedChunkSize / isCpuOnly)
-  chunk_size?: number;   // tokens per decode call during prompt ingestion (default 128)
-  is_cpu_only?: boolean; // true = 2ms sleep/chunk
-  prompt_chunk_gap_ms?: number; // minimum inter-chunk gap on GPU path (default: 5ms)
+  // Kept because of earlier crashes on real Android devices. See docs/CONFIGURATION.md "Prompt pacing".
+  chunk_size?: number;   // tokens per decode call during prompt ingestion (default 128, clamped 8..512 and to n_batch)
+  is_cpu_only?: boolean; // true = fixed 2 ms sleep after every chunk (does not change n_gpu_layers)
+  prompt_chunk_gap_ms?: number; // GPU path: per-chunk time floor from the chunk start, +1 ms per 2048 prompt tokens (default 5)
 }
 
 export interface LlamaCompletionParams {
@@ -108,7 +141,7 @@ export interface LlamaCompletionParams {
   prompt?: string;            // text promp
   messages?: LlamaMessage[];  // chat messages. Put the system text here, with an id.
   temperature?: number;        // sampling temperature (default: 0.8)
-  top_p?: number;              // top-p sampling (native default: 0.9)
+  top_p?: number;              // top-p sampling (native default: 0.95)
   top_k?: number;              // top-k sampling (default: 40)
   min_p?: number;              // min-p sampling floor (native default: 0.05)
   n_predict?: number;          // max tokens to predict (default: -1, infinite)
@@ -118,11 +151,9 @@ export interface LlamaCompletionParams {
   stream?: boolean;            // advisory; callback presence controls streaming behavior
   ignore_eos?: boolean;        // ignore EOS/EOG termination checks
   reset_kv_cache?: boolean;    // force KV cache reset for this request
-  // Chat parameters
-  chat_template?: string;      // optional chat template name to use
 
   // Tool calling parameters
-  tool_choice?: string | 'auto' | 'none'; // Tool choice mode
+  tool_choice?: LlamaToolChoice; // default 'auto'
   tools?: LlamaTool[];         // Available tools
 
   // Advanced parameters (matching llama.cpp server)
@@ -212,6 +243,7 @@ export interface LlamaCompletionResult {
     message: {
       role: string;
       content: string;
+      reasoning_content?: string;        // thinking text, when reasoning_format is not 'none'
       tool_calls?: Array<{
         id: string;
         type: string;
@@ -288,8 +320,8 @@ export interface DetectionResult {
 }
 
 export interface LlamaContextMethods {
-  completion(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): Promise<LlamaCompletionResult>;
-  completionSync(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): LlamaCompletionResult;
+  completion(params: LlamaCompletionParams, partialCallback?: (data: LlamaStreamChunk) => void): Promise<LlamaCompletionResult>;
+  completionSync(params: LlamaCompletionParams, partialCallback?: (data: LlamaStreamChunk) => void): LlamaCompletionResult;
 
   // Updated tokenize method to match server.cpp interface
   tokenize(options: {
@@ -314,9 +346,6 @@ export interface LlamaContextMethods {
    * @returns Array of embedding values or OpenAI-compatible embedding response
    */
   embedding(options: EmbeddingOptions): Promise<EmbeddingResponse>;
-  detectTemplate(messages: LlamaMessage[]): Promise<string>;
-  loadSession(path: string): Promise<boolean>;
-  saveSession(path: string): Promise<boolean>;
   stopCompletion(): Promise<void>;
 
   /**
@@ -365,8 +394,10 @@ export interface LlamaContextMethods {
 
   embedImage(imagePath: string, options?: { normalize?: boolean }): Promise<ImageEmbedResult>;
 
+  // Needs capabilities: ['audio-transcribe']. options.language is not read yet. Output cap: 2048 tokens.
   transcribeAudio(audioPath: string, options?: { language?: string }): Promise<TranscriptResult>;
 
+  // Needs capabilities: ['vision-reasoning']. raw_text is the unparsed reply. Output cap: 2048 tokens.
   visionReasoning(imagePath: string, options?: { prompt?: string }): Promise<{ raw_text: string }>;
 
   runOnFrame(

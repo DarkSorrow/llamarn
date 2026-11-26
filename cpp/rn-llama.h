@@ -14,6 +14,7 @@
 #include "rn-multimodal.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -34,10 +35,19 @@ struct rn_common_params : common_params {
     // becomes sampling.reasoning_budget_tokens on chat calls (-1 = no budget sampler, >0 = limit).
     int reasoning_budget = 0;
 
+    // From initLlama. Sets common_chat_templates_inputs::parallel_tool_calls on chat calls.
+    bool parallel_tool_calls = false;
+
     // Cooperative prompt-ingestion loop settings (set at initLlama time).
-    // chunk_size: tokens per llama_decode call during prompt encoding (distinct from n_batch).
-    // is_cpu_only: when true, sleep 2ms after each chunk.
-    // prompt_chunk_gap_ms: minimum inter-chunk gap on GPU path.
+    // Added after app crashes (GPU fence timeouts) on real Android devices; keep as is until
+    // it can be re-validated on hardware. See docs/CONFIGURATION.md "Prompt pacing".
+    // chunk_size: tokens per llama_process call during prompt encoding, clamped to [8, 512]
+    //   and to n_batch. Smaller chunks mean shorter GPU submissions.
+    // is_cpu_only: caller-declared. When true, a fixed 2 ms sleep follows every chunk and the
+    //   GPU gap below is not used. It does not change n_gpu_layers.
+    // prompt_chunk_gap_ms: GPU path only. A floor measured from the start of each chunk, plus
+    //   1 ms per 2048 prompt tokens: the loop sleeps only for the part of the floor the chunk
+    //   did not already take. A chunk that runs longer than the floor gets no sleep.
     int  chunk_size          = 128;
     bool is_cpu_only         = false;
     int  prompt_chunk_gap_ms = 5;
@@ -115,15 +125,33 @@ void rn_free_batches(rn_llama_context* rn_ctx);
 // settings that succeeded so later renders (KV boundaries) match the decoded prompt.
 common_chat_session rn_make_chat_session(const rn_llama_context* rn_ctx, common_chat_templates_inputs& inputs);
 
+// Partial chat parse for streaming deltas, as the server does (task_result_state::update_chat_msg
+// in tools/server/server-task.cpp). Each feed() re-parses the whole reply, so parses are spaced
+// by `interval` instead of per token; deltas are exact either way because they are diffs between
+// parsed states. The final call uses finish(), so the summed deltas equal the final message.
+// On a parse or diff error the deltas stop and the final result stays authoritative.
+// `session` must be a copy of the call's chat session: feed() mutates it.
+struct rn_stream_parser {
+    common_chat_session *     session = nullptr;
+    std::chrono::milliseconds interval{30};
+    common_chat_msg           prev;
+    size_t                    n_fed    = 0;
+    bool                      disabled = false;
+    std::chrono::steady_clock::time_point last_parse{};
+
+    // Feeds generated[n_fed, upto) and appends the content / reasoning deltas to chunk.
+    void update(const common_chat_input & generated, size_t upto, bool final, rn_stream_chunk & chunk);
+};
+
 // Core completion functions
 CompletionResult run_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
-    std::function<bool(const std::string&, bool)> callback);
+    rn_stream_callback callback);
 
 CompletionResult run_chat_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
-    std::function<bool(const std::string&, bool)> callback);
+    rn_stream_callback callback);
 
 } // namespace facebook::react

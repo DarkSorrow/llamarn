@@ -4,6 +4,23 @@ This file lists **breaking changes and migration notes** so they are easy to fin
 
 ---
 
+## llama.cpp b12780: model defaults, reasoning, tool_choice, streaming
+
+Configuration guide: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+- **RoPE / YaRN now come from the model.** `rope_freq_base`, `rope_freq_scale`, and `yarn_*` used to default to fixed numbers (`10000`, `1.0`, …) that overrode every GGUF. Qwen2.5/3 (base 1e6) and Llama 3 (5e5) degraded after a few hundred tokens. The defaults are now llama.cpp's "use the model" sentinels. **Migration:** delete any `rope_*` / `yarn_*` values your app copied from the old docs.
+- **`reasoning_format` defaults to `'auto'`** (was `'none'`). Thinking text moves from `message.content` to `message.reasoning_content`, the same as llama-server. **Migration:** read `reasoning_content`, or pass `reasoning_format: 'none'` to keep the old output. An unknown value now makes `initLlama` throw.
+- **`tool_choice` accepts the OpenAI objects.** `{ type: 'function', function: { name } }` and `{ type: 'allowed_tools', … }` are passed to llama.cpp's parser instead of being collapsed to `'required'`. A name that matches no supplied tool now fails the call with an invalid-parameter error (`Invalid tool_choice: …`).
+- **`parallel_tool_calls` is honored.** Chat calls with tools always allowed parallel calls before, whatever the flag said. Now an explicit `true` / `false` at init decides. When omitted, it follows the template's capability, as llama-server does, so templates that support parallel calls (Qwen3.5 does) behave as before.
+- **Streaming adds `content` and `reasoning_content` deltas** next to `token` on chat calls (additive). The callback type is `LlamaStreamChunk`.
+- **Fixed:** `transcribeAudio` and `visionReasoning` stopped after the first generated token.
+- **Fixed:** a context shift failed the completion (error `vector`) once the reply was longer than the prompt. That's typical for long thinking with `n_predict: -1` on models that can shift (attention models such as Qwen2.5/3, Llama, Gemma). `usage.prompt_tokens` is also no longer reduced after a shift.
+- **Fixed:** the last streamed batch could be dropped when the JS thread was busy at the end of a completion.
+- **Deprecated, no effect:** `thinking_forced_open`, `parse_tool_calls`, `vocab_only`, `logits_all`, init-level `grammar`, per-completion `chat_template`. `loadSession` / `saveSession` are typed but not implemented natively.
+- **Android:** the library manifest no longer lists our own `libggml-*` / `libggml-htp-*` files as `<uses-native-library>`; only the system `libOpenCL.so`, `libvulkan.so`, `libcdsprpc.so` remain. Hexagon needs extracted native libs: `useLegacyPackaging true` (bare) or `expo-build-properties` `android.useLegacyPackaging: true` (Expo). The arm64 CPU loader now also tries the `armv9.*` variants.
+
+---
+
 ## React Native 0.88.1 and llama.cpp b12651
 
 - The library is built and tested against React Native `0.88.1` and React `19.3.0`, the versions used by Expo SDK 58.

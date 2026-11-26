@@ -1,5 +1,7 @@
 # Interface Documentation
 
+For what each option does, recipes per model type (text, thinking, vision, audio, multimodal), and per-device settings, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
 This document describes the TypeScript interfaces and API for `@novastera-oss/llamarn`.
 
 ## Core Functions
@@ -93,32 +95,32 @@ interface LlamaModelParams {
   use_mlock?: boolean;        // lock model pages in RAM (prevents swapping)
 
   // Model behavior parameters
-  vocab_only?: boolean;       // only load the vocabulary, no weights
+  vocab_only?: boolean;       // deprecated: not read by native
   embedding?: boolean;        // use embedding mode (default: false)
   seed?: number;              // RNG seed for reproducibility
 
-  // RoPE parameters
-  rope_freq_base?: number;    // RoPE base frequency (default: 10000.0)
-  rope_freq_scale?: number;   // RoPE frequency scaling factor (default: 1.0)
+  // RoPE parameters. Omit them: default 0 = the GGUF's trained value.
+  rope_freq_base?: number;    // RoPE base frequency (default: from the model)
+  rope_freq_scale?: number;   // RoPE frequency scaling factor (default: from the model)
 
-  // YaRN parameters (RoPE scaling for longer contexts)
+  // YaRN parameters (RoPE scaling for longer contexts). Default -1 = from the model.
   yarn_ext_factor?: number;   // YaRN extrapolation mix factor
   yarn_attn_factor?: number;  // YaRN magnitude scaling factor
   yarn_beta_fast?: number;    // YaRN low correction dim
   yarn_beta_slow?: number;    // YaRN high correction dim
 
   // Additional options
-  logits_all?: boolean;       // return logits for all tokens
+  logits_all?: boolean;       // deprecated: not read by native
   chat_template?: string;     // override chat template
   use_jinja?: boolean;        // use Jinja template parser
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
   // Thinking and reasoning options
-  reasoning_budget?: number;      // -1 = unlimited, 0 = disabled, >0 = token limit
-  reasoning_format?: string;      // 'none' | 'auto' | 'deepseek' | 'deepseek-legacy'
-  thinking_forced_open?: boolean; // force thinking tags in every response
-  parse_tool_calls?: boolean;     // parse tool call JSON (auto-enabled when use_jinja is true)
-  parallel_tool_calls?: boolean;  // allow multiple tool calls per response
+  reasoning_budget?: number;      // 0/omitted = thinking off, -1 = unlimited, >0 = token cap
+  reasoning_format?: string;      // 'none' | 'auto' (default) | 'deepseek' | 'deepseek-legacy'
+  thinking_forced_open?: boolean; // deprecated: no effect (the template decides)
+  parse_tool_calls?: boolean;     // deprecated: no effect (tools + use_jinja parse tool calls)
+  parallel_tool_calls?: boolean;  // multiple tool calls per response (omitted = template capability)
 
   // LoRA adapters
   lora_adapters?: Array<{
@@ -126,8 +128,7 @@ interface LlamaModelParams {
     scale?: number;           // scaling factor for the adapter (default: 1.0)
   }>;
 
-  // Grammar-based sampling
-  grammar?: string;           // GBNF grammar for grammar-based sampling
+  grammar?: string;           // deprecated at init: pass grammar per completion
 
   // Multimodal
   mmproj?: string;            // path to multimodal projection model (.gguf)
@@ -137,8 +138,10 @@ interface LlamaModelParams {
   // Use the values from loadLlamaModelInfo.suggestedChunkSize / isCpuOnly directly.
   chunk_size?: number;        // tokens per llama_decode call during prompt encoding (default: 128)
                               // independent of n_batch; clamped to [8, 512]
-  is_cpu_only?: boolean;      // true  → sleep 2 ms after each chunk (CPU-only devices)
-                              // false → yield() + sleep 1 ms only if a chunk exceeded 40 ms
+  is_cpu_only?: boolean;      // true  → fixed 2 ms sleep after every chunk
+                              // false → GPU rule: per-chunk floor of prompt_chunk_gap_ms (+1 ms per
+                              //         2048 prompt tokens) from the chunk start; no sleep past it
+  prompt_chunk_gap_ms?: number; // GPU per-chunk floor in ms (default: 5)
 }
 ```
 
@@ -156,7 +159,8 @@ Available methods on a loaded model instance.
 
 ```typescript
 interface LlamaContextMethods {
-  completion(params: LlamaCompletionParams, partialCallback?: (data: {token: string}) => void): Promise<LlamaCompletionResult>;
+  completion(params: LlamaCompletionParams, partialCallback?: (data: LlamaStreamChunk) => void): Promise<LlamaCompletionResult>;
+  // LlamaStreamChunk = { token: string; content?: string; reasoning_content?: string }
   tokenize(options: TokenizeOptions): Promise<TokenizeResult>;
   detokenize(options: DetokenizeOptions): Promise<DetokenizeResult>;
   embedding(options: EmbeddingOptions): Promise<EmbeddingResponse>;
@@ -189,7 +193,9 @@ interface LlamaCompletionParams {
   chat_template?: string;     // optional chat template name to use
 
   // Tool calling parameters
-  tool_choice?: string | 'auto' | 'none'; // Tool choice mode
+  tool_choice?: LlamaToolChoice; // 'auto' (default) | 'none' | 'required'
+                                 // | { type: 'function', function: { name } }
+                                 // | { type: 'allowed_tools', allowed_tools: { mode, tools } }
   tools?: LlamaTool[];        // Available tools
 
   // Advanced parameters
@@ -238,6 +244,7 @@ interface LlamaCompletionResult {
     message: {
       role: string;
       content: string;
+      reasoning_content?: string;  // thinking text when reasoning_format is not 'none'
       tool_calls?: Array<{
         id: string;
         type: string;
@@ -402,7 +409,8 @@ const result = await context.completion({
   temperature: 0.7,
   n_predict: 200
 }, (data) => {
-  // This callback is called for each token
+  // ~every 33 ms. data.token is raw text. On chat (messages) calls,
+  // data.content / data.reasoning_content are the parsed deltas.
   console.log('Token:', data.token);
 });
 ```

@@ -295,6 +295,12 @@ build_for_abi() {
   GPU_CMAKE_FLAGS=()
   if [ "$BUILD_OPENCL" = true ] && [ "$OPENCL_AVAILABLE" = true ]; then
     CMAKE_ARGS+=(-DGGML_OPENCL=ON)
+    # Adreno precompiled-kernel DLL (b12780, fd24ee26a): defaults ON. The fetch is Windows ARM64 only,
+    # but on Android the define makes ggml-opencl dlopen("libadreno-opencl-kernels.so"), which
+    # Qualcomm does not ship for Android. Keep the source kernels (GGML_OPENCL_USE_ADRENO_KERNELS,
+    # default ON) and turn the binary path off so the phone build does not look for it.
+    CMAKE_ARGS+=(-DGGML_OPENCL_USE_ADRENO_BIN_KERNELS=OFF)
+    CMAKE_ARGS+=(-DGGML_OPENCL_ADRENO_BIN_KERNELS_FETCH=OFF)
     GPU_CMAKE_FLAGS+=(-DCL_INCLUDE_DIR="$OPENCL_INCLUDE_DIR")
     
     # Help CMake find OpenCL library in NDK sysroot (installed by build_android_gpu_backend.sh)

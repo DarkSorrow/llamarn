@@ -1,46 +1,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           package="com.novastera.llamarn">
 
-    <!-- GPU backends we ship -->
-    <uses-native-library
-        android:name="libggml-opencl.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-vulkan.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-hexagon.so"
-        android:required="false" />
+    <!-- <uses-native-library> is only for vendor libraries under /vendor or /system. The ggml
+         backends we ship (libggml-opencl.so, libggml-hexagon.so, libggml-htp-v*.so) come from
+         jniLibs in the APK and are dlopen'ed by soname, so they are not listed here.
+         Hexagon needs those files extracted to disk (FastRPC opens the HTP skel by path):
+         set useLegacyPackaging / extractNativeLibs in the app. See docs/CONFIGURATION.md. -->
 
-    <!-- Hexagon HTP (Hexagon Tensor Processor) libraries for Snapdragon NPU -->
-    <!-- Unlike OpenCL/Vulkan which have system libraries (libOpenCL.so, libvulkan.so), -->
-    <!-- Hexagon has no system library - all HTP libraries must be bundled with the app. -->
-    <!-- At runtime, libggml-hexagon.so queries the device hardware via FastRPC to detect -->
-    <!-- which Hexagon version the device has, then loads the corresponding libggml-htp-vXX.so. -->
-    <!-- Since we don't know the device at build time, all versions are shipped. -->
-    <!-- v73, v75, v79, v81, v85 are commonly used on modern Snapdragon devices. -->
-    <uses-native-library
-        android:name="libggml-htp-v73.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-htp-v75.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-htp-v79.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-htp-v81.so"
-        android:required="false" />
-    <uses-native-library
-        android:name="libggml-htp-v85.so"
-        android:required="false" />
-
-    <!-- System libraries (provided by device/Snapdragon, not shipped with app) -->
-    <!-- libcdsprpc.so: FastRPC library for communicating with CDSP (Compute DSP) domain on Snapdragon -->
-    <!-- Required for Hexagon backend to communicate with the NPU -->
+    <!-- System libraries (provided by the device, never shipped with the app).
+         required="false" keeps the app installable on devices without them. -->
+    <!-- libcdsprpc.so: FastRPC to the Snapdragon CDSP, used by the Hexagon backend. -->
     <uses-native-library
         android:name="libcdsprpc.so"
         android:required="false" />
+    <!-- libOpenCL.so: vendor OpenCL ICD (Adreno), used by libggml-opencl.so. -->
     <uses-native-library
         android:name="libOpenCL.so"
         android:required="false" />

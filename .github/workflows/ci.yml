@@ -517,6 +517,14 @@ jobs:
               echo "  libvulkan.so is a system library, not our build output"
               exit 1
             fi
+            if [ -f "android/src/main/jniLibs/$ABI/libcdsprpc.so" ]; then
+              echo "❌ ERROR: libcdsprpc.so found - should NOT be shipped (vendor FastRPC library)"
+              exit 1
+            fi
+            if [ -f "android/src/main/jniLibs/$ABI/libadreno-opencl-kernels.so" ]; then
+              echo "❌ ERROR: libadreno-opencl-kernels.so found - OpenCL is built with GGML_OPENCL_USE_ADRENO_BIN_KERNELS=OFF"
+              exit 1
+            fi
             
             echo ""
           done

@@ -37,6 +37,22 @@
 
 namespace facebook::react {
 
+// Streaming payload: { token, content?, reasoning_content? }. token is the raw text and is
+// always present. content / reasoning_content are the chat parser deltas and are set only
+// when non-empty (chat calls only).
+static jsi::Object streamChunkToJsi(jsi::Runtime& rt, const std::string& text,
+                                    const std::string& content, const std::string& reasoning) {
+  jsi::Object data(rt);
+  data.setProperty(rt, "token", jsi::String::createFromUtf8(rt, text));
+  if (!content.empty()) {
+    data.setProperty(rt, "content", jsi::String::createFromUtf8(rt, content));
+  }
+  if (!reasoning.empty()) {
+    data.setProperty(rt, "reasoning_content", jsi::String::createFromUtf8(rt, reasoning));
+  }
+  return data;
+}
+
 // ── CC-P2: Canonical lock hierarchy ──────────────────────────────────────────
 //
 // Three mutexes are used in LlamaCppModel. They MUST always be acquired in the
@@ -290,16 +306,12 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
 
   // Extract tool_choice if present
   if (obj.hasProperty(rt, "tool_choice") && !obj.getProperty(rt, "tool_choice").isUndefined()) {
+    // Kept as JSON: "auto" | "none" | "required" | {type:"function", function:{name}} |
+    // {type:"allowed_tools", allowed_tools:{mode, tools}}. run_chat_completion parses it
+    // against the supplied tools with common_chat_tool_choice_parse_oaicompat.
     auto toolChoiceVal = obj.getProperty(rt, "tool_choice");
-    if (toolChoiceVal.isString()) {
-      options.tool_choice = toolChoiceVal.asString(rt).utf8(rt);
-    } else if (toolChoiceVal.isObject()) {
-      // OpenAI allows tool_choice = { type: "function", function: { name: "foo" } }
-      // to force a specific function. llama.cpp's common_chat_tool_choice_parse_oaicompat
-      // only accepts "auto" / "none" / "required" — per-function enforcement is not
-      // available at the sampling level. Map to "required" (forces tool use), which is
-      // the closest valid approximation.
-      options.tool_choice = "required";
+    if (toolChoiceVal.isString() || toolChoiceVal.isObject()) {
+      options.tool_choice = jsiValueToJson(rt, toolChoiceVal);
     }
   }
 
@@ -312,7 +324,7 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
 }
 
 // Modify the completion function to use this helper
-CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std::function<void(jsi::Runtime&, const char*)> partialCallback, jsi::Runtime* runtime) {
+CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std::function<void(jsi::Runtime&, const rn_stream_chunk&)> partialCallback, jsi::Runtime* runtime) {
   if (!rn_ctx_ || !rn_ctx_->model || !rn_ctx_->ctx) {
     CompletionResult result;
     result.content = "";
@@ -327,14 +339,14 @@ CompletionResult LlamaCppModel::completion(const CompletionOptions& options, std
   // copy of the sampling params — rn_ctx_->params is never mutated here.
 
   // Check for a partial callback
-  auto callback_adapter = [&partialCallback, runtime, this](const std::string& token, bool is_done) -> bool {
+  auto callback_adapter = [&partialCallback, runtime, this](const rn_stream_chunk& chunk, bool is_done) -> bool {
     // Check for stop condition first
     if (should_stop_completion_) {
       return false; // Signal to stop completion
     }
     
     if (partialCallback && runtime && !is_done) {
-      partialCallback(*runtime, token.c_str());
+      partialCallback(*runtime, chunk);
     }
     
     // Return true to continue, false to stop
@@ -524,14 +536,12 @@ jsi::Value LlamaCppModel::completionJsi(jsi::Runtime& rt, const jsi::Value* args
   }
 
   // Create partial callback function for token streaming
-  std::function<void(jsi::Runtime&, const char*)> partialCallback = nullptr;
+  std::function<void(jsi::Runtime&, const rn_stream_chunk&)> partialCallback = nullptr;
 
   if (count > 1 && args[1].isObject() && args[1].getObject(rt).isFunction(rt)) {
     auto callbackFn = std::make_shared<jsi::Function>(args[1].getObject(rt).getFunction(rt));
-    partialCallback = [callbackFn](jsi::Runtime& rt, const char* token) {
-      jsi::Object data(rt);
-      data.setProperty(rt, "token", jsi::String::createFromUtf8(rt, token));
-      callbackFn->call(rt, data);
+    partialCallback = [callbackFn](jsi::Runtime& rt, const rn_stream_chunk& chunk) {
+      callbackFn->call(rt, streamChunkToJsi(rt, chunk.text, chunk.content, chunk.reasoning_content));
     };
   }
 
@@ -623,11 +633,14 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
           // flushPtr is a shared_ptr<function> so both the partialCallback lambda and the
           // post-completion drain call can reach the same instance without capturing a local
           // by reference (which would dangle once the if-block ends).
-          std::function<void(jsi::Runtime&, const char*)> partialCallback = nullptr;
-          auto flushPtr = std::make_shared<std::function<void()>>();
+          std::function<void(jsi::Runtime&, const rn_stream_chunk&)> partialCallback = nullptr;
+          // flush(force): force skips the back-pressure hold. The drain after completion
+          // passes true so the tail of the stream (and the last parser deltas) is never dropped.
+          auto flushPtr = std::make_shared<std::function<void(bool)>>();
 
           if (callbackFn && invoker) {
-            auto tokenBatch   = std::make_shared<std::string>();
+            // text, content and reasoning_content accumulate separately between flushes.
+            auto tokenBatch   = std::make_shared<rn_stream_chunk>();
             // pendingCount: back-pressure gauge for in-flight invokeAsync closures.
             // shared_ptr<atomic> so the JS-thread lambda can decrement after it fires.
             // memory_order_relaxed is correct: saturation gauge with no dependent memory.
@@ -636,24 +649,23 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
                 std::chrono::steady_clock::now());
 
             *flushPtr = [callbackFn, invoker, runtimePtr, tokenBatch, selfPtr,
-                         pendingCount]() {
-              if (tokenBatch->empty()) return;
+                         pendingCount](bool force) {
+              if (tokenBatch->text.empty() && tokenBatch->content.empty() &&
+                  tokenBatch->reasoning_content.empty()) return;
               // Back-pressure: if ≥3 invokeAsync closures are already queued on the JS
               // thread, hold. Tokens accumulate in tokenBatch; next 33ms tick picks them up.
-              if (pendingCount->load(std::memory_order_relaxed) >= 3) return;
+              if (!force && pendingCount->load(std::memory_order_relaxed) >= 3) return;
               pendingCount->fetch_add(1, std::memory_order_relaxed);
-              auto batchStr = std::make_shared<std::string>(std::move(*tokenBatch));
-              tokenBatch->clear();
+              auto batch = std::make_shared<rn_stream_chunk>(std::move(*tokenBatch));
+              *tokenBatch = rn_stream_chunk{};
               try {
-                invoker->invokeAsync([callbackFn, batchStr, runtimePtr, selfPtr,
+                invoker->invokeAsync([callbackFn, batch, runtimePtr, selfPtr,
                                       pendingCount]() {
                   pendingCount->fetch_sub(1, std::memory_order_relaxed);
                   if (selfPtr->is_released_.load()) return;
                   try {
-                    jsi::Object data(*runtimePtr);
-                    data.setProperty(*runtimePtr, "token",
-                        jsi::String::createFromUtf8(*runtimePtr, *batchStr));
-                    callbackFn->call(*runtimePtr, data);
+                    callbackFn->call(*runtimePtr, streamChunkToJsi(*runtimePtr, batch->text,
+                        batch->content, batch->reasoning_content));
                   } catch (...) {}
                 });
               } catch (...) {
@@ -667,12 +679,14 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
             // - Fast models (50 tok/s): ~1-2 tokens per flush → smooth display.
             // - Thinking mode (200 tok/s): ~6-7 tokens per flush → 30 invokeAsync/s, Jetsam-safe.
             partialCallback = [flushPtr, tokenBatch, lastFlush](jsi::Runtime&,
-                                                                 const char* token) {
-              *tokenBatch += token;
+                                                                 const rn_stream_chunk& chunk) {
+              tokenBatch->text              += chunk.text;
+              tokenBatch->content           += chunk.content;
+              tokenBatch->reasoning_content += chunk.reasoning_content;
               auto now = std::chrono::steady_clock::now();
               if (now - *lastFlush >= std::chrono::milliseconds(33)) {
                 *lastFlush = now;
-                (*flushPtr)();
+                (*flushPtr)(false);
               }
             };
           }
@@ -698,7 +712,7 @@ jsi::Value LlamaCppModel::completionAsyncJsi(jsi::Runtime& rt, const jsi::Value*
 
           // Drain any tokens buffered since the last 33ms flush tick.
           if (flushPtr && *flushPtr) {
-            (*flushPtr)();
+            (*flushPtr)(true);
           }
 
           // Schedule success callback on JS thread.
@@ -1434,7 +1448,7 @@ jsi::Value LlamaCppModel::transcribeAudioJsi(jsi::Runtime& rt, const jsi::Value*
               return;
             }
             res = run_chat_completion(selfPtr->rn_ctx_, opts,
-                [](const std::string&, bool) { return false; });
+                [](const rn_stream_chunk&, bool) { return true; });
           }
           if (selfPtr->is_released_) {
             // EH-P3 FIX: reject so the Promise settles instead of hanging.
@@ -1529,7 +1543,7 @@ jsi::Value LlamaCppModel::visionReasoningJsi(jsi::Runtime& rt, const jsi::Value*
               return;
             }
             res = run_chat_completion(selfPtr->rn_ctx_, cmpl_opts,
-                [](const std::string&, bool) { return false; });
+                [](const rn_stream_chunk&, bool) { return true; });
           }
           if (selfPtr->is_released_) {
             // EH-P3 FIX: reject so the Promise settles instead of hanging.

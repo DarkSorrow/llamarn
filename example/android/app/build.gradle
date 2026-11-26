@@ -142,6 +142,12 @@ android {
         pickFirst '**/libjsc.so'
         // Don't compress large model files
         doNotStrip '**/*.gguf'
+        // Extract native libs to the app's lib dir (AGP default keeps them inside the APK).
+        // Hexagon needs this: FastRPC opens libggml-htp-vNN.so by file path next to
+        // libggml-hexagon.so. Pairs with android:extractNativeLibs="true" in the manifest.
+        jniLibs {
+            useLegacyPackaging true
+        }
     }
 }
 

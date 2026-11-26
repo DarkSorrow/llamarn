@@ -25,6 +25,7 @@
 #include <chrono>
 #include <memory>
 #include <cmath>
+#include <optional>
 
 namespace facebook::react {
 
@@ -68,6 +69,38 @@ struct completion_state {
     std::vector<std::string> antiprompt;
 
 };
+
+void rn_stream_parser::update(const common_chat_input & generated, size_t upto, bool final, rn_stream_chunk & chunk) {
+    if (!session || disabled) {
+        return;
+    }
+    upto = std::min(upto, generated.size());
+    if (upto < n_fed) {
+        // A stop string cut text that was already fed. The session cannot unfeed.
+        disabled = true;
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!final && now - last_parse < interval) {
+        return;
+    }
+    last_parse = now;
+    try {
+        const common_chat_input added = generated.substr(n_fed, upto - n_fed);
+        n_fed = upto;
+        const common_chat_msg & cur = final ? session->finish(added) : session->feed(added);
+        for (const auto & d : common_chat_msg_diff::compute_diffs(prev, cur)) {
+            chunk.content           += d.content_delta;
+            chunk.reasoning_content += d.reasoning_content_delta;
+        }
+        prev = cur;
+    } catch (const std::exception &) {
+        disabled = true;
+    }
+    if (final) {
+        disabled = true;
+    }
+}
 
 // Keep generated_text, generated, and generated_tokens on the same kept prefix.
 // generated.tokens stores the id on the first byte of a piece and LLAMA_TOKEN_NULL on the rest.
@@ -188,7 +221,8 @@ static std::string build_kv_render_identity(
     identity += "use_jinja=" + std::to_string(rn_ctx->params.use_jinja ? 1 : 0);
     identity += "|reasoning_format=" + std::to_string(static_cast<int>(rn_ctx->params.reasoning_format));
     identity += "|chat_template=" + rn_ctx->params.chat_template;
-    identity += "|tool_choice=" + options.tool_choice;
+    identity += "|tool_choice=" + options.tool_choice.dump();
+    identity += "|parallel_tool_calls=" + std::to_string(rn_ctx->params.parallel_tool_calls ? 1 : 0);
     identity += "|grammar=" + options.grammar;
     identity += "|tools=" + (options.tools.is_null() ? "null" : options.tools.dump());
     // Same default as the render below: the struct starts at true unless kwargs say otherwise.
@@ -204,7 +238,7 @@ static std::string build_kv_render_identity(
 CompletionResult run_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
-    std::function<bool(const std::string&, bool)> callback) {
+    rn_stream_callback callback) {
 
     CompletionResult result;
     completion_state state;
@@ -506,6 +540,23 @@ CompletionResult run_completion(
             state.generated_tokens.reserve(initial_reserve);
         }
 
+        // Sends generated_text[n_sent_text, upto) plus the parser deltas. Returns the callback's
+        // continue flag; an empty chunk is not sent.
+        rn_stream_parser stream_parser;
+        stream_parser.session = options.stream_session;
+        auto send_upto = [&](size_t upto, bool final) -> bool {
+            rn_stream_chunk chunk;
+            if (upto > state.n_sent_text) {
+                chunk.text = state.generated_text.substr(state.n_sent_text, upto - state.n_sent_text);
+                state.n_sent_text = upto;
+            }
+            stream_parser.update(state.generated, state.n_sent_text, final, chunk);
+            if (chunk.text.empty() && chunk.content.empty() && chunk.reasoning_content.empty()) {
+                return true;
+            }
+            return callback(chunk, false);
+        };
+
         while (state.has_next_token && (state.n_predict < 0 || state.n_remaining > 0)) {
             // Thermal management: apply any thread count change requested by the JS thread.
             // JS writes requested_n_threads with memory_order_release (non-blocking).
@@ -561,11 +612,10 @@ CompletionResult run_completion(
                 // Shift remaining entries [n_keep + n_discard, n_past) backward by n_discard
                 llama_memory_seq_add(llama_get_memory(rn_ctx->ctx), 0, n_keep + n_discard, state.n_past, -n_discard);
 
-                // Shift the prompt_tokens array to match
-                for (int i = n_keep + n_discard; i < (int)state.prompt_tokens.size(); i++) {
-                    state.prompt_tokens[i - n_discard] = state.prompt_tokens[i];
-                }
-                state.prompt_tokens.resize(state.prompt_tokens.size() - n_discard);
+                // prompt_tokens is not shifted. It holds only the prompt, while n_discard counts
+                // generated tokens too, so mirroring the shift there underflowed the resize
+                // (std::length_error) once the reply outgrew the prompt. Its only later reader is
+                // usage.prompt_tokens, which stays the full rendered prompt.
 
                 state.n_past -= n_discard;
                 state.truncated = true;
@@ -632,9 +682,8 @@ CompletionResult run_completion(
                 rn_truncate_generated(state, keep);
                 state.has_next_token = false;
                 // Flush any buffered tokens before breaking on EOS
-                if (callback && state.n_sent_text < state.generated_text.size()) {
-                    callback(state.generated_text.substr(state.n_sent_text), false);
-                    state.n_sent_text = state.generated_text.size();
+                if (callback) {
+                    send_upto(state.generated_text.size(), false);
                 }
                 break;
             }
@@ -644,9 +693,8 @@ CompletionResult run_completion(
 
             if (should_stop) {
                 // Flush any buffered tokens before breaking on stop string / context limit
-                if (callback && state.n_sent_text < state.generated_text.size()) {
-                    callback(state.generated_text.substr(state.n_sent_text), false);
-                    state.n_sent_text = state.generated_text.size();
+                if (callback) {
+                    send_upto(state.generated_text.size(), false);
                 }
                 break;
             }
@@ -662,14 +710,9 @@ CompletionResult run_completion(
                         safe_send_limit = partial_pos;
                     }
                 }
-                if (safe_send_limit > state.n_sent_text) {
-                    std::string text_to_send = state.generated_text.substr(
-                        state.n_sent_text, safe_send_limit - state.n_sent_text);
-                    state.n_sent_text = safe_send_limit;
-                    if (!text_to_send.empty() && !callback(text_to_send, false)) {
-                        state.has_next_token = false;
-                        break;
-                    }
+                if (safe_send_limit > state.n_sent_text && !send_upto(safe_send_limit, false)) {
+                    state.has_next_token = false;
+                    break;
                 }
             }
         }
@@ -699,14 +742,10 @@ CompletionResult run_completion(
 
         // Flush any tokens not yet sent due to buffering (e.g. when generation ended before
         // the next buf_size boundary — EOS, stop string, or n_predict limit).
-        if (callback && state.n_sent_text < state.generated_text.size()) {
-            callback(state.generated_text.substr(state.n_sent_text), false);
-            state.n_sent_text = state.generated_text.size();
-        }
-        // Final callback with is_done=true. The string argument is ignored by
-        // callback_adapter (!is_done guard), so pass empty to avoid a needless copy.
+        // The final parse runs here too, so the last chunk completes the content / reasoning deltas.
         if (callback) {
-            callback("", true);
+            send_upto(state.generated_text.size(), true);
+            callback(rn_stream_chunk{}, true);
         }
 
         return result;
@@ -842,7 +881,7 @@ static int32_t mtmd_eval_chunks_batched(
 CompletionResult run_chat_completion(
     rn_llama_context* rn_ctx,
     const CompletionOptions& options,
-    std::function<bool(const std::string&, bool)> callback) {
+    rn_stream_callback callback) {
 
     CompletionResult result;
     completion_state state;
@@ -874,6 +913,35 @@ CompletionResult run_chat_completion(
             // nlohmann::ordered_json. No implicit conversion exists in either direction —
             // round-trip through dump()/parse() at this boundary.
             chat_msgs = common_chat_msgs_parse_oaicompat(common_json::parse(effective_messages.dump()));
+        }
+
+        // Tools and tool_choice are parsed before any KV change, so a bad request leaves the
+        // cache and kv_messages as they were. tool_choice is parsed against the tools
+        // (server: oaicompat_chat_params_parse). A named function must match exactly one
+        // supplied tool; upstream throws std::invalid_argument otherwise. Null / "" = "auto".
+        std::vector<common_chat_tool> parsed_tools;
+        if (!options.tools.is_null() && !options.tools.empty()) {
+            parsed_tools = common_chat_tools_parse_oaicompat(common_json::parse(options.tools.dump()));
+        }
+        common_chat_tool_choice parsed_tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+        const bool tool_choice_set = !options.tool_choice.is_null() &&
+            !(options.tool_choice.is_string() && options.tool_choice.get<std::string>().empty());
+        if (tool_choice_set) {
+            try {
+                parsed_tool_choice = common_chat_tool_choice_parse_oaicompat(
+                    common_json::parse(options.tool_choice.dump()), parsed_tools);
+            } catch (const std::exception & e) {
+                result.success    = false;
+                result.error_msg  = std::string("Invalid tool_choice: ") + e.what();
+                result.error_type = RN_ERROR_INVALID_PARAM;
+                return result;
+            }
+        }
+        if (!parsed_tools.empty() && parsed_tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE && !options.grammar.empty()) {
+            result.success    = false;
+            result.error_msg  = "Cannot use custom grammar constraints with tools.";
+            result.error_type = RN_ERROR_INVALID_PARAM;
+            return result;
         }
 
         const std::string kv_render_identity = build_kv_render_identity(rn_ctx, options);
@@ -1000,19 +1068,10 @@ CompletionResult run_chat_completion(
         }
 
         if (!options.tools.is_null() && !options.tools.empty()) {
-            template_inputs.tools = common_chat_tools_parse_oaicompat(common_json::parse(options.tools.dump()));
-            template_inputs.parallel_tool_calls = true;
+            template_inputs.tools = std::move(parsed_tools);
+            template_inputs.parallel_tool_calls = rn_ctx->params.parallel_tool_calls;
         }
-
-        if (!options.tool_choice.empty()) {
-            template_inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(options.tool_choice);
-        }
-
-        if (!template_inputs.tools.empty() && template_inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE) {
-            if (!template_inputs.grammar.empty()) {
-                throw std::runtime_error("Cannot use custom grammar constraints with tools.");
-            }
-        }
+        template_inputs.tool_choice = parsed_tool_choice;
 
         CompletionOptions cmpl_options = options;
         // Pass the trusted KV start position so run_completion skips its own KV management.
@@ -1023,6 +1082,13 @@ CompletionResult run_chat_completion(
         common_chat_session session = rn_make_chat_session(rn_ctx, template_inputs);
         cmpl_options.chat_session = &session;
         cmpl_options.grammar.clear();
+
+        // Streaming parses a copy, so the final session.finish below stays one clean parse.
+        std::optional<common_chat_session> stream_session;
+        if (options.stream) {
+            stream_session.emplace(session);
+            cmpl_options.stream_session = &*stream_session;
+        }
 
         for (const auto & stop : session.additional_stops()) {
             cmpl_options.stop.push_back(stop);

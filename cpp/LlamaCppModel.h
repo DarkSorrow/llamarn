@@ -83,7 +83,7 @@ public:
    */
   CompletionResult completion(
       const CompletionOptions& options,
-      std::function<void(jsi::Runtime&, const char*)> partialCallback = nullptr,
+      std::function<void(jsi::Runtime&, const rn_stream_chunk&)> partialCallback = nullptr,
       jsi::Runtime* runtime = nullptr);
 
   /**

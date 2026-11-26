@@ -66,8 +66,13 @@ static void load_android_cpu_backends() {
   }
 
   // Try loading all CPU variant libraries (from most advanced to baseline)
-  // Score each one and register only the best compatible variant
-  static constexpr std::array<const char*, 4> cpu_variants = {{
+  // Score each one and register only the best compatible variant. A variant whose features
+  // the CPU lacks scores 0 and its handle is closed, so older devices never run v9 code.
+  // Feature sets match ggml/src/CMakeLists.txt (ggml_add_cpu_backend_variant).
+  static constexpr std::array<const char*, 7> cpu_variants = {{
+    "libggml-cpu-android_armv9.2_2.so",  // DOTPROD + MATMUL_INT8 + FP16 + SVE + SVE2 + SME
+    "libggml-cpu-android_armv9.2_1.so",  // DOTPROD + MATMUL_INT8 + FP16 + SVE + SME
+    "libggml-cpu-android_armv9.0_1.so",  // DOTPROD + MATMUL_INT8 + FP16 + SVE2
     "libggml-cpu-android_armv8.6_1.so",  // DOTPROD + FP16 + MATMUL_INT8
     "libggml-cpu-android_armv8.2_2.so",  // DOTPROD + FP16
     "libggml-cpu-android_armv8.2_1.so",  // DOTPROD
@@ -591,7 +596,8 @@ struct InitLlamaParams {
   std::vector<std::pair<std::string, float>> lora_adapters;
   int reasoning_budget;
   common_reasoning_format reasoning_format;
-  bool thinking_forced_open, parse_tool_calls, parallel_tool_calls;
+  // nullopt = caller omitted it: follow the template's supports_parallel_tool_calls (server default).
+  std::optional<bool> parallel_tool_calls;
   // Multimodal
   std::string mmproj_path;
   std::string image_marker;
@@ -692,14 +698,11 @@ static ModelInitResult do_init_llama(
 
     // Set kwargs on `params` BEFORE copying to rn_params (fixes silent data-loss bug:
     // previously kwargs were set on `params` AFTER rn_params was copy-constructed from it).
-    params.default_template_kwargs["enable_thinking"]     = (p.reasoning_budget != 0) ? "true" : "false";
-    if (p.reasoning_format != COMMON_REASONING_FORMAT_NONE) {
-        params.default_template_kwargs["thinking_forced_open"] = p.thinking_forced_open ? "true" : "false";
-        params.default_template_kwargs["reasoning_in_content"] = "false";
-    }
-    bool effective_parse = p.parse_tool_calls || p.use_jinja;
-    params.default_template_kwargs["parse_tool_calls"]    = effective_parse ? "true" : "false";
-    params.default_template_kwargs["parallel_tool_calls"] = p.parallel_tool_calls ? "true" : "false";
+    // Only enable_thinking is a real template variable. thinking_forced_open,
+    // reasoning_in_content, parse_tool_calls and parallel_tool_calls used to be pushed here
+    // too, but no upstream code reads them as kwargs; they only leaked into the Jinja
+    // context. parallel_tool_calls now goes to common_chat_templates_inputs on each call.
+    params.default_template_kwargs["enable_thinking"] = (p.reasoning_budget != 0) ? "true" : "false";
 
     // rn_params is now copied AFTER all kwargs are set → kwargs are preserved
     rn_common_params rn_params;
@@ -707,6 +710,7 @@ static ModelInitResult do_init_llama(
     rn_params.use_jinja           = p.use_jinja;
     rn_params.reasoning_format    = p.reasoning_format;
     rn_params.reasoning_budget    = p.reasoning_budget;
+    rn_params.parallel_tool_calls = p.parallel_tool_calls.value_or(false);
     rn_params.chunk_size          = p.chunk_size;
     rn_params.is_cpu_only         = p.is_cpu_only;
     rn_params.prompt_chunk_gap_ms = p.prompt_chunk_gap_ms;
@@ -744,6 +748,18 @@ static ModelInitResult do_init_llama(
 
     // ── 4. Chat templates ──────────────────────────────────────────────────
     init_chat_templates_safe(rn_ctx.get(), rn_params);
+
+    // Omitted parallel_tool_calls follows the template, as llama-server does
+    // (server-common.cpp: json_value(body, "parallel_tool_calls", caps.supports_parallel_tool_calls)).
+    if (!p.parallel_tool_calls.has_value() && rn_ctx->chat_templates) {
+        try {
+            // common_json is upstream's own type; read it through dump(), as elsewhere in the bridge.
+            const json caps = json::parse(common_chat_templates_get_caps(rn_ctx->chat_templates.get()).dump());
+            rn_ctx->params.parallel_tool_calls = caps.value("supports_parallel_tool_calls", false);
+        } catch (const std::exception&) {
+            rn_ctx->params.parallel_tool_calls = false;
+        }
+    }
 
     // ── 5. Multimodal (non-fatal: continue even if mmproj fails) ──────────
     rn_ctx->declared_capabilities = p.declared_capabilities;
@@ -792,22 +808,25 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   int n_threads = 0;
   int n_gpu_layers = 0;
   std::string logits_file;
-  float rope_freq_base = 10000.0f;
-  float rope_freq_scale = 1.0f;
+  // 0 / -1 are llama.cpp's "use the GGUF value" sentinels (common_params, llama-context.cpp).
+  // Never default these to concrete numbers: rope_freq_base = 10000 overrode every model's
+  // trained base (Qwen2.5/3 use 1e6, Llama 3 5e5) and broke long-context output.
+  float rope_freq_base = 0.0f;
+  float rope_freq_scale = 0.0f;
   uint32_t seed = 4294967295U; // default seed
   int verbosity = 0;
-  float yarn_ext_factor = 1.0f;
-  float yarn_attn_factor = 1.0f;
-  float yarn_beta_fast = 32.0f;
-  float yarn_beta_slow = 1.0f;
+  float yarn_ext_factor = -1.0f;
+  float yarn_attn_factor = -1.0f;
+  float yarn_beta_fast = -1.0f;
+  float yarn_beta_slow = -1.0f;
   std::string chat_template;
   
   // Thinking and reasoning options
   int reasoning_budget = 0;  // 0 = thinking off (template), -1 = no budget sampler, >0 = token budget
-  common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_NONE;
-  bool thinking_forced_open = false;
-  bool parse_tool_calls = true;  // Enabled by default for better tool support
-  bool parallel_tool_calls = false;  // Disabled by default for compatibility
+  // Omitted = "auto", the llama-server default: the template's thinking block goes to
+  // message.reasoning_content, not into content. Pass "none" to keep thinking in content.
+  common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+  std::optional<bool> parallel_tool_calls;  // omitted = the template's capability
 
   // Parse options to native types
   SystemUtils::setIfExists(runtime, options, "n_ctx", n_ctx);
@@ -832,18 +851,26 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   
   // Parse thinking and reasoning options
   SystemUtils::setIfExists(runtime, options, "reasoning_budget", reasoning_budget);
-  SystemUtils::setIfExists(runtime, options, "thinking_forced_open", thinking_forced_open);
-  SystemUtils::setIfExists(runtime, options, "parse_tool_calls", parse_tool_calls);
-  SystemUtils::setIfExists(runtime, options, "parallel_tool_calls", parallel_tool_calls);
+  {
+    bool v = false;
+    if (SystemUtils::setIfExists(runtime, options, "parallel_tool_calls", v)) parallel_tool_calls = v;
+  }
   
-  // Note: parse_tool_calls will be automatically enabled if use_jinja is true,
-  // as Jinja templates provide better tool calling capabilities
+  // thinking_forced_open and parse_tool_calls are ignored (deprecated in the TS spec): upstream
+  // derives both from the template (generation prompt, autoparser).
   
   // Parse reasoning_format as string and convert to enum
-  if (options.hasProperty(runtime, "reasoning_format")) {
-    reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-    std::string reasoning_format_str = options.getProperty(runtime, "reasoning_format").asString(runtime).utf8(runtime);
-    reasoning_format = common_reasoning_format_from_name(reasoning_format_str);
+  {
+    std::string reasoning_format_str;
+    if (SystemUtils::setIfExists(runtime, options, "reasoning_format", reasoning_format_str) &&
+        !reasoning_format_str.empty()) {
+      try {
+        reasoning_format = common_reasoning_format_from_name(reasoning_format_str);
+      } catch (const std::exception&) {
+        throw jsi::JSError(runtime, "reasoning_format must be 'none', 'auto', 'deepseek' or 'deepseek-legacy', got '" +
+                                    reasoning_format_str + "'");
+      }
+    }
   }
 
   if (options.hasProperty(runtime, "n_threads")) {
@@ -955,8 +982,6 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
   p->lora_adapters        = std::move(lora_adapters);
   p->reasoning_budget     = reasoning_budget;
   p->reasoning_format     = reasoning_format;
-  p->thinking_forced_open = thinking_forced_open;
-  p->parse_tool_calls     = parse_tool_calls;
   p->parallel_tool_calls  = parallel_tool_calls;
   p->mmproj_path           = mmproj_path;
   p->image_marker          = image_marker;

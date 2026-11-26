@@ -138,19 +138,24 @@ Completion request keys are strict snake_case to match the native layer (`top_p`
 ```js
 const context = await initLlama({
   model: '/path/to/reasoning-model.gguf',
-  n_ctx: 4096,
+  n_ctx: 8192,
   use_jinja: true,
-  reasoning_budget: 0,            // omitted or 0 = thinking off, -1 = unlimited, >0 = token limit
-  reasoning_format: 'deepseek',  // 'none' | 'auto' | 'deepseek' | 'deepseek-legacy'
-  thinking_forced_open: true,
+  reasoning_budget: -1,       // omitted or 0 = thinking off, -1 = unlimited, >0 = token limit
+  // reasoning_format defaults to 'auto': thinking goes to message.reasoning_content
+  // do not set rope_* / yarn_*: the model's own values are used
 });
 
 const result = await context.completion({
   messages: [{ role: 'user', content: 'Solve: what is 15% of 240?' }],
+  temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0, // Qwen3 card, thinking mode
+}, (chunk) => {
+  // chunk.reasoning_content / chunk.content are parsed deltas; chunk.token is raw text
 });
 
-// result.text may include <think>…</think> depending on the model
+const { content, reasoning_content } = result.choices![0].message;
 ```
+
+Full guide for thinking, vision, audio, and per-device settings: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
 
 See **[BREAKING.md](./BREAKING.md)** for multi-turn thinking, KV cache, and tool-calling pitfalls.
 
@@ -445,8 +450,8 @@ These control how the prompt is encoded into the KV cache — smaller chunks wit
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `chunk_size` | `128` | Tokens per `llama_decode` call during prompt encoding (8–512, independent of `n_batch`) |
-| `is_cpu_only` | `false` | `true` → 2 ms sleep after each chunk |
-| `prompt_chunk_gap_ms` | `5` | GPU minimum inter-chunk gap; increase on thermally constrained devices |
+| `is_cpu_only` | `false` | `true` → fixed 2 ms sleep after every chunk |
+| `prompt_chunk_gap_ms` | `5` | GPU path: per-chunk time floor from the chunk start (+1 ms per 2048 prompt tokens). Chunks longer than the floor get no sleep. Not a thermal control: use `setNThreads` for that |
 
 ### Completion cache keys
 
@@ -478,10 +483,11 @@ When tool-call parsing fails, `finish_reason` can be `tool_call_parse_error` and
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `reasoning_budget` | `0` | Omitted or `0` turns thinking off at load. `-1` is unlimited. `>0` is the sampler cap. A completion may pass a positive cap when init turned thinking on. `0` or `-1` on a completion does not change the template. `reasoning_budget_active` is true only when that cap was installed. |
-| `reasoning_format` | `'auto'` | `'none'` \| `'auto'` \| `'deepseek'` \| `'deepseek-legacy'` |
-| `thinking_forced_open` | `false` | Force thinking tags in every response |
-| `parse_tool_calls` | `true` | Parse tool call JSON from output (auto-enabled with `use_jinja`) |
-| `parallel_tool_calls` | `false` | Allow multiple tool calls per response |
+| `reasoning_format` | `'auto'` | `'none'` \| `'auto'` \| `'deepseek'` \| `'deepseek-legacy'`. `'auto'` puts thinking in `reasoning_content`; `'none'` leaves it in `content` |
+| `thinking_forced_open` | — | Deprecated, no effect (the template decides) |
+| `parse_tool_calls` | — | Deprecated, no effect (`tools` + `use_jinja` parse tool calls) |
+| `parallel_tool_calls` | template | Allow multiple tool calls per response. Omitted = what the chat template supports, as llama-server does |
+| `rope_freq_base`, `rope_freq_scale`, `yarn_*` | from the model | Leave unset. Setting them overrides the GGUF's trained values |
 
 ---
 
@@ -501,6 +507,7 @@ When tool-call parsing fails, `finish_reason` can be `tool_call_parse_error` and
 
 ## Documentation
 
+- [Configuration Guide](docs/CONFIGURATION.md) — What each option does; text, thinking, vision, audio, and multimodal recipes; device presets
 - [Interface Documentation](INTERFACE.md) — Detailed API interfaces
 - [Breaking Changes](BREAKING.md) — Migration notes
 - [Example App](example/) — Simulator and emulator screens. They force `n_gpu_layers: 0` because those targets have no usable GPU. A device app still passes `optimalGpuLayers` from `loadLlamaModelInfo`.

@@ -74,13 +74,20 @@ struct CompletionOptions {
     bool use_jinja = false;
     int seed = -1;  // -1 = leave model's default seed unchanged; >=0 overrides (applied in run_completion)
     json tools;         // tools for function calling
-    std::string tool_choice = "auto"; // tool choice mode: "auto", "none", or "required"
+    // OpenAI tool_choice, kept as JSON: "auto" | "none" | "required" |
+    // {"type":"function","function":{"name":...}} | {"type":"allowed_tools",...}.
+    // Parsed against the tools by common_chat_tool_choice_parse_oaicompat in run_chat_completion.
+    json tool_choice = "auto";
 
     // Internal: set by run_chat_completion.
     // prompt_tokens: part-aware tokenized chat prompt; when non-empty it replaces tokenizing `prompt`.
     // chat_session: owns grammar, triggers and preserved tokens; applied to the sampler via apply_sampling.
     llama_tokens prompt_tokens;
     const common_chat_session * chat_session = nullptr;
+    // stream_session: a copy of chat_session, fed while streaming (feed() mutates it) so the
+    // final session.finish(result.generated) on chat_session stays a single clean parse.
+    // Null when the call does not stream.
+    common_chat_session * stream_session = nullptr;
 
     // KV cache control
     bool    reset_kv_cache = false; // force full KV cache clear even when message IDs match
@@ -125,6 +132,19 @@ struct CompletionTimings {
     double  prompt_ms    = 0.0;
     double  total_ms     = 0.0;
 };
+
+// One streamed piece. text is the raw generated text since the previous chunk (stop-string safe).
+// On chat calls, content and reasoning_content are the parser deltas over the same range
+// (common_chat_msg_diff, as the server streams them). They lag text by at most one parse
+// interval and are complete by the last chunk before is_done. Prompt-only calls leave them empty.
+struct rn_stream_chunk {
+    std::string text;
+    std::string content;
+    std::string reasoning_content;
+};
+
+// Returns false to stop generation. is_done is true exactly once, with an empty chunk.
+using rn_stream_callback = std::function<bool(const rn_stream_chunk&, bool is_done)>;
 
 // CompletionResult struct to hold completion response data
 struct CompletionResult {

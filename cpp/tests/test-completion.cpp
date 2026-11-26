@@ -21,7 +21,7 @@ static CompletionOptions greedy(int n_predict) {
     return o;
 }
 
-static const auto no_stream = [](const std::string &, bool) { return true; };
+static const auto no_stream = [](const rn_stream_chunk &, bool) { return true; };
 
 static CompletionOptions chat(std::vector<std::pair<std::string, std::string>> msgs, int n_predict) {
     CompletionOptions o = greedy(n_predict);
@@ -63,6 +63,12 @@ RN_TEST(completion_long_prompt_over_n_batch) {
     RN_CHECK(r.n_prompt_tokens > 64);
 }
 
+// llama.cpp does not promise identical logits across batch sizes (tools/server/README.md,
+// cache_prompt): the CPU backend picks kernels by batch shape (BLAS / repack from 32 tokens up,
+// quantized dot products below). Measured at b12780: one 141-token batch vs chunks of 8 moves
+// the last logits by up to ~0.5 on Qwen3.5 and SmolLM2, which flips a greedy token on some models.
+// So the exact check uses two chunk sizes on the same kernel path. It still covers the loop:
+// positions, the last-token logits flag, and many llama_process calls per prompt.
 RN_TEST(completion_chunk_size_invariant) {
     auto m = load_or_skip();
     auto o = greedy(12);
@@ -70,10 +76,32 @@ RN_TEST(completion_chunk_size_invariant) {
 
     m->rn->params.chunk_size = 8;
     auto a = run_completion(m->rn.get(), o, no_stream);
-    m->rn->params.chunk_size = 512;
+    m->rn->params.chunk_size = 16;
     auto b = run_completion(m->rn.get(), o, no_stream);
     RN_CHECK(a.success && b.success);
     RN_CHECK_EQ(a.content, b.content);
+    RN_CHECK_EQ(a.n_prompt_tokens, b.n_prompt_tokens);
+}
+
+// Across kernel paths (8 vs one 512 chunk) only the token count is exact. timings.prompt_n is
+// llama_perf n_p_eval, which upstream counts per sync (llama-context.cpp FIXME): the first
+// generated token can land in it, so it may read one above the prompt length.
+RN_TEST(completion_chunk_size_encodes_every_token) {
+    auto m = load_or_skip();
+    auto o = greedy(4);
+    o.prompt = long_prompt(10);
+
+    m->rn->params.chunk_size = 8;
+    auto a = run_completion(m->rn.get(), o, no_stream);
+    m->rn->params.chunk_size = 512;
+    auto b = run_completion(m->rn.get(), o, no_stream);
+    RN_CHECK(a.success && b.success);
+    RN_CHECK_EQ(a.n_prompt_tokens, b.n_prompt_tokens);
+    for (const auto * r : { &a, &b }) {
+        const int over = r->timings.prompt_n - static_cast<int>(r->n_prompt_tokens);
+        RN_CHECK(over == 0 || over == 1);
+        RN_CHECK(r->n_predicted_tokens > 0);
+    }
 }
 
 RN_TEST(completion_abort_then_rerun_matches_fresh) {
@@ -86,7 +114,7 @@ RN_TEST(completion_abort_then_rerun_matches_fresh) {
 
     // abort during generation: the next llama_process sees the abort callback
     auto * rn = m->rn.get();
-    auto aborted = run_completion(rn, o, [rn](const std::string &, bool) {
+    auto aborted = run_completion(rn, o, [rn](const rn_stream_chunk &, bool) {
         rn->abort_generation = true;
         return true;
     });
@@ -148,7 +176,7 @@ RN_TEST(chat_abort_keeps_matched_prefix) {
                      { "user", "Name a fruit." },
                      { "assistant", chat_content(r1) },
                      { "user", "Name a color." } }, 16);
-    auto aborted = run_chat_completion(rn, t2, [rn](const std::string &, bool) {
+    auto aborted = run_chat_completion(rn, t2, [rn](const rn_stream_chunk &, bool) {
         rn->abort_generation = true;
         return true;
     });
@@ -184,9 +212,9 @@ static json example_tools() {
 
 static void set_init_kwargs(rn_llama_context * rn) {
     auto & kw = rn->params.default_template_kwargs;
-    kw["enable_thinking"]     = "false";
-    kw["parse_tool_calls"]    = "true";
-    kw["parallel_tool_calls"] = "false";
+    // Same kwargs do_init_llama sets: enable_thinking is the only template variable.
+    kw["enable_thinking"] = "false";
+    rn->params.parallel_tool_calls = false;
 }
 
 RN_TEST(chat_tools_reach_the_prompt) {
@@ -205,7 +233,7 @@ RN_TEST(chat_tools_reach_the_prompt) {
     inputs.enable_thinking       = false;
     inputs.tools                 = common_chat_tools_parse_oaicompat(common_json::parse(example_tools().dump()));
     inputs.parallel_tool_calls   = true;
-    inputs.tool_choice           = common_chat_tool_choice_parse_oaicompat("auto");
+    inputs.tool_choice           = common_chat_tool_choice_parse_oaicompat("auto", inputs.tools);
 
     auto session = rn_make_chat_session(rn, inputs);
     RN_CHECK(inputs.use_jinja);
@@ -365,10 +393,13 @@ RN_TEST(chat_shift_keeps_the_first_message) {
         { "user", "Keep talking about rivers and mountains." },
     }, -1);
     filling.ignore_eos = true;
+    // llama.cpp rounds n_ctx up to a multiple of 256 (llama-context.cpp), so budget from the
+    // real window: enough tokens to fill it once and force one shift.
+    const int budget = static_cast<int>(llama_n_ctx(rn->ctx)) + 16;
     int generated = 0;
-    auto shifted = run_chat_completion(rn, filling, [&](const std::string &, bool done) {
+    auto shifted = run_chat_completion(rn, filling, [&](const rn_stream_chunk &, bool done) {
         if (done) return true;
-        return ++generated < 80;
+        return ++generated < budget;
     });
     RN_CHECK(shifted.success);
     RN_CHECK(shifted.context_shifted);
@@ -395,13 +426,23 @@ RN_TEST(chat_shift_without_ids_keeps_half_the_context) {
     CompletionOptions o = greedy(-1);
     o.ignore_eos = true;
     o.messages = json::array({ { { "role", "user" }, { "content", "Count upward." } } });
+    CompletionOptions probe = o;
+    probe.n_predict = 1;
+    const auto unshifted = run_chat_completion(rn, probe, no_stream);
+    RN_CHECK(unshifted.success);
+    // Real window, not the requested 96: llama.cpp rounds n_ctx up to a multiple of 256.
+    const int budget = static_cast<int>(llama_n_ctx(rn->ctx)) + 16;
     int generated = 0;
-    auto r = run_chat_completion(rn, o, [&](const std::string &, bool done) {
+    auto r = run_chat_completion(rn, o, [&](const rn_stream_chunk &, bool done) {
         if (done) return true;
-        return ++generated < 80;
+        return ++generated < budget;
     });
     RN_CHECK(r.success);
     RN_CHECK(r.context_shifted);
+    // A shift that outgrows the prompt used to throw here (prompt_tokens resize underflow).
+    // usage.prompt_tokens stays the full rendered prompt after a shift.
+    RN_CHECK_EQ(r.n_prompt_tokens, unshifted.n_prompt_tokens);
+    RN_CHECK(r.n_predicted_tokens > static_cast<int>(llama_n_ctx(rn->ctx)) - static_cast<int>(r.n_prompt_tokens));
     const int expected = rn_shift_n_keep(0, llama_n_ctx(rn->ctx), -1, llama_vocab_get_add_bos(rn->vocab));
     RN_CHECK_EQ(r.shift_n_keep, expected);
 }
@@ -492,3 +533,67 @@ RN_TEST(chat_reasoning_and_content_split) {
     RN_CHECK(msg.contains("content"));
     RN_CHECK(msg["content"].get<std::string>().find("</think>") == std::string::npos);
 }
+
+RN_TEST(chat_tool_choice_named_function) {
+    auto m = load_or_skip(4096);
+    auto * rn = m->rn.get();
+    set_init_kwargs(rn);
+
+    auto o = chat({ { "user", "Tell me something." } }, 256);
+    o.tools       = example_tools();
+    o.tool_choice = json::parse(R"({"type": "function", "function": {"name": "get_location"}})");
+    o.reset_kv_cache = true;
+    auto r = run_chat_completion(rn, o, no_stream);
+    RN_CHECK(r.success);
+    const auto & choice = r.chat_response["choices"][0];
+    // The named choice is required mode plus an allowed list. Required mode is enforced for
+    // every template. Narrowing the grammar to the one name is up to the template's upstream
+    // handler; at b12780 Qwen3.5 keeps every tool in the grammar, so the name is not checked.
+    if (choice["finish_reason"] != "tool_calls") {
+        throw rn_test_failure("no tool call: " + choice.dump());
+    }
+}
+
+RN_TEST(chat_tool_choice_unknown_name_is_invalid_param) {
+    auto m = load_or_skip(4096);
+    auto * rn = m->rn.get();
+    set_init_kwargs(rn);
+
+    auto o = chat({ { "user", "Hi" } }, 8);
+    o.tools       = example_tools();
+    o.tool_choice = json::parse(R"({"type": "function", "function": {"name": "does_not_exist"}})");
+    auto r = run_chat_completion(rn, o, no_stream);
+    RN_CHECK(!r.success);
+    RN_CHECK(r.error_type == RN_ERROR_INVALID_PARAM);
+}
+
+RN_TEST(chat_stream_deltas_sum_to_final_message) {
+    auto m = load_or_skip();
+    auto * rn = m->rn.get();
+    rn->params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+    auto o = chat({ { "user", "Say hi." } }, 64);
+    o.stream = true;
+    o.reset_kv_cache = true;
+    std::string text, content, reasoning;
+    int done = 0;
+    auto r = run_chat_completion(rn, o, [&](const rn_stream_chunk & c, bool is_done) {
+        if (is_done) {
+            done++;
+            return true;
+        }
+        text += c.text;
+        content += c.content;
+        reasoning += c.reasoning_content;
+        return true;
+    });
+    RN_CHECK(r.success);
+    RN_CHECK_EQ(done, 1);
+    RN_CHECK_EQ(text, r.content);
+    const auto & msg = r.chat_response["choices"][0]["message"];
+    if (msg.contains("tool_calls")) {
+        return;
+    }
+    RN_CHECK_EQ(content, msg.value("content", std::string()));
+    RN_CHECK_EQ(reasoning, msg.value("reasoning_content", std::string()));
+}
+
