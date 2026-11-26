@@ -856,8 +856,8 @@ jsi::Value PureCppImpl::initLlama(jsi::Runtime &runtime, jsi::Object options) {
     if (SystemUtils::setIfExists(runtime, options, "parallel_tool_calls", v)) parallel_tool_calls = v;
   }
   
-  // thinking_forced_open and parse_tool_calls are ignored (deprecated in the TS spec): upstream
-  // derives both from the template (generation prompt, autoparser).
+  // The template decides whether thinking starts open and how tool calls parse (generation
+  // prompt, autoparser); there is no init switch for either.
   
   // Parse reasoning_format as string and convert to enum
   {

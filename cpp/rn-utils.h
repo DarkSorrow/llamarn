@@ -70,8 +70,6 @@ struct CompletionOptions {
     std::string grammar;
     bool grammar_lazy = false;
     bool ignore_eos = false;
-    std::string chat_template;
-    bool use_jinja = false;
     int seed = -1;  // -1 = leave model's default seed unchanged; >=0 overrides (applied in run_completion)
     json tools;         // tools for function calling
     // OpenAI tool_choice, kept as JSON: "auto" | "none" | "required" |

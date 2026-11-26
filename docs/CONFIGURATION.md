@@ -89,8 +89,6 @@ What `loadLlamaModelInfo` returns that matters for configuration:
 | `reasoning_budget` | `0` | `0` (or omitted) renders the template with `enable_thinking = false`. `-1` turns thinking on with no limit. `> 0` turns it on and caps thinking tokens with the reasoning-budget sampler. Thinking can only be turned on at init. |
 | `reasoning_format` | `'auto'` | `'auto'` (same as `'deepseek'`): thinking goes to `message.reasoning_content` and `content` holds only the answer. `'deepseek-legacy'`: the same split in the final message. It differs only in how llama-server streams, so use `'auto'`. `'none'`: no split, so the raw `…</think>` ends up in `content`. **Changed in this release**: the default used to be `'none'`. Any other string makes `initLlama` throw. |
 | `parallel_tool_calls` | template | Allow more than one tool call per reply. Omitted = what the chat template supports (llama-server's default). `false` limits the grammar to one call. |
-| `thinking_forced_open` | — | **Deprecated, no effect.** The template's generation prompt decides whether thinking starts open (Qwen3 does). |
-| `parse_tool_calls` | — | **Deprecated, no effect.** Tool calls are parsed when you pass `tools` with `use_jinja: true`. |
 
 ### 2.4 Multimodal
 
@@ -104,9 +102,9 @@ What `loadLlamaModelInfo` returns that matters for configuration:
 
 `chunk_size`, `is_cpu_only`, `prompt_chunk_gap_ms`: see [section 5](#5-prompt-pacing-and-thermal-control).
 
-### 2.6 Accepted but not read
+### 2.6 Grammar
 
-`vocab_only`, `logits_all`, and init-level `grammar` are in the TypeScript type and ignored by native. Pass `grammar` per completion.
+`grammar` (GBNF) is a per-completion option, not an init option ([section 6](#6-completion-parameters)).
 
 ---
 

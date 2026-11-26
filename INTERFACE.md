@@ -95,7 +95,6 @@ interface LlamaModelParams {
   use_mlock?: boolean;        // lock model pages in RAM (prevents swapping)
 
   // Model behavior parameters
-  vocab_only?: boolean;       // deprecated: not read by native
   embedding?: boolean;        // use embedding mode (default: false)
   seed?: number;              // RNG seed for reproducibility
 
@@ -110,16 +109,13 @@ interface LlamaModelParams {
   yarn_beta_slow?: number;    // YaRN high correction dim
 
   // Additional options
-  logits_all?: boolean;       // deprecated: not read by native
-  chat_template?: string;     // override chat template
+  chat_template?: string;     // override the GGUF chat template (Jinja source)
   use_jinja?: boolean;        // use Jinja template parser
   verbose?: number;           // verbosity level (0 = silent, 1 = info, 2+ = debug)
 
   // Thinking and reasoning options
   reasoning_budget?: number;      // 0/omitted = thinking off, -1 = unlimited, >0 = token cap
   reasoning_format?: string;      // 'none' | 'auto' (default) | 'deepseek' | 'deepseek-legacy'
-  thinking_forced_open?: boolean; // deprecated: no effect (the template decides)
-  parse_tool_calls?: boolean;     // deprecated: no effect (tools + use_jinja parse tool calls)
   parallel_tool_calls?: boolean;  // multiple tool calls per response (omitted = template capability)
 
   // LoRA adapters
@@ -127,8 +123,6 @@ interface LlamaModelParams {
     path: string;             // path to LoRA adapter file
     scale?: number;           // scaling factor for the adapter (default: 1.0)
   }>;
-
-  grammar?: string;           // deprecated at init: pass grammar per completion
 
   // Multimodal
   mmproj?: string;            // path to multimodal projection model (.gguf)
@@ -164,9 +158,6 @@ interface LlamaContextMethods {
   tokenize(options: TokenizeOptions): Promise<TokenizeResult>;
   detokenize(options: DetokenizeOptions): Promise<DetokenizeResult>;
   embedding(options: EmbeddingOptions): Promise<EmbeddingResponse>;
-  detectTemplate(messages: LlamaMessage[]): Promise<string>;
-  loadSession(path: string): Promise<boolean>;
-  saveSession(path: string): Promise<boolean>;
   stopCompletion(): Promise<void>;
   release(): Promise<void>;
 }
@@ -188,9 +179,7 @@ interface LlamaCompletionParams {
   max_tokens?: number;        // alias for n_predict
   stop?: string[];            // stop sequences
   stream?: boolean;           // stream tokens as they're generated (default: true)
-  
-  // Chat parameters
-  chat_template?: string;     // optional chat template name to use
+
 
   // Tool calling parameters
   tool_choice?: LlamaToolChoice; // 'auto' (default) | 'none' | 'required'

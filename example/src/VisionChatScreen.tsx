@@ -18,14 +18,18 @@ import type { LlamaModel } from '@novastera-oss/llamarn';
 const MODEL_FILENAME  = 'Qwen3.5-2B-Q4_K_M.gguf';
 const MMPROJ_FILENAME = 'mmproj-F16.gguf';
 
+// Android does not bundle the vision model (scripts/copy-assets.js). Push both files to the
+// app's external files dir, which adb can write without root:
+//   adb push example/assets/Qwen3.5-2B-Q4_K_M.gguf /sdcard/Android/data/rnllamacpp.example/files/
+//   adb push example/assets/mmproj-F16.gguf /sdcard/Android/data/rnllamacpp.example/files/
 function getDefaultModelPath(): string {
   if (Platform.OS === 'ios') return `${RNFS.MainBundlePath}/${MODEL_FILENAME}`;
-  return `${RNFS.CachesDirectoryPath}/${MODEL_FILENAME}`;
+  return `${RNFS.ExternalDirectoryPath}/${MODEL_FILENAME}`;
 }
 
 function getDefaultMmprojPath(): string {
   if (Platform.OS === 'ios') return `${RNFS.MainBundlePath}/${MMPROJ_FILENAME}`;
-  return `${RNFS.CachesDirectoryPath}/${MMPROJ_FILENAME}`;
+  return `${RNFS.ExternalDirectoryPath}/${MMPROJ_FILENAME}`;
 }
 
 export default function VisionChatScreen() {
@@ -43,15 +47,16 @@ export default function VisionChatScreen() {
     if (!mp) throw new Error('Enter a model path first');
     setStatus('Loading model…');
 
-    // Android: copy assets to cache on first run (same pattern as ModelChatTestScreen)
-    let resolvedMmproj = mmprojPath.trim();
-    if (Platform.OS === 'android' && resolvedMmproj) {
-      const cached = `${RNFS.CachesDirectoryPath}/${MMPROJ_FILENAME}`;
-      if (!(await RNFS.exists(cached))) {
-        setStatus('Copying mmproj to cache…');
-        await RNFS.copyFileAssets(MMPROJ_FILENAME, cached);
+    const resolvedMmproj = mmprojPath.trim();
+    if (Platform.OS === 'android') {
+      for (const path of [mp, resolvedMmproj].filter(Boolean)) {
+        if (!(await RNFS.exists(path))) {
+          throw new Error(
+            `Missing ${path}. The Android APK does not bundle the vision model. Push it with:\n` +
+            `adb push example/assets/${path.split('/').pop()} ${RNFS.ExternalDirectoryPath}/`,
+          );
+        }
       }
-      resolvedMmproj = cached;
     }
 
     // Vision models need larger context: image tokens alone can be 256–784 for a 448px image.

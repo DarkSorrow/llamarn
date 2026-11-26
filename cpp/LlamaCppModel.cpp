@@ -315,11 +315,6 @@ CompletionOptions LlamaCppModel::parseCompletionOptions(jsi::Runtime& rt, const 
     }
   }
 
-  // Extract chat template name if provided
-  if (obj.hasProperty(rt, "chat_template") && !obj.getProperty(rt, "chat_template").isUndefined()) {
-    options.chat_template = obj.getProperty(rt, "chat_template").asString(rt).utf8(rt);
-  }
-
   return options;
 }
 

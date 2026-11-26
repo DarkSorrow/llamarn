@@ -165,7 +165,7 @@ See **[BREAKING.md](./BREAKING.md)** for multi-turn thinking, KV cache, and tool
 const context = await initLlama({
   model: '/path/to/model.gguf',
   n_ctx: 2048,
-  use_jinja: true,          // parse_tool_calls enabled automatically
+  use_jinja: true,          // required for tool calls
   parallel_tool_calls: false,
 });
 
@@ -484,8 +484,6 @@ When tool-call parsing fails, `finish_reason` can be `tool_call_parse_error` and
 |-----------|---------|-------------|
 | `reasoning_budget` | `0` | Omitted or `0` turns thinking off at load. `-1` is unlimited. `>0` is the sampler cap. A completion may pass a positive cap when init turned thinking on. `0` or `-1` on a completion does not change the template. `reasoning_budget_active` is true only when that cap was installed. |
 | `reasoning_format` | `'auto'` | `'none'` \| `'auto'` \| `'deepseek'` \| `'deepseek-legacy'`. `'auto'` puts thinking in `reasoning_content`; `'none'` leaves it in `content` |
-| `thinking_forced_open` | — | Deprecated, no effect (the template decides) |
-| `parse_tool_calls` | — | Deprecated, no effect (`tools` + `use_jinja` parse tool calls) |
 | `parallel_tool_calls` | template | Allow multiple tool calls per response. Omitted = what the chat template supports, as llama-server does |
 | `rope_freq_base`, `rope_freq_scale`, `yarn_*` | from the model | Leave unset. Setting them overrides the GGUF's trained values |
 
